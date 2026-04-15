@@ -6,6 +6,10 @@ description = "Reference-safe file operations for Markdown workspaces"
 license = "Apache-2.0"
 repository = "https://github.com/accelmars/mind-engine"
 
+[[bin]]
+name = "mind"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
