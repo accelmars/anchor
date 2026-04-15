@@ -14,7 +14,7 @@ pub fn run() -> i32 {
             eprintln!("no workspace found. Run 'mind init' to configure.");
             1
         }
-        Err(WorkspaceError::IoError(e)) => {
+        Err(e) => {
             eprintln!("error: {}", e);
             2
         }
