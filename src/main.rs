@@ -57,14 +57,8 @@ fn main() {
                     2
                 }
             },
-            FileCommands::Validate => {
-                cli::file::validate::run();
-                0
-            }
-            FileCommands::Refs { file } => {
-                cli::file::refs::run(&file);
-                0
-            }
+            FileCommands::Validate => cli::file::validate::run(),
+            FileCommands::Refs { file } => cli::file::refs::run(&file),
         },
     };
 
