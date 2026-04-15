@@ -1,13 +1,21 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Errors returned by workspace discovery.
+use crate::model::config::WorkspaceConfig;
+
+/// Errors returned by workspace discovery and config loading.
 #[derive(Debug)]
 pub enum WorkspaceError {
     /// No `.mind-root` marker was found anywhere up the directory tree.
     NotFound,
     /// An I/O error occurred while traversing the filesystem.
     IoError(io::Error),
+    /// The workspace config contains an unsupported schema_version.
+    #[allow(dead_code)]
+    UnsupportedSchemaVersion(String),
+    /// The workspace config.json could not be parsed.
+    #[allow(dead_code)]
+    InvalidConfig(serde_json::Error),
 }
 
 impl std::fmt::Display for WorkspaceError {
@@ -17,6 +25,14 @@ impl std::fmt::Display for WorkspaceError {
                 write!(f, "no workspace found. Run 'mind init' to configure.")
             }
             WorkspaceError::IoError(e) => write!(f, "I/O error: {}", e),
+            WorkspaceError::UnsupportedSchemaVersion(v) => {
+                write!(
+                    f,
+                    "mind workspace schema version \"{}\" is not supported by this version of mind.\nPlease upgrade: https://github.com/accelmars/mind-engine",
+                    v
+                )
+            }
+            WorkspaceError::InvalidConfig(e) => write!(f, "invalid config.json: {}", e),
         }
     }
 }
@@ -57,6 +73,28 @@ pub fn find_workspace_root() -> Result<PathBuf, WorkspaceError> {
             }
         }
     }
+}
+
+/// Read `.mind/config.json` from the given workspace root, deserialize it,
+/// and enforce schema version compatibility.
+#[allow(dead_code)]
+///
+/// PHASE-2-BRIDGE Contract 2: schema_version is required and hard-enforced.
+/// Any unknown version causes a hard stop — never degrade silently.
+///
+/// Error message format (exact, per 07-PHASE-BRIDGE.md §Contract 2):
+/// `mind workspace schema version "{v}" is not supported by this version of mind.`
+pub fn load_and_check_config(workspace_root: &Path) -> Result<WorkspaceConfig, WorkspaceError> {
+    let config_path = workspace_root.join(".mind").join("config.json");
+    let content = std::fs::read_to_string(&config_path).map_err(WorkspaceError::IoError)?;
+    let config: WorkspaceConfig =
+        serde_json::from_str(&content).map_err(WorkspaceError::InvalidConfig)?;
+    if config.schema_version != "1" {
+        return Err(WorkspaceError::UnsupportedSchemaVersion(
+            config.schema_version,
+        ));
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -139,5 +177,29 @@ mod tests {
             dir.path().canonicalize().expect("canonicalize dir"),
             "walk-up should find .mind-root at the workspace root, not at the deep subdirectory"
         );
+    }
+
+    /// Unknown schema_version causes hard stop with exact error message.
+    /// PHASE-2-BRIDGE Contract 2: hard-stop, never degrade silently.
+    #[test]
+    fn test_unsupported_schema_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let mind_dir = dir.path().join(".mind");
+        fs::create_dir_all(&mind_dir).unwrap();
+        fs::write(mind_dir.join("config.json"), r#"{"schema_version":"99"}"#).unwrap();
+
+        let result = load_and_check_config(dir.path());
+        match result {
+            Err(WorkspaceError::UnsupportedSchemaVersion(v)) => {
+                assert_eq!(v, "99");
+                let msg = format!("{}", WorkspaceError::UnsupportedSchemaVersion(v));
+                assert!(
+                    msg.contains("not supported"),
+                    "error message must contain 'not supported', got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected UnsupportedSchemaVersion, got: {:?}", other),
+        }
     }
 }

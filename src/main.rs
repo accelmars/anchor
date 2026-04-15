@@ -43,10 +43,14 @@ fn main() {
     let cli = Cli::parse();
 
     let exit_code = match cli.command {
-        Commands::Init => {
-            cli::init::run();
-            0
-        }
+        Commands::Init => match cli::init::run() {
+            Ok(()) => 0,
+            Err(cli::init::InitError::Aborted) => 0,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                1
+            }
+        },
         Commands::Root => cli::root::run(),
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv { src, dst } => {
