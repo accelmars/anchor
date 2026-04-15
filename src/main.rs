@@ -1,7 +1,4 @@
-mod cli;
-mod core;
-mod infra;
-mod model;
+use accelmars_mind::cli;
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -53,10 +50,13 @@ fn main() {
         },
         Commands::Root => cli::root::run(),
         Commands::File { subcommand } => match subcommand {
-            FileCommands::Mv { src, dst } => {
-                cli::file::mv::run(&src, &dst);
-                0
-            }
+            FileCommands::Mv { src, dst } => match cli::file::mv::run(&src, &dst) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            },
             FileCommands::Validate => cli::file::validate::run(),
             FileCommands::Refs { file } => cli::file::refs::run(&file),
         },

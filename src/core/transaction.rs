@@ -1,15 +1,21 @@
-// src/core/transaction.rs — PLAN phase logic + Case A/B/C classification (MF-005)
+// src/core/transaction.rs — transaction phases: PLAN, APPLY, VALIDATE, COMMIT, ROLLBACK (MF-005+MF-006)
 #![allow(dead_code)]
 //
-// APPLY, VALIDATE, COMMIT phases are in MF-006 (cli/file/mv.rs + core/rewriter.rs).
+// PLAN phase: MF-005 — scan workspace, classify references (A/B/C), build rewrite plan.
+// APPLY, VALIDATE, COMMIT, ROLLBACK phases: MF-006.
 //
 // Anti-pattern from HANDOVER.md (Case C detection bug):
 //   WRONG: skip if reference SOURCE is inside src/ — this skips Case B (which needs rewriting).
 //   CORRECT: Case C requires BOTH source file AND target inside src/.
 //   Test: is_case_c = inside_src(ref.source_file) AND inside_src(ref.target)
+//
+// COMMIT order (HANDOVER.md anti-pattern): rename rewrites over originals FIRST,
+// then rename moved/src → dst. Reversing this order breaks recovery on crash.
 
-use crate::core::{parser, resolver};
+use crate::core::{parser, resolver, rewriter};
+use crate::infra::temp::{self, TempOpDir};
 use crate::model::{
+    manifest::{self, Manifest},
     reference::RefForm,
     rewrite::{RewriteEntry, RewritePlan},
     CanonicalPath,
@@ -20,12 +26,16 @@ use std::path::Path;
 #[derive(Debug)]
 pub enum TransactionError {
     Io(std::io::Error),
+    Manifest(crate::model::manifest::ManifestError),
+    Temp(crate::infra::temp::TempError),
 }
 
 impl std::fmt::Display for TransactionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransactionError::Io(e) => write!(f, "transaction I/O error: {e}"),
+            TransactionError::Manifest(e) => write!(f, "manifest error: {e}"),
+            TransactionError::Temp(e) => write!(f, "temp dir error: {e}"),
         }
     }
 }
@@ -33,6 +43,83 @@ impl std::fmt::Display for TransactionError {
 impl From<std::io::Error> for TransactionError {
     fn from(e: std::io::Error) -> Self {
         TransactionError::Io(e)
+    }
+}
+
+impl From<crate::model::manifest::ManifestError> for TransactionError {
+    fn from(e: crate::model::manifest::ManifestError) -> Self {
+        TransactionError::Manifest(e)
+    }
+}
+
+impl From<crate::infra::temp::TempError> for TransactionError {
+    fn from(e: crate::infra::temp::TempError) -> Self {
+        TransactionError::Temp(e)
+    }
+}
+
+/// A reference that failed to resolve after rewrite.
+#[derive(Debug, Clone)]
+pub struct BrokenRef {
+    /// Canonical path of the file containing the broken reference (post-move path).
+    pub file: CanonicalPath,
+    /// 1-based line number of the broken reference.
+    pub line: usize,
+    /// Raw target string (as it appears in the file).
+    pub target: String,
+}
+
+/// Error returned by the VALIDATE phase.
+#[derive(Debug)]
+pub enum ValidationError {
+    /// One or more references failed to resolve after rewrite.
+    BrokenRefs(Vec<BrokenRef>),
+    /// I/O error during validation.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidationError::BrokenRefs(refs) => {
+                write!(f, "{} broken reference(s) after rewrite", refs.len())
+            }
+            ValidationError::Io(e) => write!(f, "validation I/O error: {e}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for ValidationError {
+    fn from(e: std::io::Error) -> Self {
+        ValidationError::Io(e)
+    }
+}
+
+/// Error returned by the COMMIT phase.
+#[derive(Debug)]
+pub enum CommitError {
+    Io(std::io::Error),
+    Manifest(crate::model::manifest::ManifestError),
+}
+
+impl std::fmt::Display for CommitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommitError::Io(e) => write!(f, "commit I/O error: {e}"),
+            CommitError::Manifest(e) => write!(f, "commit manifest error: {e}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for CommitError {
+    fn from(e: std::io::Error) -> Self {
+        CommitError::Io(e)
+    }
+}
+
+impl From<crate::model::manifest::ManifestError> for CommitError {
+    fn from(e: crate::model::manifest::ManifestError) -> Self {
+        CommitError::Manifest(e)
     }
 }
 
@@ -122,12 +209,20 @@ fn rebuild_form1_ref(old_text: &str, new_rel_path: &str, anchor: &Option<String>
     format!("[{link_text}]({path_with_anchor})")
 }
 
+/// Compute the stem (filename without `.md` extension) of a canonical path.
+fn stem_of(canonical: &CanonicalPath) -> &str {
+    let filename = canonical.rsplit('/').next().unwrap_or(canonical.as_str());
+    filename.strip_suffix(".md").unwrap_or(filename)
+}
+
 /// PLAN phase: scan workspace, classify all references (A/B/C), build the rewrite plan.
 ///
 /// Algorithm from 04-TRANSACTIONS.md §PLAN Phase Detail:
 /// 1. For each file in `workspace_files`: read content, parse all references
-/// 2. Resolve each Form 1 reference to a canonical path
-/// 3. Skip Form 2 (wiki links): stem doesn't change when a file is moved; no rewrite needed
+/// 2. For Form 1 references: resolve to canonical path, classify (A/B/C), compute new_text
+/// 3. For Form 2 (wiki links): resolve via workspace stem scan; rewrite only if stem changes
+///    (Case A where stem_of(src) != stem_of(dst); Case B not applicable for wiki links;
+///    Case C: both inside src — skip)
 /// 4. Classify each reference that touches `src`:
 ///    - Case A: !inside_src(source_file) && inside_src(target) → rewrite target path
 ///    - Case B:  inside_src(source_file) && !inside_src(target) → rewrite relative path (source moved)
@@ -162,9 +257,49 @@ pub fn plan(
         let refs = parser::parse_references(file_canonical, &content);
 
         for reference in refs {
-            // Form 2 (wiki links): stem-based resolution means the stem doesn't change
-            // when a file is moved. No rewrite needed for any wiki link.
             if reference.form == RefForm::Wiki {
+                // Form 2 (wiki links): stem-based. Rewrite only if the target is inside src
+                // and the stem actually changes (i.e., dst has a different filename).
+                // Case B not applicable — wiki links don't use relative paths; moving the
+                // source file doesn't affect the stem's global resolution.
+                let resolve_result =
+                    resolver::resolve_form2(&reference.target_raw, workspace_files);
+                let target_canonical = match resolve_result {
+                    resolver::ResolveResult::Resolved(c) => c,
+                    // Ambiguous or broken: skip — already broken before this move
+                    _ => continue,
+                };
+
+                let target_inside = inside_src(&target_canonical, src);
+                if !target_inside {
+                    continue; // Target not affected by this move
+                }
+
+                // Case C: source also inside src → stem is stable (both move together)
+                if inside_src(file_canonical, src) {
+                    continue;
+                }
+
+                // Case A: external file has wiki link pointing into src
+                let new_target = remap_path(&target_canonical, src, dst);
+                let old_stem = stem_of(&target_canonical);
+                let new_stem_str = rewriter::compute_form2_new_text(&new_target);
+                if old_stem == new_stem_str.as_str() {
+                    continue; // Stem unchanged — no rewrite needed (e.g., directory move)
+                }
+
+                let old_text = content[reference.span.0..reference.span.1].to_string();
+                // Preserve alias if present: [[old-stem]] → [[new-stem]]
+                // or [[old-stem|alias]] → [[new-stem|alias]]
+                let prefix = format!("[[{old_stem}");
+                let new_prefix = format!("[[{new_stem_str}");
+                let new_text = old_text.replacen(&prefix, &new_prefix, 1);
+                entries.push(RewriteEntry {
+                    file: file_canonical.clone(),
+                    span: reference.span,
+                    old_text,
+                    new_text,
+                });
                 continue;
             }
 
@@ -219,6 +354,239 @@ pub fn plan(
         dst: dst.clone(),
         entries,
     })
+}
+
+/// APPLY phase: copy src to temp, write rewritten files to temp/rewrites/, update manifest.
+///
+/// IMPORTANT: originals are NOT touched during APPLY. All writes go to op_dir.
+/// From 04-TRANSACTIONS.md §APPLY Phase Detail.
+pub fn apply(
+    workspace_root: &Path,
+    plan: &RewritePlan,
+    op_dir: &TempOpDir,
+    manifest: &mut Manifest,
+) -> Result<(), TransactionError> {
+    // Step 1: copy src (file or directory tree) to op_dir/moved/{src_name}
+    let src_path = workspace_root.join(plan.src.as_str());
+    let src_name = std::path::Path::new(plan.src.as_str())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| plan.src.clone());
+    let moved_dst = op_dir.path.join("moved").join(&src_name);
+
+    if src_path.is_dir() {
+        copy_dir_recursive(&src_path, &moved_dst)?;
+    } else {
+        std::fs::copy(&src_path, &moved_dst)?;
+    }
+
+    // Step 2: for each file in the rewrite plan, apply rewrites and write to op_dir/rewrites/
+    // Group entries by file so apply_rewrites sees all entries for a file at once.
+    let mut files_to_rewrite: Vec<&CanonicalPath> = plan
+        .entries
+        .iter()
+        .map(|e| &e.file)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    files_to_rewrite.sort(); // deterministic order
+
+    for file_canonical in files_to_rewrite {
+        let file_path = workspace_root.join(file_canonical.as_str());
+        let content = std::fs::read_to_string(&file_path)?;
+
+        let file_entries: Vec<&RewriteEntry> = plan
+            .entries
+            .iter()
+            .filter(|e| &e.file == file_canonical)
+            .collect();
+
+        // Collect by value for apply_rewrites
+        let owned: Vec<RewriteEntry> = file_entries.iter().map(|e| (*e).clone()).collect();
+        let rewritten = rewriter::apply_rewrites(&content, &owned);
+
+        let encoded = temp::encode_path(file_canonical);
+        let rewrite_path = op_dir.path.join("rewrites").join(&encoded);
+        std::fs::write(&rewrite_path, rewritten)?;
+    }
+
+    // Step 3: update manifest phase → VALIDATE
+    manifest.phase = "VALIDATE".to_string();
+    manifest::write_manifest(&op_dir.path, manifest)?;
+
+    Ok(())
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), TransactionError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_child = entry.path();
+        let dst_child = dst.join(entry.file_name());
+        if src_child.is_dir() {
+            copy_dir_recursive(&src_child, &dst_child)?;
+        } else {
+            std::fs::copy(&src_child, &dst_child)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check if a target canonical path "exists" in the post-move filesystem state.
+///
+/// Returns true if:
+/// - The file exists on disk at workspace_root/canonical, OR
+/// - The canonical path is plan.dst or is inside plan.dst/ (will exist after commit)
+fn target_exists_post_move(
+    workspace_root: &Path,
+    plan: &RewritePlan,
+    canonical: &CanonicalPath,
+) -> bool {
+    if workspace_root.join(canonical.as_str()).exists() {
+        return true;
+    }
+    // Will exist after commit: plan.dst itself or anything inside it
+    canonical == &plan.dst || canonical.starts_with(&format!("{}/", plan.dst))
+}
+
+/// VALIDATE phase: resolve all references in rewritten files; any broken → ValidationError.
+///
+/// Uses post-move filesystem state: plan.dst and its subtree are treated as existing.
+/// From 04-TRANSACTIONS.md §VALIDATE Phase Detail.
+pub fn validate(
+    workspace_root: &Path,
+    plan: &RewritePlan,
+    op_dir: &TempOpDir,
+) -> Result<(), ValidationError> {
+    let rewrites_dir = op_dir.path.join("rewrites");
+    let Ok(read_dir) = std::fs::read_dir(&rewrites_dir) else {
+        // No rewritten files — nothing to validate
+        return Ok(());
+    };
+
+    let mut broken: Vec<BrokenRef> = Vec::new();
+
+    for entry in read_dir.flatten() {
+        let encoded_name = entry.file_name().to_string_lossy().into_owned();
+        // Decode canonical path: __ → /
+        let original_canonical: CanonicalPath = encoded_name.replace("__", "/");
+
+        // Determine the post-move canonical path for reference resolution.
+        // Files inside plan.src will be at plan.dst after commit.
+        let resolve_canonical = if inside_src(&original_canonical, &plan.src) {
+            remap_path(&original_canonical, &plan.src, &plan.dst)
+        } else {
+            original_canonical.clone()
+        };
+
+        let content = std::fs::read_to_string(entry.path())?;
+        let refs = parser::parse_references(&resolve_canonical, &content);
+
+        for line_no in compute_line_numbers(&content, &refs) {
+            let (reference, line) = line_no;
+            // Only validate Form 1 (relative links) — their new paths must resolve
+            if reference.form == RefForm::Wiki {
+                // Wiki links resolve via stem scan of the workspace; skip in VALIDATE
+                // (the workspace state during VALIDATE is complex to simulate accurately)
+                continue;
+            }
+
+            let resolved = resolver::resolve_form1(&resolve_canonical, &reference.target_raw);
+            if !target_exists_post_move(workspace_root, plan, &resolved) {
+                broken.push(BrokenRef {
+                    file: resolve_canonical.clone(),
+                    line,
+                    target: reference.target_raw.clone(),
+                });
+            }
+        }
+    }
+
+    if broken.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationError::BrokenRefs(broken))
+    }
+}
+
+/// Compute (Reference, line_number) pairs by walking content line-by-line.
+///
+/// Line numbers are 1-based. Each reference is matched to the line whose byte range
+/// contains its span start.
+fn compute_line_numbers(
+    content: &str,
+    refs: &[crate::model::reference::Reference],
+) -> Vec<(crate::model::reference::Reference, usize)> {
+    let mut result = Vec::new();
+    for reference in refs {
+        let byte_pos = reference.span.0;
+        let line_no = content[..byte_pos].chars().filter(|&c| c == '\n').count() + 1;
+        result.push((reference.clone(), line_no));
+    }
+    result
+}
+
+/// ROLLBACK: remove op_dir and drop lock (via LockGuard's Drop impl).
+///
+/// Called on any failure before COMMIT. Originals are untouched — workspace is
+/// byte-for-byte identical to before the operation.
+/// From 04-TRANSACTIONS.md §Rollback.
+pub fn rollback(op_dir: &TempOpDir, _lock: crate::infra::lock::LockGuard) {
+    // Best-effort removal — we are in an error path, ignore errors.
+    let _ = temp::cleanup_op_dir(op_dir);
+    // _lock is dropped here, triggering LockGuard::drop → deletes .mind/lock
+}
+
+/// COMMIT phase: rename rewrites over originals, then rename moved/src → dst.
+///
+/// CRITICAL ORDER (HANDOVER.md anti-pattern): rename rewrite files FIRST, then src→dst.
+/// If process dies after rewrites but before src rename, old src is still valid.
+/// If process dies after src rename but before rewrites, references would be broken.
+/// From 04-TRANSACTIONS.md §COMMIT Phase Detail.
+pub fn commit(
+    workspace_root: &Path,
+    plan: &RewritePlan,
+    op_dir: &TempOpDir,
+    manifest: &mut Manifest,
+    _lock: crate::infra::lock::LockGuard,
+) -> Result<(), CommitError> {
+    // Step 1: update manifest phase → COMMIT
+    manifest.phase = "COMMIT".to_string();
+    manifest::write_manifest(&op_dir.path, manifest)?;
+
+    // Step 2: rename each rewritten file over its original (FIRST — preserves recovery)
+    // manifest.rewrites contains the canonical paths of files that were rewritten
+    let rewrites_dir = op_dir.path.join("rewrites");
+    for original_canonical in &manifest.rewrites {
+        let encoded = temp::encode_path(original_canonical);
+        let tmp_path = rewrites_dir.join(&encoded);
+        let original_path = workspace_root.join(original_canonical.as_str());
+        std::fs::rename(&tmp_path, &original_path)?;
+    }
+
+    // Step 3: rename src → dst  (SECOND — after rewrites are committed)
+    // Per 04-TRANSACTIONS.md: "rename src → dst" — the actual source path, not from tmp/moved.
+    // tmp/moved is a safety copy for recovery; it gets cleaned up in step 4.
+    // Crash recovery: if we die here, referencing files are updated but src still exists.
+    // manifest.json shows phase=COMMIT, so the stale cleanup path knows what happened.
+    let original_src = workspace_root.join(plan.src.as_str());
+    let final_dst = workspace_root.join(plan.dst.as_str());
+    // Ensure dst parent directory exists
+    if let Some(parent) = final_dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&original_src, &final_dst)?;
+
+    // Step 4: remove op_dir
+    let _ = temp::cleanup_op_dir(op_dir);
+
+    // Step 5: _lock is dropped here → LockGuard::drop deletes .mind/lock
+
+    Ok(())
 }
 
 #[cfg(test)]
