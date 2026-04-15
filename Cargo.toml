@@ -6,6 +6,10 @@ description = "Reference-safe file operations for Markdown workspaces"
 license = "Apache-2.0"
 repository = "https://github.com/accelmars/mind-engine"
 
+[lib]
+name = "accelmars_mind"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mind"
 path = "src/main.rs"
