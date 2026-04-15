@@ -195,6 +195,40 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     do_init(&chosen, &mut writer)
 }
 
+/// Default `.mindignore` content written by `mind init`.
+///
+/// Contains sensible defaults (node_modules/, target/).
+/// Includes a comment header explaining the syntax and Phase 1 scope.
+/// AccelMars-specific paths (e.g., __NOTES__/) are NOT included — open code
+/// must not contain AccelMars workspace vocabulary.
+const DEFAULT_MINDIGNORE: &str = "\
+# .mindignore — patterns excluded from mind file operations
+# Syntax follows .gitignore rules (https://git-scm.com/docs/gitignore)
+# A pattern without / matches at any depth. /pattern anchors to workspace root.
+# Note: per-directory .mindignore files are not supported in Phase 1 — only
+# the root-level file is read.
+
+# Third-party package directories
+node_modules/
+
+# Build artifacts
+target/
+";
+
+/// Write `.mindignore` at `path` if it does not already exist.
+///
+/// Returns `true` if the file was created, `false` if it already existed and was skipped.
+/// Never overwrites an existing `.mindignore` — users may have customized it.
+fn ensure_mindignore(path: &Path) -> Result<bool, InitError> {
+    let mindignore_path = path.join(".mindignore");
+    if mindignore_path.exists() {
+        Ok(false)
+    } else {
+        std::fs::write(&mindignore_path, DEFAULT_MINDIGNORE)?;
+        Ok(true)
+    }
+}
+
 /// Execute fresh initialization at `path`.
 fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     // a. Create .mind-root as empty file (zero bytes)
@@ -210,12 +244,20 @@ fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     let config_path = path.join(".mind").join("config.json");
     atomic::atomic_write(&config_path, &config_json).map_err(|e| InitError::Io(e.into()))?;
 
-    // d. Confirmation output
+    // d. Write .mindignore at workspace root (only if not already present)
+    let mindignore_created = ensure_mindignore(path)?;
+
+    // e. Confirmation output
     writeln!(writer, "\u{2192} Created  .mind-root")?;
     writeln!(
         writer,
         "\u{2192} Created  .mind/config.json  {{\"schema_version\": \"1\"}}"
     )?;
+    if mindignore_created {
+        writeln!(writer, "\u{2192} Created  .mindignore")?;
+    } else {
+        writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+    }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
     writeln!(
@@ -247,10 +289,18 @@ fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     let config_path = mind_dir.join("config.json");
     atomic::atomic_write(&config_path, &config_json).map_err(|e| InitError::Io(e.into()))?;
 
+    // Write .mindignore if not present (safe to add to existing workspaces)
+    let mindignore_created = ensure_mindignore(path)?;
+
     writeln!(
         writer,
         "\u{2192} Created  .mind/config.json  {{\"schema_version\": \"1\"}}"
     )?;
+    if mindignore_created {
+        writeln!(writer, "\u{2192} Created  .mindignore")?;
+    } else {
+        writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+    }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
     writeln!(
