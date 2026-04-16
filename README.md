@@ -123,7 +123,45 @@ mind file refs projects/my-project/STATUS.md
 # 2 files reference this file.
 ```
 
+Zero results:
+```bash
+mind file refs projects/my-project/STATUS.md
+# No references found.
+```
+
 Exit 0 always (zero refs is not an error).
+
+#### `--format json`
+
+Output results as JSON for programmatic use (AI agents, scripts):
+
+```bash
+mind file refs projects/my-project/STATUS.md --format json
+```
+
+```json
+{
+  "refs": [
+    {"file": "docs/CLAUDE.md", "line": 47},
+    {"file": "people/alice/MIND.md", "line": 8}
+  ],
+  "query_path": "projects/my-project/STATUS.md",
+  "count": 2
+}
+```
+
+Zero results with `--format json`:
+```json
+{"refs": [], "query_path": "projects/my-project/STATUS.md", "count": 0}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `refs` | array | Each entry: `file` (workspace-relative path), `line` (1-based) |
+| `query_path` | string | Normalized workspace-relative path that was queried |
+| `count` | number | Total number of reference hits |
+
+> **Note for AI agents:** `count: 0` means the file exists but has no inbound references. If you receive `count: 0` for a path you expect to be referenced, verify the path is correct using `mind file validate`.
 
 ---
 

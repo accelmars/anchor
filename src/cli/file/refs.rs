@@ -11,10 +11,17 @@ use crate::core::{parser, resolver, scanner};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
 use std::collections::HashSet;
+use std::io;
 use std::path::Path;
 
+/// Output format for `mind file refs`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+pub enum OutputFormat {
+    Json,
+}
+
 /// Execute `mind file refs <file>`. Returns exit code for process::exit.
-pub fn run(target: &str) -> i32 {
+pub fn run(target: &str, format: Option<OutputFormat>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -22,13 +29,26 @@ pub fn run(target: &str) -> i32 {
             return 2;
         }
     };
-    run_on_root(&workspace_root, target)
+    run_on_root(&workspace_root, target, format)
 }
 
 /// Core refs logic on an explicit workspace root. Public for integration testing.
-pub fn run_on_root(workspace_root: &Path, target: &str) -> i32 {
+pub fn run_on_root(workspace_root: &Path, target: &str, format: Option<OutputFormat>) -> i32 {
     match do_refs(workspace_root, target) {
-        Ok(()) => 0,
+        Ok((target_canonical, hits)) => {
+            let result = if format == Some(OutputFormat::Json) {
+                format_json(&mut io::stdout(), &target_canonical, &hits)
+            } else {
+                format_human(&mut io::stdout(), &target_canonical, &hits)
+            };
+            match result {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            }
+        }
         Err(e) => {
             eprintln!("error: {e}");
             2
@@ -36,7 +56,7 @@ pub fn run_on_root(workspace_root: &Path, target: &str) -> i32 {
     }
 }
 
-fn do_refs(workspace_root: &Path, target: &str) -> Result<(), String> {
+fn do_refs(workspace_root: &Path, target: &str) -> Result<(String, Vec<(String, usize)>), String> {
     // Normalize target to workspace-root-relative canonical form
     let target_canonical = normalize_target(workspace_root, target);
 
@@ -70,8 +90,17 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<(), String> {
         }
     }
 
+    Ok((target_canonical, hits))
+}
+
+/// Render hits in human-readable format.
+fn format_human<W: io::Write>(
+    w: &mut W,
+    target_canonical: &str,
+    hits: &[(String, usize)],
+) -> io::Result<()> {
     if hits.is_empty() {
-        println!("No files reference {target_canonical}.");
+        writeln!(w, "No references found.")
     } else {
         let unique_files = hits
             .iter()
@@ -79,16 +108,36 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<(), String> {
             .collect::<HashSet<_>>()
             .len();
 
-        println!("References to: {target_canonical}");
-        println!();
-        for (file, line) in &hits {
-            println!("  {file}:{line}");
+        writeln!(w, "References to: {target_canonical}")?;
+        writeln!(w)?;
+        for (file, line) in hits {
+            writeln!(w, "  {file}:{line}")?;
         }
-        println!();
-        println!("{unique_files} files reference this file.");
+        writeln!(w)?;
+        writeln!(w, "{unique_files} files reference this file.")
     }
+}
 
-    Ok(())
+/// Render hits as JSON.
+///
+/// PHASE 2 STABLE CONTRACT: This JSON schema is a stable interface for AI agents and
+/// machine consumers. Do not change field names ("refs", "query_path", "count") without
+/// a design session. Schema: {"refs":[{"file":"relative/path.md","line":12}],"query_path":"...","count":N}
+fn format_json<W: io::Write>(
+    w: &mut W,
+    target_canonical: &str,
+    hits: &[(String, usize)],
+) -> io::Result<()> {
+    let refs: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|(file, line)| serde_json::json!({"file": file, "line": line}))
+        .collect();
+    let output = serde_json::json!({
+        "refs": refs,
+        "query_path": target_canonical,
+        "count": hits.len(),
+    });
+    writeln!(w, "{output}")
 }
 
 /// Normalize a user-provided target path to workspace-root-relative canonical form.
@@ -114,4 +163,48 @@ fn byte_offset_to_line(content: &str, byte_offset: usize) -> usize {
         .filter(|&c| c == '\n')
         .count()
         + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_zero_refs_emits_confirmation() {
+        let mut out = Vec::new();
+        format_human(&mut out, "docs/guide.md", &[]).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().trim(),
+            "No references found."
+        );
+    }
+
+    #[test]
+    fn test_format_json_with_hits() {
+        let hits = vec![
+            ("projects/README.md".to_string(), 3usize),
+            ("docs/index.md".to_string(), 45usize),
+        ];
+        let mut out = Vec::new();
+        format_json(&mut out, "docs/guide.md", &hits).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(parsed["query_path"], "docs/guide.md");
+        assert_eq!(parsed["count"], 2);
+        assert_eq!(parsed["refs"][0]["file"], "projects/README.md");
+        assert_eq!(parsed["refs"][0]["line"], 3);
+        assert_eq!(parsed["refs"][1]["file"], "docs/index.md");
+        assert_eq!(parsed["refs"][1]["line"], 45);
+    }
+
+    #[test]
+    fn test_format_json_zero_hits() {
+        let mut out = Vec::new();
+        format_json(&mut out, "docs/guide.md", &[]).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(parsed["query_path"], "docs/guide.md");
+        assert_eq!(parsed["count"], 0);
+        assert!(parsed["refs"].as_array().unwrap().is_empty());
+    }
 }

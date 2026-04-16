@@ -1,4 +1,5 @@
 use accelmars_mind::cli;
+use accelmars_mind::cli::file::refs::OutputFormat;
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -33,7 +34,12 @@ enum FileCommands {
     /// Detect all broken references in the workspace
     Validate,
     /// List all files referencing a given file
-    Refs { file: String },
+    Refs {
+        file: String,
+        /// Output format (default: human-readable)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
 }
 
 fn main() {
@@ -58,7 +64,7 @@ fn main() {
                 }
             },
             FileCommands::Validate => cli::file::validate::run(),
-            FileCommands::Refs { file } => cli::file::refs::run(&file),
+            FileCommands::Refs { file, format } => cli::file::refs::run(&file, format),
         },
     };
 
