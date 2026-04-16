@@ -1,4 +1,4 @@
-// mind init — workspace initialization wizard (MF-002)
+// mind init — workspace initialization wizard (MF-002 / MX-003)
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ pub enum InitError {
     DirectoryNotFound(PathBuf),
     NotWritable(PathBuf),
     Aborted,
+    NoCandidate,
 }
 
 impl std::fmt::Display for InitError {
@@ -26,6 +27,9 @@ impl std::fmt::Display for InitError {
                 write!(f, "Cannot write to {} — check permissions", p.display())
             }
             InitError::Aborted => write!(f, "Aborted."),
+            InitError::NoCandidate => {
+                write!(f, "no workspace candidate detected — use --path to specify")
+            }
         }
     }
 }
@@ -80,6 +84,47 @@ fn detect_candidate(start: &Path) -> PathBuf {
     }
 }
 
+/// Returns true if `dir` qualifies as a valid workspace candidate:
+/// not itself a git repo, but contains at least one git repo subdirectory.
+fn is_workspace_candidate(dir: &Path) -> bool {
+    !is_git_repo(dir) && count_git_repos(dir) > 0
+}
+
+/// Validate that `path` exists and is writable.
+fn validate_path(path: &Path) -> Result<(), InitError> {
+    if !path.exists() {
+        return Err(InitError::DirectoryNotFound(path.to_path_buf()));
+    }
+    if std::fs::metadata(path)
+        .map(|m| m.permissions().readonly())
+        .unwrap_or(true)
+    {
+        return Err(InitError::NotWritable(path.to_path_buf()));
+    }
+    Ok(())
+}
+
+/// Compute how many visible (prompted) steps the wizard will show.
+///
+/// `has_workspace_step` — true when the workspace root prompt will be shown.
+/// `no_repos` — true when the "no repos, continue?" prompt will be shown.
+/// `is_reinit` — true when the re-init path is taken (adds confirm + writing step).
+fn compute_step_total(has_workspace_step: bool, no_repos: bool, is_reinit: bool) -> usize {
+    let mut n = 0;
+    if has_workspace_step {
+        n += 1;
+    }
+    if no_repos {
+        n += 1;
+    }
+    if is_reinit {
+        n += 2; // re-init confirm + writing step
+    } else {
+        n += 1; // place confirm
+    }
+    n
+}
+
 /// Read one line from `reader`, stripping the trailing newline.
 fn prompt_line<R: BufRead>(reader: &mut R) -> Result<String, io::Error> {
     let mut line = String::new();
@@ -91,105 +136,191 @@ fn prompt_line<R: BufRead>(reader: &mut R) -> Result<String, io::Error> {
 }
 
 /// Entry point for `mind init`. Detects workspace candidate from cwd.
-pub fn run() -> Result<(), InitError> {
+///
+/// `yes` — accept detected workspace root without prompting (fully non-interactive).
+/// `path` — use given path instead of detection; skip detection entirely.
+pub fn run(yes: bool, path: Option<&str>) -> Result<(), InitError> {
     let start = std::env::current_dir()?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_with_io(&start, stdin.lock(), stdout.lock())
+    run_with_io(&start, stdin.lock(), stdout.lock(), yes, path)
 }
 
 /// Inner wizard — accepts injectable reader and writer for testability.
 ///
 /// `start` is the directory from which candidate detection begins (usually cwd).
+/// `yes` — accept detected workspace root without prompting (fully non-interactive).
+/// `explicit_path` — use given path instead of detection.
 pub(crate) fn run_with_io<R: BufRead, W: Write>(
     start: &Path,
     mut reader: R,
     mut writer: W,
+    yes: bool,
+    explicit_path: Option<&str>,
 ) -> Result<(), InitError> {
-    // Phase 2 — Detect candidate workspace root
-    let candidate = detect_candidate(start);
-    let n_repos = count_git_repos(&candidate);
+    // ── Resolve workspace root ─────────────────────────────────────────
+    let chosen: PathBuf;
+    let step_total: usize;
+    let mut step_current: usize = 1;
 
-    writeln!(writer)?;
-    writeln!(writer, "Detecting workspace root...")?;
-    writeln!(
-        writer,
-        "  Candidate: {}  (contains {} git repos)",
-        candidate.display(),
-        n_repos
-    )?;
-    writeln!(writer)?;
-    write!(writer, "Workspace root [{}]: ", candidate.display())?;
-    writer.flush()?;
-
-    // Read user input — empty means accept default
-    let input = prompt_line(&mut reader)?;
-    let chosen = if input.is_empty() {
-        candidate.clone()
+    if let Some(p) = explicit_path {
+        // --path provided: validate immediately, skip detection entirely.
+        let dir = PathBuf::from(p);
+        validate_path(&dir)?;
+        chosen = dir;
+        if yes {
+            // --yes --path: no prompts at all.
+            step_total = 0;
+        } else {
+            // --path only: show remaining prompts, no workspace root step.
+            let is_reinit = chosen.join(".mind-root").exists();
+            let no_repos = count_git_repos(&chosen) == 0;
+            step_total = compute_step_total(false, no_repos, is_reinit);
+        }
     } else {
-        PathBuf::from(&input)
-    };
+        let candidate = detect_candidate(start);
+        let n_repos = count_git_repos(&candidate);
 
-    // Validate path exists
-    if !chosen.exists() {
-        return Err(InitError::DirectoryNotFound(chosen));
-    }
+        if yes {
+            // --yes: accept detected root, no output, no prompts.
+            if !is_workspace_candidate(&candidate) {
+                return Err(InitError::NoCandidate);
+            }
+            validate_path(&candidate)?;
+            chosen = candidate;
+            step_total = 0;
+        } else {
+            // Interactive wizard: show detection output and prompt.
+            writeln!(writer)?;
+            writeln!(writer, "Detecting workspace root...")?;
+            writeln!(
+                writer,
+                "  Candidate: {}  (contains {} git repos)",
+                candidate.display(),
+                n_repos
+            )?;
+            writeln!(writer)?;
 
-    // Check writability (attempt metadata read; actual write errors surface during init)
-    if std::fs::metadata(&chosen)
-        .map(|m| m.permissions().readonly())
-        .unwrap_or(true)
-    {
-        return Err(InitError::NotWritable(chosen));
-    }
+            let is_reinit_candidate = candidate.join(".mind-root").exists();
+            let no_repos_candidate = n_repos == 0;
+            step_total = compute_step_total(true, no_repos_candidate, is_reinit_candidate);
 
-    // Show git repos at chosen path
-    let repos = git_repo_subdirs(&chosen);
-    let repo_count = repos.len();
+            // Step 1: Workspace root prompt.
+            write!(
+                writer,
+                "[{}/{}] Workspace root [{}]: ",
+                step_current,
+                step_total,
+                candidate.display()
+            )?;
+            writer.flush()?;
+            step_current += 1;
 
-    writeln!(writer, "→ {}", chosen.display())?;
-    let display_count = repo_count.min(4);
-    for repo in repos.iter().take(display_count) {
-        let name = repo.file_name().unwrap_or_default().to_string_lossy();
-        writeln!(writer, "    {}/  \u{2713} git repo", name)?;
-    }
-    if repo_count > 4 {
-        writeln!(writer, "    ... and {} more", repo_count - 4)?;
-    }
-    writeln!(writer)?;
-
-    // No git repos warning — not a hard error, but warn and confirm
-    if repo_count == 0 {
-        write!(writer, "No git repos found here. Continue anyway? [y/N]: ")?;
-        writer.flush()?;
-        let response = prompt_line(&mut reader)?;
-        if !response.eq_ignore_ascii_case("y") {
-            return Err(InitError::Aborted);
+            let input = prompt_line(&mut reader)?;
+            if input.is_empty() {
+                validate_path(&candidate)?;
+                chosen = candidate;
+            } else {
+                let typed = PathBuf::from(&input);
+                // Error retry (C28 pattern): one retry on path errors.
+                if !typed.exists() {
+                    writeln!(writer, "{}", InitError::DirectoryNotFound(typed.clone()))?;
+                    write!(writer, "Enter a different path: ")?;
+                    writer.flush()?;
+                    let second = prompt_line(&mut reader)?;
+                    let second_path = PathBuf::from(&second);
+                    validate_path(&second_path)?;
+                    chosen = second_path;
+                } else if std::fs::metadata(&typed)
+                    .map(|m| m.permissions().readonly())
+                    .unwrap_or(true)
+                {
+                    writeln!(writer, "{}", InitError::NotWritable(typed.clone()))?;
+                    write!(writer, "Enter a different path: ")?;
+                    writer.flush()?;
+                    let second = prompt_line(&mut reader)?;
+                    let second_path = PathBuf::from(&second);
+                    validate_path(&second_path)?;
+                    chosen = second_path;
+                } else {
+                    chosen = typed;
+                }
+            }
         }
     }
 
-    // Check if already initialized at chosen path
-    let mind_root_path = chosen.join(".mind-root");
-    if mind_root_path.exists() {
+    // ── Common path: chosen is resolved and validated ──────────────────
+
+    let repos = git_repo_subdirs(&chosen);
+    let repo_count = repos.len();
+
+    // Show git repos at chosen path (interactive modes only — silent in --yes).
+    if step_total > 0 {
+        writeln!(writer, "→ {}", chosen.display())?;
+        let display_count = repo_count.min(4);
+        for repo in repos.iter().take(display_count) {
+            let name = repo.file_name().unwrap_or_default().to_string_lossy();
+            writeln!(writer, "    {}/  \u{2713} git repo", name)?;
+        }
+        if repo_count > 4 {
+            writeln!(writer, "    ... and {} more", repo_count - 4)?;
+        }
+        writeln!(writer)?;
+    }
+
+    // No git repos warning — not a hard error, but warn and confirm.
+    if repo_count == 0 && step_total > 0 {
         write!(
             writer,
-            "Already initialized at {}. Reinitialize? [y/N]: ",
-            chosen.display()
+            "[{}/{}] No git repos found here. Continue anyway? [y/N]: ",
+            step_current, step_total
         )?;
         writer.flush()?;
         let response = prompt_line(&mut reader)?;
         if !response.eq_ignore_ascii_case("y") {
             return Err(InitError::Aborted);
         }
+        step_current += 1;
+    }
+
+    // Check if already initialized at chosen path.
+    let mind_root_path = chosen.join(".mind-root");
+    if mind_root_path.exists() {
+        if step_total > 0 {
+            write!(
+                writer,
+                "[{}/{}] Already initialized at {}. Reinitialize? [y/N]: ",
+                step_current,
+                step_total,
+                chosen.display()
+            )?;
+            writer.flush()?;
+            let response = prompt_line(&mut reader)?;
+            if !response.eq_ignore_ascii_case("y") {
+                return Err(InitError::Aborted);
+            }
+            step_current += 1;
+            writeln!(
+                writer,
+                "[{}/{}] Writing workspace files...",
+                step_current, step_total
+            )?;
+        }
         return do_reinit(&chosen, &mut writer);
     }
 
-    // Confirm placement
-    write!(writer, "Place .mind-root here? [Y/n]: ")?;
-    writer.flush()?;
-    let response = prompt_line(&mut reader)?;
-    if response.eq_ignore_ascii_case("n") {
-        return Err(InitError::Aborted);
+    // Confirm placement.
+    if step_total > 0 {
+        write!(
+            writer,
+            "[{}/{}] Place .mind-root here? [Y/n]: ",
+            step_current, step_total
+        )?;
+        writer.flush()?;
+        let response = prompt_line(&mut reader)?;
+        if response.eq_ignore_ascii_case("n") {
+            return Err(InitError::Aborted);
+        }
     }
 
     do_init(&chosen, &mut writer)
@@ -385,7 +516,7 @@ mod tests {
         let input = "\n\n";
         let mut output = Vec::new();
 
-        run_with_io(root.path(), input.as_bytes(), &mut output).unwrap();
+        run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
 
         // .mind-root exists at root and is zero bytes
         let mind_root = root.path().join(".mind-root");
@@ -443,7 +574,7 @@ mod tests {
         let input = "\ny\n";
         let mut output = Vec::new();
 
-        run_with_io(root.path(), input.as_bytes(), &mut output).unwrap();
+        run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
 
         // config.json was overwritten with valid content
         let config_path = root.path().join(".mind").join("config.json");
@@ -471,11 +602,11 @@ mod tests {
         let start = std::env::current_dir().unwrap();
         let nonexistent = "/nonexistent/path/that/does/not/exist/9f3k2j1";
 
-        // Input: type non-existent path at workspace root prompt
+        // Input: type non-existent path at workspace root prompt, then EOF for retry
         let input = format!("{}\n", nonexistent);
         let mut output = Vec::new();
 
-        let result = run_with_io(&start, input.as_bytes(), &mut output);
+        let result = run_with_io(&start, input.as_bytes(), &mut output, false, None);
 
         match result {
             Err(InitError::DirectoryNotFound(p)) => {
@@ -511,7 +642,7 @@ mod tests {
         let input = "\nn\n";
         let mut output = Vec::new();
 
-        let result = run_with_io(root.path(), input.as_bytes(), &mut output);
+        let result = run_with_io(root.path(), input.as_bytes(), &mut output, false, None);
 
         assert!(
             matches!(result, Err(InitError::Aborted)),
@@ -524,6 +655,223 @@ mod tests {
         assert_eq!(
             content, original_config,
             "config.json must be unchanged after declining"
+        );
+    }
+
+    // ── MX-003 new tests ──────────────────────────────────────────────
+
+    /// Step indicator: wizard prompts include [N/M] prefix.
+    /// Happy path (has repos, no reinit) → [1/2] and [2/2].
+    #[test]
+    fn test_step_indicator_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        make_git_repo(&root.path().join("repo-a"));
+        make_git_repo(&root.path().join("repo-b"));
+
+        let input = "\n\n"; // accept workspace (Enter), accept place (Enter)
+        let mut output = Vec::new();
+
+        run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("[1/2]"),
+            "output must contain '[1/2]', got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("[2/2]"),
+            "output must contain '[2/2]', got:\n{}",
+            out
+        );
+    }
+
+    /// Error retry succeeds: first path does not exist, second path is valid.
+    /// Verifies: wizard completes successfully and .mind-root created at second path.
+    #[test]
+    fn test_error_retry_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        make_git_repo(&root.path().join("repo-a"));
+
+        // A second valid dir for the retry
+        let second = tempfile::tempdir().unwrap();
+        make_git_repo(&second.path().join("repo-x"));
+
+        // Wizard starts at `root`, so detect_candidate(root) → root.
+        // Input: type nonexistent path → retry with second path → accept place
+        let input = format!("/nonexistent/path/9f3k2j1\n{}\n\n", second.path().display());
+        let mut output = Vec::new();
+
+        // start = root, but user types second.path() as the override
+        run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
+
+        // .mind-root must be at second path (where user retried to)
+        assert!(
+            second.path().join(".mind-root").exists(),
+            ".mind-root must exist at retry path"
+        );
+        // NOT at root
+        assert!(
+            !root.path().join(".mind-root").exists(),
+            ".mind-root must NOT exist at original root"
+        );
+    }
+
+    /// Error retry fails: both paths do not exist → returns DirectoryNotFound (no infinite loop).
+    #[test]
+    fn test_error_retry_fails() {
+        let root = tempfile::tempdir().unwrap();
+        make_git_repo(&root.path().join("repo-a"));
+
+        // Input: first nonexistent, retry also nonexistent
+        let input = "/nonexistent/path/first\n/nonexistent/path/second\n";
+        let mut output = Vec::new();
+
+        let result = run_with_io(root.path(), input.as_bytes(), &mut output, false, None);
+
+        assert!(
+            matches!(result, Err(InitError::DirectoryNotFound(_))),
+            "expected DirectoryNotFound after two failed attempts, got: {:?}",
+            result
+        );
+
+        // Verify the output shows the error and retry prompt (not looped again)
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("Enter a different path:"),
+            "output must contain retry prompt, got:\n{}",
+            out
+        );
+    }
+
+    /// --yes accepts detected root without prompting.
+    /// Verifies: .mind-root created, no workspace prompt in output.
+    #[test]
+    fn test_yes_accepts_detected_root() {
+        let root = tempfile::tempdir().unwrap();
+        make_git_repo(&root.path().join("repo-a"));
+
+        let mut output = Vec::new();
+        // No input needed — --yes skips all prompts
+        run_with_io(root.path(), "".as_bytes(), &mut output, true, None).unwrap();
+
+        assert!(
+            root.path().join(".mind-root").exists(),
+            ".mind-root must exist after --yes init"
+        );
+
+        // No step indicator or workspace prompt in output
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            !out.contains("[1/"),
+            "output must not contain step indicators when --yes is set, got:\n{}",
+            out
+        );
+        assert!(
+            !out.contains("Workspace root ["),
+            "output must not contain workspace prompt when --yes is set, got:\n{}",
+            out
+        );
+    }
+
+    /// --yes with no detectable candidate → actionable error.
+    /// A tempdir with no git repos is not a valid workspace candidate.
+    #[test]
+    fn test_yes_no_candidate_errors() {
+        // Tempdir with no git repo subdirs — detect_candidate falls back to start.
+        // is_workspace_candidate(start) = !is_git_repo && count_git_repos > 0 = false.
+        let root = tempfile::tempdir().unwrap();
+        // Do NOT create any git repos under root.
+
+        let mut output = Vec::new();
+        let result = run_with_io(root.path(), "".as_bytes(), &mut output, true, None);
+
+        assert!(
+            matches!(result, Err(InitError::NoCandidate)),
+            "expected NoCandidate, got: {:?}",
+            result
+        );
+
+        // Error message must be actionable
+        let msg = format!("{}", InitError::NoCandidate);
+        assert!(
+            msg.contains("--path"),
+            "NoCandidate message must mention --path, got: {}",
+            msg
+        );
+    }
+
+    /// --path skips detection and uses the given path.
+    /// Verifies: .mind-root created at explicit path, no "Detecting" output.
+    #[test]
+    fn test_path_skips_detection() {
+        let explicit = tempfile::tempdir().unwrap();
+        make_git_repo(&explicit.path().join("repo-a"));
+
+        // start is a different dir (does not matter since --path overrides)
+        let start = tempfile::tempdir().unwrap();
+
+        // Input: accept place confirmation (Enter)
+        let input = "\n";
+        let mut output = Vec::new();
+
+        run_with_io(
+            start.path(),
+            input.as_bytes(),
+            &mut output,
+            false,
+            Some(explicit.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        assert!(
+            explicit.path().join(".mind-root").exists(),
+            ".mind-root must exist at explicit path"
+        );
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            !out.contains("Detecting workspace root"),
+            "output must not contain detection text when --path is set, got:\n{}",
+            out
+        );
+    }
+
+    /// --yes --path uses explicit path and emits no prompts.
+    /// Verifies: .mind-root created, no step indicators or prompt text.
+    #[test]
+    fn test_yes_and_path_together() {
+        let explicit = tempfile::tempdir().unwrap();
+        make_git_repo(&explicit.path().join("repo-a"));
+
+        let start = tempfile::tempdir().unwrap();
+
+        let mut output = Vec::new();
+        // No input needed — both --yes and --path skip all prompts
+        run_with_io(
+            start.path(),
+            "".as_bytes(),
+            &mut output,
+            true,
+            Some(explicit.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        assert!(
+            explicit.path().join(".mind-root").exists(),
+            ".mind-root must exist after --yes --path init"
+        );
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            !out.contains("[1/"),
+            "output must not contain step indicators when --yes --path is set, got:\n{}",
+            out
+        );
+        assert!(
+            !out.contains("Detecting workspace root"),
+            "output must not contain detection text, got:\n{}",
+            out
         );
     }
 }
