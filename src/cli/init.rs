@@ -195,6 +195,29 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     do_init(&chosen, &mut writer)
 }
 
+/// Default `.mindacked` content written by `mind init`.
+///
+/// Contains a comment header explaining the syntax and purpose.
+/// No patterns are included by default — the list starts empty.
+/// AccelMars-specific paths are NOT included — open code must not contain
+/// AccelMars workspace vocabulary.
+///
+/// Note: `.mindignore` (exclude from index) and `.mindacked` (suppress output) are
+/// orthogonal. A path in both is valid; `.mindignore` wins (not scanned = no refs).
+/// Adding the same path to `.mindacked` is harmless but redundant.
+const DEFAULT_MINDACKED: &str = "\
+# .mindacked — acknowledged broken references (deferred repair)
+# Source paths matching these patterns will have their broken outbound refs
+# suppressed from `mind file validate` output.
+# Syntax follows .gitignore rules (https://git-scm.com/docs/gitignore)
+# A pattern without / matches at any depth. /pattern anchors to workspace root.
+#
+# Files matching these patterns remain fully indexed — they are still valid
+# reference targets. This list represents repair debt — review it periodically.
+# Note: .mindignore (exclude from index) and .mindacked (suppress output) are
+# orthogonal. A path in both is valid; .mindignore wins (not scanned = no refs).
+";
+
 /// Default `.mindignore` content written by `mind init`.
 ///
 /// Contains sensible defaults (node_modules/, target/).
@@ -229,6 +252,20 @@ fn ensure_mindignore(path: &Path) -> Result<bool, InitError> {
     }
 }
 
+/// Write `.mindacked` at `path` if it does not already exist.
+///
+/// Returns `true` if the file was created, `false` if it already existed and was skipped.
+/// Never overwrites an existing `.mindacked` — users may have customized it.
+fn ensure_mindacked(path: &Path) -> Result<bool, InitError> {
+    let mindacked_path = path.join(".mindacked");
+    if mindacked_path.exists() {
+        Ok(false)
+    } else {
+        std::fs::write(&mindacked_path, DEFAULT_MINDACKED)?;
+        Ok(true)
+    }
+}
+
 /// Execute fresh initialization at `path`.
 fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     // a. Create .mind-root as empty file (zero bytes)
@@ -247,7 +284,10 @@ fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     // d. Write .mindignore at workspace root (only if not already present)
     let mindignore_created = ensure_mindignore(path)?;
 
-    // e. Confirmation output
+    // e. Write .mindacked at workspace root (only if not already present)
+    let mindacked_created = ensure_mindacked(path)?;
+
+    // f. Confirmation output
     writeln!(writer, "\u{2192} Created  .mind-root")?;
     writeln!(
         writer,
@@ -257,6 +297,11 @@ fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
         writeln!(writer, "\u{2192} Created  .mindignore")?;
     } else {
         writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+    }
+    if mindacked_created {
+        writeln!(writer, "\u{2192} Created  .mindacked")?;
+    } else {
+        writeln!(writer, "\u{2192} Skipped  .mindacked (already exists)")?;
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
@@ -292,6 +337,9 @@ fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     // Write .mindignore if not present (safe to add to existing workspaces)
     let mindignore_created = ensure_mindignore(path)?;
 
+    // Write .mindacked if not present (safe to add to existing workspaces)
+    let mindacked_created = ensure_mindacked(path)?;
+
     writeln!(
         writer,
         "\u{2192} Created  .mind/config.json  {{\"schema_version\": \"1\"}}"
@@ -300,6 +348,11 @@ fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
         writeln!(writer, "\u{2192} Created  .mindignore")?;
     } else {
         writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+    }
+    if mindacked_created {
+        writeln!(writer, "\u{2192} Created  .mindacked")?;
+    } else {
+        writeln!(writer, "\u{2192} Skipped  .mindacked (already exists)")?;
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
