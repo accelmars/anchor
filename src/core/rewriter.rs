@@ -36,7 +36,7 @@ pub fn apply_rewrites(content: &str, entries: &[RewriteEntry]) -> String {
 /// - `anchor`: optional anchor fragment to append (e.g. `"section-heading"`)
 ///
 /// # Returns
-/// The new raw path string for inside `[text](...)`, e.g. `"../../people/anna/SKILL.md"`.
+/// The new raw path string for inside `[text](...)`, e.g. `"../../docs/guide.md"`.
 pub fn compute_form1_new_text(
     source_file: &CanonicalPath,
     dst: &CanonicalPath,
@@ -136,10 +136,10 @@ mod tests {
     fn test_form1_cross_directory() {
         let rel = compute_form1_new_text(
             &"projects/foo/notes.md".to_string(),
-            &"people/anna/SKILL.md".to_string(),
+            &"docs/guide.md".to_string(),
             &None,
         );
-        assert_eq!(rel, "../../people/anna/SKILL.md");
+        assert_eq!(rel, "../../docs/guide.md");
     }
 
     /// Source at workspace root — no leading `..` in relative path.

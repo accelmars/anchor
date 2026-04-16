@@ -93,11 +93,11 @@ mod tests {
 
         let manifest = Manifest {
             op: "file_mv".to_string(),
-            src: "projects/pact-oss-launch".to_string(),
-            dst: "projects/archive/pact-oss-launch".to_string(),
+            src: "projects/foo".to_string(),
+            dst: "projects/archive/foo".to_string(),
             rewrites: vec![
-                "accelmars-guild/CLAUDE.md".to_string(),
-                "projects/os-council/STATUS.md".to_string(),
+                "my-workspace/CLAUDE.md".to_string(),
+                "projects/team/STATUS.md".to_string(),
             ],
             phase: "PLAN".to_string(),
         };
@@ -110,8 +110,8 @@ mod tests {
             "phase must survive serialize/deserialize roundtrip"
         );
         assert_eq!(read_back.op, "file_mv");
-        assert_eq!(read_back.src, "projects/pact-oss-launch");
-        assert_eq!(read_back.dst, "projects/archive/pact-oss-launch");
+        assert_eq!(read_back.src, "projects/foo");
+        assert_eq!(read_back.dst, "projects/archive/foo");
         assert_eq!(read_back.rewrites.len(), 2);
     }
 

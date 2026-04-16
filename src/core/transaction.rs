@@ -157,7 +157,7 @@ fn remap_path(
 ///
 /// Both arguments are workspace-root-relative canonical paths. The result is the
 /// relative path string that should appear in a Markdown Form 1 reference
-/// (e.g. `"../../people/anna/SKILL.md"`).
+/// (e.g. `"../../docs/guide.md"`).
 fn compute_relative_path(from_file: &CanonicalPath, to_file: &CanonicalPath) -> String {
     // Determine the directory containing from_file
     let from_dir: Vec<&str> = match from_file.rfind('/') {
@@ -668,18 +668,18 @@ mod tests {
         let dst = "projects/archive/foo".to_string();
 
         // External file (target of the reference)
-        write_file(root, "people/anna/SKILL.md", "# Anna\n");
+        write_file(root, "docs/guide.md", "# Guide\n");
 
         // File INSIDE src that references the external file (Case B)
-        // From "projects/foo/notes.md", path to "people/anna/SKILL.md" is "../../people/anna/SKILL.md"
+        // From "projects/foo/notes.md", path to "docs/guide.md" is "../../docs/guide.md"
         write_file(
             root,
             "projects/foo/notes.md",
-            "See [Anna](../../people/anna/SKILL.md).\n",
+            "See [guide](../../docs/guide.md).\n",
         );
 
         let workspace_files = vec![
-            "people/anna/SKILL.md".to_string(),
+            "docs/guide.md".to_string(),
             "projects/foo/notes.md".to_string(),
         ];
 
@@ -693,13 +693,13 @@ mod tests {
             "entry must be in the inside-src file"
         );
         assert!(
-            entry.old_text.contains("../../people/anna/SKILL.md"),
+            entry.old_text.contains("../../docs/guide.md"),
             "old_text must contain old relative path, got: {}",
             entry.old_text
         );
-        // After move: "projects/archive/foo/notes.md" → "../../../people/anna/SKILL.md"
+        // After move: "projects/archive/foo/notes.md" → "../../../docs/guide.md"
         assert!(
-            entry.new_text.contains("people/anna/SKILL.md"),
+            entry.new_text.contains("docs/guide.md"),
             "new_text must reference the external target, got: {}",
             entry.new_text
         );
@@ -749,7 +749,7 @@ mod tests {
         // Same prefix but different name — must NOT match (projects/foobar != projects/foo/)
         assert!(!inside_src(&"projects/foobar.md".to_string(), &src));
         // Completely different path
-        assert!(!inside_src(&"people/anna/SKILL.md".to_string(), &src));
+        assert!(!inside_src(&"docs/guide.md".to_string(), &src));
     }
 
     /// Verify compute_relative_path produces correct relative paths.
@@ -769,9 +769,9 @@ mod tests {
         assert_eq!(
             compute_relative_path(
                 &"projects/foo/source.md".to_string(),
-                &"people/anna/SKILL.md".to_string()
+                &"docs/guide.md".to_string()
             ),
-            "../../people/anna/SKILL.md"
+            "../../docs/guide.md"
         );
         // Source at root level
         assert_eq!(
