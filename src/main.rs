@@ -37,9 +37,22 @@ enum Commands {
 #[derive(Subcommand)]
 enum FileCommands {
     /// Move a file or directory, rewriting all references
-    Mv { src: String, dst: String },
+    Mv {
+        src: String,
+        dst: String,
+        /// Print a human-readable confirmation on success
+        #[arg(long)]
+        verbose: bool,
+        /// Output format for machine consumers (mutually exclusive with --verbose)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
     /// Detect all broken references in the workspace
-    Validate,
+    Validate {
+        /// Output format (default: human-readable)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
     /// List all files referencing a given file
     Refs {
         file: String,
@@ -63,14 +76,23 @@ fn main() {
         },
         Commands::Root => cli::root::run(),
         Commands::File { subcommand } => match subcommand {
-            FileCommands::Mv { src, dst } => match cli::file::mv::run(&src, &dst) {
+            FileCommands::Mv {
+                src,
+                dst,
+                verbose,
+                format,
+            } => match cli::file::mv::run(&src, &dst, verbose, format) {
                 Ok(()) => 0,
+                Err(cli::file::mv::MvError::ConflictingFlags(_)) => {
+                    eprintln!("error: --verbose and --format are mutually exclusive");
+                    1
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     2
                 }
             },
-            FileCommands::Validate => cli::file::validate::run(),
+            FileCommands::Validate { format } => cli::file::validate::run(format),
             FileCommands::Refs { file, format } => cli::file::refs::run(&file, format),
         },
     };
