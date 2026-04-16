@@ -1,8 +1,14 @@
 // src/cli/file/mv.rs — mind file mv CLI entry point (MF-006)
+//
+// Atomicity is filesystem-level — the final rename() step is atomic on
+// same-filesystem moves. Cross-filesystem moves (different mount points) are
+// not atomic. Cross-filesystem atomicity is a Phase 2 concern.
 
+use crate::cli::file::refs::OutputFormat;
 use crate::core::{scanner, transaction};
 use crate::infra::{lock, temp, workspace};
 use crate::model::manifest::Manifest;
+use std::io::{self, Write};
 use std::process;
 
 /// Errors specific to the `mind file mv` command.
@@ -10,6 +16,7 @@ use std::process;
 pub enum MvError {
     SrcNotFound,
     DstExists,
+    ConflictingFlags(String),
     Lock(lock::LockError),
     Workspace(workspace::WorkspaceError),
     Scanner(scanner::ScannerError),
@@ -24,6 +31,7 @@ impl std::fmt::Display for MvError {
         match self {
             MvError::SrcNotFound => write!(f, "src not found"),
             MvError::DstExists => write!(f, "dst already exists"),
+            MvError::ConflictingFlags(msg) => write!(f, "{msg}"),
             MvError::Lock(e) => write!(f, "lock error: {e}"),
             MvError::Workspace(e) => write!(f, "workspace error: {e}"),
             MvError::Scanner(e) => write!(f, "scanner error: {e}"),
@@ -68,17 +76,27 @@ impl From<temp::TempError> for MvError {
 
 /// Execute `mind file mv <src> <dst>`.
 ///
-/// Returns Ok(()) on success. On failure: prints to stderr and exits with the
-/// appropriate exit code (1 = logical error, 2 = system error).
-///
-/// This function does NOT call process::exit directly — the caller (main.rs) handles the
-/// exit code. Errors are printed to stderr here for user-facing messages.
-pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
+/// Default (no flags): silent on success (exit 0, no output).
+/// `--verbose`: prints "Moved. Rewrote N references in M files." on success.
+/// `--format json`: prints JSON result on success.
+/// `--verbose` and `--format` are mutually exclusive.
+pub fn run(
+    src: &str,
+    dst: &str,
+    verbose: bool,
+    format: Option<OutputFormat>,
+) -> Result<(), MvError> {
+    // Flag mutual exclusion check at entry point — before any mutations
+    if verbose && format.is_some() {
+        return Err(MvError::ConflictingFlags(
+            "--verbose and --format are mutually exclusive".to_string(),
+        ));
+    }
+
     // ── Workspace discovery ──────────────────────────────────────────────────
     let workspace_root = workspace::find_workspace_root()?;
 
     // ── Resolve src and dst relative to workspace root ───────────────────────
-    // Both paths are treated as workspace-root-relative (or absolute).
     let src_canonical = normalize_path(&workspace_root, src);
     let dst_canonical = normalize_path(&workspace_root, dst);
 
@@ -101,9 +119,6 @@ pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
 
     // ── Scan workspace ────────────────────────────────────────────────────────
     let workspace_files = scanner::scan_workspace(&workspace_root)?;
-    let file_count = workspace_files.len();
-
-    print_progress(&format!("Scanning workspace... {file_count} files"));
 
     // ── PLAN ──────────────────────────────────────────────────────────────────
     let rewrite_plan = transaction::plan(
@@ -112,52 +127,19 @@ pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
         &dst_canonical,
         &workspace_files,
     )?;
+
+    // Counts needed for verbose/JSON output — available from PLAN phase
     let ref_count = rewrite_plan.entries.len();
-
-    // Count distinct files being rewritten
-    let files_updated: std::collections::HashSet<&str> = rewrite_plan
-        .entries
-        .iter()
-        .map(|e| e.file.as_str())
-        .collect();
-    let files_count = files_updated.len();
-
-    print_progress(&format!(
-        "Planning rewrites... {ref_count} references to update"
-    ));
-
-    // Print REWRITE lines (up to 4, then "... and N more")
-    let all_rewrite_lines: Vec<String> = rewrite_plan
-        .entries
-        .iter()
-        .map(|e| {
-            let line = byte_offset_to_line(
-                &std::fs::read_to_string(workspace_root.join(e.file.as_str())).unwrap_or_default(),
-                e.span.0,
-            );
-            format!("  REWRITE  {}:{}", e.file, line)
-        })
-        .collect::<std::collections::HashSet<_>>() // deduplicate by file:line
-        .into_iter()
-        .collect();
-
-    let mut sorted_lines = all_rewrite_lines;
-    sorted_lines.sort();
-
-    if sorted_lines.len() <= 4 {
-        for line in &sorted_lines {
-            println!("{line}");
-        }
-    } else {
-        for line in sorted_lines.iter().take(4) {
-            println!("{line}");
-        }
-        let more = sorted_lines.len() - 4;
-        println!("  ... and {more} more");
-    }
+    let files_count = {
+        let files_updated: std::collections::HashSet<&str> = rewrite_plan
+            .entries
+            .iter()
+            .map(|e| e.file.as_str())
+            .collect();
+        files_updated.len()
+    };
 
     // ── Create temp op dir + manifest ─────────────────────────────────────────
-    // Ensure .mind directory exists (created by `mind init`)
     let mind_dir = workspace_root.join(".mind");
     if !mind_dir.exists() {
         eprintln!("error: workspace not initialized. Run 'mind init' first.");
@@ -196,21 +178,16 @@ pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
     }
 
     // ── VALIDATE ──────────────────────────────────────────────────────────────
-    print_progress("Validating...");
-
     match transaction::validate(&workspace_root, &rewrite_plan, &op_dir) {
-        Ok(()) => {
-            println!(" ✓");
-        }
+        Ok(()) => {}
         Err(transaction::ValidationError::BrokenRefs(broken)) => {
-            println!();
-            println!();
-            println!("BROKEN REFERENCES AFTER REWRITE ({}):", broken.len());
+            eprintln!();
+            eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", broken.len());
             for b in &broken {
-                println!("  {}:{} → {}  (not found)", b.file, b.line, b.target);
+                eprintln!("  {}:{} → {}  (not found)", b.file, b.line, b.target);
             }
-            println!();
-            println!("Rolled back. No changes applied.");
+            eprintln!();
+            eprintln!("Rolled back. No changes applied.");
             transaction::rollback(&op_dir, lock_guard);
             process::exit(1);
         }
@@ -222,8 +199,6 @@ pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
     }
 
     // ── COMMIT ────────────────────────────────────────────────────────────────
-    print_progress("Committing...");
-
     if let Err(e) = transaction::commit(
         &workspace_root,
         &rewrite_plan,
@@ -235,12 +210,65 @@ pub fn run(src: &str, dst: &str) -> Result<(), MvError> {
         process::exit(2);
     }
 
-    println!("  ✓");
-    println!();
-    println!("Done. Moved: {src_canonical} → {dst_canonical}");
-    println!("{ref_count} references updated across {files_count} files.");
+    // ── Output ────────────────────────────────────────────────────────────────
+    if verbose {
+        write_verbose_output(
+            &mut io::stdout(),
+            &src_canonical,
+            &dst_canonical,
+            ref_count,
+            files_count,
+        )
+        .ok();
+    } else if format == Some(OutputFormat::Json) {
+        write_json_output(
+            &mut io::stdout(),
+            &src_canonical,
+            &dst_canonical,
+            ref_count,
+            files_count,
+        )
+        .ok();
+    }
+    // Default (no flags): silent on success
 
     Ok(())
+}
+
+/// Write the human-readable verbose success summary.
+fn write_verbose_output<W: Write>(
+    w: &mut W,
+    _src: &str,
+    _dst: &str,
+    refs_rewritten: usize,
+    files_touched: usize,
+) -> io::Result<()> {
+    writeln!(
+        w,
+        "Moved. Rewrote {refs_rewritten} references in {files_touched} files."
+    )
+}
+
+/// Write the JSON success output.
+///
+/// PHASE 2 STABLE CONTRACT: This JSON schema is a stable interface for AI agents and
+/// machine consumers. Do not change field names without a design session.
+/// Schema: {"moved":true,"refs_rewritten":N,"files_touched":M,"src":"...","dst":"..."}
+fn write_json_output<W: Write>(
+    w: &mut W,
+    src: &str,
+    dst: &str,
+    refs_rewritten: usize,
+    files_touched: usize,
+) -> io::Result<()> {
+    let output = serde_json::json!({
+        "moved": true,
+        "refs_rewritten": refs_rewritten,
+        "files_touched": files_touched,
+        "src": src,
+        "dst": dst,
+    });
+    writeln!(w, "{output}")
 }
 
 /// Normalize a user-provided path to a workspace-root-relative canonical path.
@@ -254,7 +282,6 @@ fn normalize_path(workspace_root: &std::path::Path, path: &str) -> String {
             .map(|rel| rel.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_string())
     } else {
-        // Normalize forward slashes and strip leading ./
         let normalized = path.replace('\\', "/");
         normalized
             .strip_prefix("./")
@@ -263,18 +290,43 @@ fn normalize_path(workspace_root: &std::path::Path, path: &str) -> String {
     }
 }
 
-/// Print progress text without a trailing newline, flushing stdout immediately.
-fn print_progress(msg: &str) {
-    use std::io::Write;
-    print!("{msg}");
-    let _ = std::io::stdout().flush();
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Convert a byte offset in `content` to a 1-based line number.
-fn byte_offset_to_line(content: &str, byte_offset: usize) -> usize {
-    content[..byte_offset.min(content.len())]
-        .chars()
-        .filter(|&c| c == '\n')
-        .count()
-        + 1
+    /// `--verbose` output contains the confirmation summary with correct counts.
+    #[test]
+    fn test_mv_verbose_emits_confirmation() {
+        let mut out = Vec::new();
+        write_verbose_output(&mut out, "projects/foo", "projects/archive/foo", 12, 5).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.contains("Moved. Rewrote 12 references in 5 files."),
+            "verbose output must contain summary, got: {s}"
+        );
+    }
+
+    /// `--format json` output is valid JSON with all required fields and correct values.
+    #[test]
+    fn test_mv_format_json_success() {
+        let mut out = Vec::new();
+        write_json_output(&mut out, "projects/foo", "projects/archive/foo", 12, 5).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(s.trim()).unwrap();
+        assert_eq!(parsed["moved"], true);
+        assert_eq!(parsed["refs_rewritten"], 12);
+        assert_eq!(parsed["files_touched"], 5);
+        assert_eq!(parsed["src"], "projects/foo");
+        assert_eq!(parsed["dst"], "projects/archive/foo");
+    }
+
+    /// `--verbose` and `--format json` together return an error before any filesystem operations.
+    #[test]
+    fn test_mv_verbose_and_json_errors() {
+        let result = run("anything", "anywhere", true, Some(OutputFormat::Json));
+        assert!(
+            matches!(result, Err(MvError::ConflictingFlags(_))),
+            "both flags must return ConflictingFlags error"
+        );
+    }
 }

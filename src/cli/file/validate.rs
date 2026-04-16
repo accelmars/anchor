@@ -8,14 +8,23 @@
 //   1 = broken references found
 //   2 = system error (I/O, workspace not found)
 
+use crate::cli::file::refs::OutputFormat;
 use crate::core::{acked::AckedPatterns, parser, resolver, scanner};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
+/// Result of scanning the workspace for broken references.
+struct ValidateResult {
+    files_scanned: usize,
+    /// Unresolved (non-acknowledged) broken refs: (file, line, raw_target)
+    broken: Vec<(String, usize, String)>,
+    acknowledged: usize,
+}
+
 /// Execute `mind file validate`. Returns exit code for process::exit.
-pub fn run() -> i32 {
+pub fn run(format: Option<OutputFormat>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -23,13 +32,29 @@ pub fn run() -> i32 {
             return 2;
         }
     };
-    run_on_root(&workspace_root)
+    run_on_root(&workspace_root, format)
 }
 
 /// Core validate logic on an explicit workspace root. Public for integration testing.
-pub fn run_on_root(workspace_root: &Path) -> i32 {
+pub fn run_on_root(workspace_root: &Path, format: Option<OutputFormat>) -> i32 {
     match do_validate(workspace_root) {
-        Ok(clean) => {
+        Ok(result) => {
+            let clean = result.broken.is_empty();
+            if format == Some(OutputFormat::Json) {
+                // PHASE 2 STABLE CONTRACT: This JSON schema is a stable interface for AI agents
+                // and machine consumers. Do not change field names without a design session.
+                // Schema: {"clean":bool,"files_scanned":N,"broken":[{"file":"...","line":N,"ref":"..."}],"acknowledged":N}
+                match write_json_output(&mut io::stdout(), &result) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("error writing output: {e}");
+                        return 2;
+                    }
+                }
+            } else if let Err(e) = write_human_output(&mut io::stdout(), workspace_root, &result) {
+                eprintln!("error writing output: {e}");
+                return 2;
+            }
             if clean {
                 0
             } else {
@@ -43,16 +68,14 @@ pub fn run_on_root(workspace_root: &Path) -> i32 {
     }
 }
 
-/// Returns Ok(true) = clean, Ok(false) = broken refs found, Err = system error.
-fn do_validate(workspace_root: &Path) -> Result<bool, String> {
+/// Scan workspace and return broken reference data. Returns Err on system errors.
+fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
     let files =
         scanner::scan_workspace(workspace_root).map_err(|e| format!("scanner error: {e}"))?;
     let file_count = files.len();
 
-    // Load acknowledged patterns once before the main loop.
     let acked = AckedPatterns::load(workspace_root);
-
-    let mut broken: Vec<(String, usize, String)> = Vec::new(); // (file, line, raw_display)
+    let mut broken: Vec<(String, usize, String)> = Vec::new();
 
     for file_path in &files {
         let abs_path = workspace_root.join(file_path.as_str());
@@ -76,7 +99,6 @@ fn do_validate(workspace_root: &Path) -> Result<bool, String> {
                         continue;
                     }
                     resolver::ResolveResult::Ambiguous(_) => {
-                        // Ambiguous wiki link: not a broken ref — skip
                         continue;
                     }
                 },
@@ -96,50 +118,88 @@ fn do_validate(workspace_root: &Path) -> Result<bool, String> {
         }
     }
 
-    // Partition broken refs into acknowledged and unresolved.
     let (acked_refs, unresolved): (Vec<_>, Vec<_>) = broken
         .into_iter()
         .partition(|(file, _, _)| acked.is_acked(file));
-    let acked_count = acked_refs.len();
-    let unresolved_count = unresolved.len();
+
+    Ok(ValidateResult {
+        files_scanned: file_count,
+        broken: unresolved,
+        acknowledged: acked_refs.len(),
+    })
+}
+
+/// Write human-readable output to `w`.
+fn write_human_output<W: Write>(
+    w: &mut W,
+    workspace_root: &Path,
+    result: &ValidateResult,
+) -> io::Result<()> {
+    let unresolved_count = result.broken.len();
+    let acked_count = result.acknowledged;
+    let file_count = result.files_scanned;
 
     if unresolved_count == 0 {
         if acked_count == 0 {
-            println!("✓ {file_count} files scanned. No broken references.");
+            writeln!(w, "✓ {file_count} files scanned. No broken references.")
         } else {
-            println!(
+            writeln!(
+                w,
                 "✓ {file_count} files scanned. No broken references.  \
                  ({acked_count} acknowledged — see .mindacked)"
-            );
+            )
         }
-        Ok(true)
     } else {
-        // Print header (03-COMMANDS.md §Output — broken refs found)
         let workspace_str = workspace_root.display().to_string();
-        if std::io::stdout().is_terminal() {
-            println!("Scanning workspace: \x1b[36m{workspace_str}\x1b[0m  ({file_count} files)");
+        if io::stdout().is_terminal() {
+            writeln!(
+                w,
+                "Scanning workspace: \x1b[36m{workspace_str}\x1b[0m  ({file_count} files)"
+            )?;
         } else {
-            println!("Scanning workspace: {workspace_str}  ({file_count} files)");
+            writeln!(
+                w,
+                "Scanning workspace: {workspace_str}  ({file_count} files)"
+            )?;
         }
 
-        println!();
-        println!("BROKEN REFERENCES ({unresolved_count}):");
-        println!();
-        for (file, line, raw) in &unresolved {
-            println!("  {file}:{line}");
-            println!("    → {raw}  (not found)");
-            println!();
+        writeln!(w)?;
+        writeln!(w, "BROKEN REFERENCES ({unresolved_count}):")?;
+        writeln!(w)?;
+        for (file, line, raw) in &result.broken {
+            writeln!(w, "  {file}:{line}")?;
+            writeln!(w, "    → {raw}  (not found)")?;
+            writeln!(w)?;
         }
         if acked_count > 0 {
-            println!(
+            writeln!(
+                w,
                 "{unresolved_count} broken references in {file_count} files.  \
                  ({acked_count} acknowledged — see .mindacked)"
-            );
+            )
         } else {
-            println!("{unresolved_count} broken references in {file_count} files.");
+            writeln!(
+                w,
+                "{unresolved_count} broken references in {file_count} files."
+            )
         }
-        Ok(false)
     }
+}
+
+/// Write JSON output to `w`.
+fn write_json_output<W: Write>(w: &mut W, result: &ValidateResult) -> io::Result<()> {
+    let broken: Vec<serde_json::Value> = result
+        .broken
+        .iter()
+        .map(|(file, line, raw)| serde_json::json!({"file": file, "line": line, "ref": raw}))
+        .collect();
+    let output = serde_json::json!({
+        "clean": result.broken.is_empty(),
+        "files_scanned": result.files_scanned,
+        "broken": broken,
+        "acknowledged": result.acknowledged,
+    });
+    writeln!(w, "{output}")
 }
 
 /// Convert a byte offset in `content` to a 1-based line number.
@@ -165,46 +225,46 @@ mod tests {
         fs::write(full, content).unwrap();
     }
 
-    /// .mindacked absent → broken refs still reported (Ok(false)).
-    /// Output is unchanged from pre-MF-010 behavior — no acked count line.
+    /// .mindacked absent → broken refs still reported (unresolved non-empty).
     #[test]
     fn test_no_mindacked_broken_refs_reported() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "source.md", "[broken](missing.md)\n");
-        let result = do_validate(tmp.path());
+        let result = do_validate(tmp.path()).unwrap();
         assert!(
-            matches!(result, Ok(false)),
+            !result.broken.is_empty(),
             "broken refs must be reported when no .mindacked exists"
         );
     }
 
-    /// .mindacked pattern matches source file → broken refs suppressed (Ok(true)).
+    /// .mindacked pattern matches source file → broken refs suppressed (broken empty).
     #[test]
     fn test_mindacked_matches_source_suppresses_broken_refs() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "archive/old.md", "[broken](missing.md)\n");
         fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
-        let result = do_validate(tmp.path());
+        let result = do_validate(tmp.path()).unwrap();
         assert!(
-            matches!(result, Ok(true)),
-            "broken refs from acked source must be suppressed from output"
+            result.broken.is_empty(),
+            "broken refs from acked source must be suppressed"
         );
+        assert_eq!(result.acknowledged, 1);
     }
 
-    /// .mindacked pattern does NOT match source → refs still reported (Ok(false)).
+    /// .mindacked pattern does NOT match source → refs still reported.
     #[test]
     fn test_mindacked_non_matching_pattern_refs_still_reported() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "active/current.md", "[broken](missing.md)\n");
         fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
-        let result = do_validate(tmp.path());
+        let result = do_validate(tmp.path()).unwrap();
         assert!(
-            matches!(result, Ok(false)),
+            !result.broken.is_empty(),
             "broken refs from non-acked source must still be reported"
         );
     }
 
-    /// All broken refs acknowledged → exit code 0 (Ok(true)).
+    /// All broken refs acknowledged → broken empty, acknowledged count correct.
     #[test]
     fn test_all_broken_refs_acknowledged_exit_zero() {
         let tmp = TempDir::new().unwrap();
@@ -215,30 +275,71 @@ mod tests {
             "[also broken](missing-b.md)\n",
         );
         fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
-        let result = do_validate(tmp.path());
-        assert!(
-            matches!(result, Ok(true)),
-            "all acked → must return Ok(true) (exit code 0)"
-        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(result.broken.is_empty(), "all acked → broken must be empty");
+        assert_eq!(result.acknowledged, 2);
     }
 
-    /// Mixed: some acked, some unresolved → Ok(false) (exit code 1).
+    /// Mixed: some acked, some unresolved → broken non-empty.
     #[test]
     fn test_mixed_acked_and_unresolved_exit_one() {
         let tmp = TempDir::new().unwrap();
-        // archive/ is acked
         write_file(tmp.path(), "archive/old.md", "[broken](missing.md)\n");
-        // active/ is NOT acked → unresolved
         write_file(
             tmp.path(),
             "active/current.md",
             "[also broken](also-missing.md)\n",
         );
         fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
-        let result = do_validate(tmp.path());
+        let result = do_validate(tmp.path()).unwrap();
         assert!(
-            matches!(result, Ok(false)),
-            "unresolved refs still present → must return Ok(false) (exit code 1)"
+            !result.broken.is_empty(),
+            "unresolved refs still present → broken must be non-empty"
         );
+    }
+
+    /// `--format json` on a clean workspace outputs {"clean":true,...,"broken":[]}.
+    #[test]
+    fn test_validate_format_json_clean() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.md", "[link](b.md)\n");
+        write_file(tmp.path(), "b.md", "# B\n");
+        let result = do_validate(tmp.path()).unwrap();
+        let mut out = Vec::new();
+        write_json_output(&mut out, &result).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(
+            parsed["clean"], true,
+            "clean workspace must have clean:true"
+        );
+        assert!(
+            parsed["broken"].as_array().unwrap().is_empty(),
+            "broken array must be empty for clean workspace"
+        );
+        assert_eq!(parsed["files_scanned"], 2);
+        assert_eq!(parsed["acknowledged"], 0);
+    }
+
+    /// `--format json` with broken refs outputs populated `broken` array.
+    #[test]
+    fn test_validate_format_json_broken() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "docs/index.md", "[missing](../missing.md)\n");
+        let result = do_validate(tmp.path()).unwrap();
+        let mut out = Vec::new();
+        write_json_output(&mut out, &result).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(
+            parsed["clean"], false,
+            "broken workspace must have clean:false"
+        );
+        let broken_arr = parsed["broken"].as_array().unwrap();
+        assert!(!broken_arr.is_empty(), "broken array must be non-empty");
+        let entry = &broken_arr[0];
+        assert_eq!(entry["file"], "docs/index.md");
+        assert!(entry["line"].as_u64().unwrap() >= 1);
+        assert!(entry["ref"].as_str().is_some(), "ref field must be present");
     }
 }

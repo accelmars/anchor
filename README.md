@@ -81,23 +81,38 @@ mind file mv people/old-name.md people/new-name.md
 mind file mv projects/active/my-project projects/archive/my-project
 ```
 
-Output:
+Default (no flags): exits 0, no output on success.
+
+With `--verbose`:
 ```
-Scanning workspace... 1,247 files
-Planning rewrites... 12 references to update
+Moved. Rewrote 12 references in 10 files.
+```
 
-  REWRITE  docs/CLAUDE.md:47
-  REWRITE  projects/other/STATUS.md:83
-  ... and 10 more
-
-Validating... ✓
-Committing...  ✓
-
-Done. Moved: projects/active/my-project → projects/archive/my-project
-12 references updated across 10 files.
+With `--format json`:
+```json
+{"moved":true,"refs_rewritten":12,"files_touched":10,"src":"projects/active/my-project","dst":"projects/archive/my-project"}
 ```
 
 If validation fails after rewriting, the operation rolls back completely — workspace unchanged.
+
+> **Atomicity:** The final `rename()` step is atomic on same-filesystem moves. Cross-filesystem moves (different mount points) are not atomic. Cross-filesystem atomicity is a Phase 2 concern.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Print a human-readable confirmation on success. Mutually exclusive with `--format`. |
+| `--format json` | Output JSON result on success. For AI agents and scripts. Mutually exclusive with `--verbose`. |
+
+#### `--format json` schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `moved` | bool | Always `true` on success |
+| `refs_rewritten` | number | Number of reference rewrites applied |
+| `files_touched` | number | Number of distinct files whose content was updated |
+| `src` | string | Workspace-relative source path |
+| `dst` | string | Workspace-relative destination path |
 
 ---
 
@@ -125,6 +140,39 @@ BROKEN REFERENCES (2):
 ```
 
 Exit 0 = clean. Exit 1 = broken references found.
+
+#### `--format json`
+
+Output results as JSON for programmatic use (AI agents, scripts):
+
+```bash
+mind file validate --format json
+```
+
+Clean workspace:
+```json
+{"clean":true,"files_scanned":1247,"broken":[],"acknowledged":0}
+```
+
+With broken references:
+```json
+{
+  "clean": false,
+  "files_scanned": 1247,
+  "broken": [
+    {"file": "docs/guide.md", "line": 34, "ref": "../archive/old-project/"},
+    {"file": "people/alice/MIND.md", "line": 8, "ref": "../../archive/removed/"}
+  ],
+  "acknowledged": 3
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `clean` | bool | `true` if no unresolved broken references |
+| `files_scanned` | number | Total `.md` files scanned |
+| `broken` | array | Unresolved broken refs: `file` (workspace-relative), `line` (1-based), `ref` (raw target string) |
+| `acknowledged` | number | Broken refs suppressed by `.mindacked` patterns |
 
 ---
 
