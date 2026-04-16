@@ -187,8 +187,8 @@ fn test_refs_zero_references() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(
-        stdout, "No files reference b.md.",
-        "output must be exactly 'No files reference b.md.'"
+        stdout, "No references found.",
+        "output must be exactly 'No references found.'"
     );
 }
 
