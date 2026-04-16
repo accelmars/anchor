@@ -17,7 +17,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize a new mind workspace
-    Init,
+    Init {
+        /// Accept detected workspace root without prompting
+        #[arg(long)]
+        yes: bool,
+        /// Specify workspace path explicitly, skipping detection
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Print the workspace root path
     Root,
     /// File operations
@@ -46,7 +53,7 @@ fn main() {
     let cli = Cli::parse();
 
     let exit_code = match cli.command {
-        Commands::Init => match cli::init::run() {
+        Commands::Init { yes, path } => match cli::init::run(yes, path.as_deref()) {
             Ok(()) => 0,
             Err(cli::init::InitError::Aborted) => 0,
             Err(e) => {

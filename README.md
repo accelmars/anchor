@@ -45,10 +45,30 @@ mind init
 # Detecting workspace root...
 #   Candidate: /Users/you/projects/  (contains 5 git repos)
 #
-# Workspace root [/Users/you/projects/]: _
+# [1/2] Workspace root [/Users/you/projects/]: _
 ```
 
 Run once per machine. `.mind-root` is not committed to git.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--yes` | Accept the detected workspace root without prompting. Fully non-interactive — no prompts emitted, only the final success summary. |
+| `--path <dir>` | Use `<dir>` as the workspace root, skipping auto-detection. Validates that the path exists and is writable. |
+
+`--yes` and `--path` can be combined:
+
+```bash
+# Accept detected root non-interactively (CI, scripts)
+mind init --yes
+
+# Specify path explicitly (still prompts for confirmation)
+mind init --path /Users/you/projects
+
+# Fully non-interactive: specify path, skip all prompts
+mind init --yes --path /Users/you/projects
+```
 
 ---
 
