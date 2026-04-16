@@ -39,7 +39,7 @@ impl AckedPatterns {
     /// suppressed from validate output.
     ///
     /// `source_canonical` must be a workspace-root-relative canonical path
-    /// (forward slashes, no leading `./`), e.g. `"accelmars-guild/projects/archive/foo.md"`.
+    /// (forward slashes, no leading `./`), e.g. `"my-workspace/projects/archive/foo.md"`.
     ///
     /// Uses `matched_path_or_any_parents` so that directory patterns like `archive/`
     /// correctly suppress files inside the directory, not just the directory itself.
@@ -68,7 +68,7 @@ mod tests {
     fn test_absent_returns_false() {
         let tmp = TempDir::new().unwrap();
         let acked = AckedPatterns::load(tmp.path());
-        assert!(!acked.is_acked("accelmars-guild/projects/archive/foo.md"));
+        assert!(!acked.is_acked("my-workspace/projects/archive/foo.md"));
         assert!(!acked.is_acked("any/path.md"));
     }
 
@@ -76,32 +76,29 @@ mod tests {
     #[test]
     fn test_matching_pattern_returns_true() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "accelmars-guild/projects/archive/\n");
+        write_mindacked(tmp.path(), "my-workspace/projects/archive/\n");
         let acked = AckedPatterns::load(tmp.path());
-        assert!(acked.is_acked("accelmars-guild/projects/archive/old-contract.md"));
+        assert!(acked.is_acked("my-workspace/projects/archive/old-contract.md"));
     }
 
     /// Pattern does NOT match source → is_acked returns false.
     #[test]
     fn test_non_matching_pattern_returns_false() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "accelmars-guild/projects/archive/\n");
+        write_mindacked(tmp.path(), "my-workspace/projects/archive/\n");
         let acked = AckedPatterns::load(tmp.path());
-        assert!(!acked.is_acked("accelmars-guild/projects/active/current.md"));
+        assert!(!acked.is_acked("my-workspace/projects/active/current.md"));
     }
 
     /// Multiple patterns — each matched independently.
     #[test]
     fn test_multiple_patterns() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(
-            tmp.path(),
-            "accelmars-guild/projects/archive/\nschole-meta/\n",
-        );
+        write_mindacked(tmp.path(), "my-workspace/projects/archive/\nother-repo/\n");
         let acked = AckedPatterns::load(tmp.path());
-        assert!(acked.is_acked("accelmars-guild/projects/archive/foo.md"));
-        assert!(acked.is_acked("schole-meta/design/old.md"));
-        assert!(!acked.is_acked("accelmars-guild/active/current.md"));
+        assert!(acked.is_acked("my-workspace/projects/archive/foo.md"));
+        assert!(acked.is_acked("other-repo/design/old.md"));
+        assert!(!acked.is_acked("my-workspace/active/current.md"));
     }
 
     /// Empty .mindacked file → no patterns → is_acked always false.

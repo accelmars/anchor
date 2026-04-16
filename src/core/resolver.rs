@@ -101,7 +101,7 @@ pub fn resolve_form2(stem: &str, all_workspace_files: &[CanonicalPath]) -> Resol
 }
 
 /// Compute the stem (filename without `.md` extension) of a canonical path.
-/// e.g. `"projects/os-council/decisions/260415-decision.md"` → `"260415-decision"`
+/// e.g. `"docs/decisions/2026-decision.md"` → `"2026-decision"`
 fn stem_of(canonical: &str) -> &str {
     let filename = canonical.rsplit('/').next().unwrap_or(canonical);
     filename.strip_suffix(".md").unwrap_or(filename)
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_form2_zero_matches() {
         let workspace = vec![
-            "projects/os-council/STATUS.md".to_string(),
+            "projects/team/STATUS.md".to_string(),
             "people/noa-ishikawa/SKILL.md".to_string(),
         ];
         let result = resolve_form2("nonexistent-decision", &workspace);
@@ -165,13 +165,13 @@ mod tests {
     #[test]
     fn test_form2_one_match() {
         let workspace = vec![
-            "projects/os-council/decisions/260415-decision.md".to_string(),
+            "docs/decisions/2026-decision.md".to_string(),
             "people/noa-ishikawa/SKILL.md".to_string(),
         ];
-        let result = resolve_form2("260415-decision", &workspace);
+        let result = resolve_form2("2026-decision", &workspace);
         assert_eq!(
             result,
-            ResolveResult::Resolved("projects/os-council/decisions/260415-decision.md".to_string())
+            ResolveResult::Resolved("docs/decisions/2026-decision.md".to_string())
         );
     }
 

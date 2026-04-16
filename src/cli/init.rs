@@ -199,8 +199,7 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
 ///
 /// Contains a comment header explaining the syntax and purpose.
 /// No patterns are included by default — the list starts empty.
-/// AccelMars-specific paths are NOT included — open code must not contain
-/// AccelMars workspace vocabulary.
+/// Workspace-specific paths are NOT included as defaults — users add their own.
 ///
 /// Note: `.mindignore` (exclude from index) and `.mindacked` (suppress output) are
 /// orthogonal. A path in both is valid; `.mindignore` wins (not scanned = no refs).
@@ -222,8 +221,7 @@ const DEFAULT_MINDACKED: &str = "\
 ///
 /// Contains sensible defaults (node_modules/, target/).
 /// Includes a comment header explaining the syntax and Phase 1 scope.
-/// AccelMars-specific paths (e.g., __NOTES__/) are NOT included — open code
-/// must not contain AccelMars workspace vocabulary.
+/// Workspace-specific paths are NOT included as defaults — users add their own.
 const DEFAULT_MINDIGNORE: &str = "\
 # .mindignore — patterns excluded from mind file operations
 # Syntax follows .gitignore rules (https://git-scm.com/docs/gitignore)
