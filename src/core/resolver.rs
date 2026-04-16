@@ -155,7 +155,7 @@ mod tests {
     fn test_form2_zero_matches() {
         let workspace = vec![
             "projects/team/STATUS.md".to_string(),
-            "people/noa-ishikawa/SKILL.md".to_string(),
+            "docs/members/alice.md".to_string(),
         ];
         let result = resolve_form2("nonexistent-decision", &workspace);
         assert_eq!(result, ResolveResult::BrokenRef);
@@ -166,7 +166,7 @@ mod tests {
     fn test_form2_one_match() {
         let workspace = vec![
             "docs/decisions/2026-decision.md".to_string(),
-            "people/noa-ishikawa/SKILL.md".to_string(),
+            "docs/members/alice.md".to_string(),
         ];
         let result = resolve_form2("2026-decision", &workspace);
         assert_eq!(
@@ -181,7 +181,7 @@ mod tests {
         let workspace = vec![
             "projects/alpha/shared-stem.md".to_string(),
             "projects/beta/shared-stem.md".to_string(),
-            "people/noa-ishikawa/SKILL.md".to_string(),
+            "docs/members/alice.md".to_string(),
         ];
         let result = resolve_form2("shared-stem", &workspace);
         match result {
