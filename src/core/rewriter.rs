@@ -15,7 +15,7 @@ use relative_path::RelativePath;
 pub fn apply_rewrites(content: &str, entries: &[RewriteEntry]) -> String {
     // Sort descending so we apply from end to start — preserves earlier span validity.
     let mut sorted: Vec<&RewriteEntry> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.span.0.cmp(&a.span.0));
+    sorted.sort_by_key(|e| std::cmp::Reverse(e.span.0));
 
     let mut result = content.to_string();
     for entry in sorted {
