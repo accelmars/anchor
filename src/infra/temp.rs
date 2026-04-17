@@ -81,6 +81,12 @@ pub fn encode_path(canonical: &CanonicalPath) -> String {
 /// identical to before the operation started.
 pub fn cleanup_op_dir(op_dir: &TempOpDir) -> Result<(), TempError> {
     std::fs::remove_dir_all(&op_dir.path)?;
+    // Remove parent `.mind/tmp/` if now empty. Best-effort: errors ignored.
+    // `remove_dir` is safe — it only removes empty directories, so a concurrent
+    // op-dir created after our remove_dir_all cannot be destroyed.
+    if let Some(parent) = op_dir.path.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
     Ok(())
 }
 
@@ -129,6 +135,23 @@ mod tests {
         );
         // Root-level file: no slashes, no change
         assert_eq!(encode_path(&"README.md".to_string()), "README.md");
+    }
+
+    /// Verify cleanup_op_dir removes the parent `.mind/tmp/` after removing the op dir.
+    #[test]
+    fn test_cleanup_op_dir_removes_parent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".mind")).unwrap();
+
+        let op = create_op_dir(root).unwrap();
+        cleanup_op_dir(&op).unwrap();
+
+        let tmp_dir = root.join(".mind").join("tmp");
+        assert!(
+            !tmp_dir.exists(),
+            ".mind/tmp/ must be absent after cleanup_op_dir"
+        );
     }
 
     /// Verify cleanup_op_dir removes the directory tree.
