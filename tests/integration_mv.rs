@@ -420,6 +420,41 @@ fn test_dst_already_exists_error() {
     assert_eq!(read_file(root, "a.md"), a_before, "a.md must be unchanged");
 }
 
+// ─── Test 9: Consecutive moves both succeed (no stale .mind/tmp/) ─────────────
+// Regression test for the bug where cleanup_op_dir left behind an empty .mind/tmp/,
+// causing the second acquire_lock to return StaleLock.
+
+#[test]
+fn test_consecutive_mv_both_succeed() {
+    let tmp = make_workspace();
+    let root = tmp.path();
+
+    write_file(root, "a.md", "# A\n");
+    write_file(root, "b.md", "See [a](a.md).\n");
+    write_file(root, "c.md", "# C\n");
+
+    match run_mv(root, "a.md", "moved-a.md") {
+        MvOutcome::Success => {}
+        MvOutcome::ValidationFailed(refs) => {
+            panic!("first mv: unexpected validation failure: {refs:?}")
+        }
+        MvOutcome::Error(e) => panic!("first mv: unexpected error: {e}"),
+    }
+
+    match run_mv(root, "c.md", "moved-c.md") {
+        MvOutcome::Success => {}
+        MvOutcome::ValidationFailed(refs) => {
+            panic!("second mv: unexpected validation failure: {refs:?}")
+        }
+        MvOutcome::Error(e) => panic!("second mv: unexpected error (stale lock?): {e}"),
+    }
+
+    assert!(file_exists(root, "moved-a.md"), "moved-a.md must exist");
+    assert!(!file_exists(root, "a.md"), "a.md must be absent");
+    assert!(file_exists(root, "moved-c.md"), "moved-c.md must exist");
+    assert!(!file_exists(root, "c.md"), "c.md must be absent");
+}
+
 // ─── Test 8: src not found → error before PLAN ───────────────────────────────
 
 #[test]
