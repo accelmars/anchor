@@ -7,7 +7,8 @@ use std::process;
 #[derive(Parser)]
 #[command(
     name = "mind",
-    about = "Reference-safe file operations for Markdown workspaces"
+    about = "Reference-safe file operations for Markdown workspaces",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
