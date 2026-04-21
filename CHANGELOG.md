@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-04-17
+
+### Fixed
+
+- `mind file mv` now removes empty `.mind/tmp/` directory after a successful operation (MX-008)
+
+### Added
+
+- `--version` flag to print the installed version
+
 ## [0.1.0] — 2026-04-16
 
 ### Added
