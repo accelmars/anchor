@@ -2,7 +2,7 @@
 //
 // PHASE-2-BRIDGE Contract 6: config.json is written atomically.
 // Algorithm: write content to {path}.tmp, then rename to {path}.
-// This prevents a corrupted config from a partial write (power loss during mind init).
+// This prevents a corrupted config from a partial write (power loss during anchor init).
 
 use std::io;
 use std::path::Path;

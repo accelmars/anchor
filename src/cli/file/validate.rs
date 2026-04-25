@@ -1,4 +1,4 @@
-// src/cli/file/validate.rs — mind file validate (MF-007)
+// src/cli/file/validate.rs — anchor file validate
 //
 // Scan all .md files in workspace and report broken references.
 // Pure read-only — no lock, no temp directory.
@@ -146,7 +146,7 @@ fn write_human_output<W: Write>(
             writeln!(
                 w,
                 "✓ {file_count} files scanned. No broken references.  \
-                 ({acked_count} acknowledged — see .mindacked)"
+                 ({acked_count} acknowledged — see .accelmars/anchor/acked)"
             )
         }
     } else {
@@ -175,7 +175,7 @@ fn write_human_output<W: Write>(
             writeln!(
                 w,
                 "{unresolved_count} broken references in {file_count} files.  \
-                 ({acked_count} acknowledged — see .mindacked)"
+                 ({acked_count} acknowledged — see .accelmars/anchor/acked)"
             )
         } else {
             writeln!(
@@ -225,24 +225,29 @@ mod tests {
         fs::write(full, content).unwrap();
     }
 
-    /// .mindacked absent → broken refs still reported (unresolved non-empty).
+    /// .accelmars/anchor/acked absent → broken refs still reported (unresolved non-empty).
     #[test]
-    fn test_no_mindacked_broken_refs_reported() {
+    fn test_no_anchor_acked_broken_refs_reported() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "source.md", "[broken](missing.md)\n");
         let result = do_validate(tmp.path()).unwrap();
         assert!(
             !result.broken.is_empty(),
-            "broken refs must be reported when no .mindacked exists"
+            "broken refs must be reported when no .accelmars/anchor/acked exists"
         );
     }
 
-    /// .mindacked pattern matches source file → broken refs suppressed (broken empty).
+    /// .accelmars/anchor/acked pattern matches source file → broken refs suppressed (broken empty).
     #[test]
-    fn test_mindacked_matches_source_suppresses_broken_refs() {
+    fn test_anchor_acked_matches_source_suppresses_broken_refs() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "archive/old.md", "[broken](missing.md)\n");
-        fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
+        fs::create_dir_all(tmp.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            tmp.path().join(".accelmars").join("anchor").join("acked"),
+            "archive/\n",
+        )
+        .unwrap();
         let result = do_validate(tmp.path()).unwrap();
         assert!(
             result.broken.is_empty(),
@@ -251,12 +256,17 @@ mod tests {
         assert_eq!(result.acknowledged, 1);
     }
 
-    /// .mindacked pattern does NOT match source → refs still reported.
+    /// .accelmars/anchor/acked pattern does NOT match source → refs still reported.
     #[test]
-    fn test_mindacked_non_matching_pattern_refs_still_reported() {
+    fn test_anchor_acked_non_matching_pattern_refs_still_reported() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "active/current.md", "[broken](missing.md)\n");
-        fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
+        fs::create_dir_all(tmp.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            tmp.path().join(".accelmars").join("anchor").join("acked"),
+            "archive/\n",
+        )
+        .unwrap();
         let result = do_validate(tmp.path()).unwrap();
         assert!(
             !result.broken.is_empty(),
@@ -274,7 +284,12 @@ mod tests {
             "archive/bar.md",
             "[also broken](missing-b.md)\n",
         );
-        fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
+        fs::create_dir_all(tmp.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            tmp.path().join(".accelmars").join("anchor").join("acked"),
+            "archive/\n",
+        )
+        .unwrap();
         let result = do_validate(tmp.path()).unwrap();
         assert!(result.broken.is_empty(), "all acked → broken must be empty");
         assert_eq!(result.acknowledged, 2);
@@ -290,7 +305,12 @@ mod tests {
             "active/current.md",
             "[also broken](also-missing.md)\n",
         );
-        fs::write(tmp.path().join(".mindacked"), "archive/\n").unwrap();
+        fs::create_dir_all(tmp.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            tmp.path().join(".accelmars").join("anchor").join("acked"),
+            "archive/\n",
+        )
+        .unwrap();
         let result = do_validate(tmp.path()).unwrap();
         assert!(
             !result.broken.is_empty(),

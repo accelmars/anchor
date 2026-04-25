@@ -36,7 +36,7 @@ impl Drop for LockGuard {
 /// Error returned by `acquire_lock`.
 #[derive(Debug)]
 pub enum LockError {
-    /// Another mind process is already running with the given PID.
+    /// Another anchor process is already running with the given PID.
     AlreadyRunning { pid: u32 },
     /// Stale `.accelmars/anchor/tmp/` found — a previous operation did not complete cleanly.
     StaleLock { message: String },

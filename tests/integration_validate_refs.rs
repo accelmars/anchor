@@ -1,6 +1,6 @@
-// Integration tests for `mind file validate` and `mind file refs` — MF-007
+// Integration tests for `anchor file validate` and `anchor file refs`
 //
-// Tests invoke the compiled `mind` binary via subprocess and verify exit codes
+// Tests invoke the compiled `anchor` binary via subprocess and verify exit codes
 // and stdout output. This validates the full CLI pipeline including TTY detection.
 
 use std::fs;
@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn mind_bin() -> std::path::PathBuf {
+fn anchor_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_anchor"))
 }
 
@@ -43,7 +43,7 @@ fn test_validate_clean_workspace() {
     write_file(root, "a.md", "[link](b.md)");
     write_file(root, "b.md", "# B");
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "validate"])
         .current_dir(root)
         .output()
@@ -71,7 +71,7 @@ fn test_validate_broken_workspace_single() {
     let root = ws.path();
     write_file(root, "a.md", "[link](missing.md)");
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "validate"])
         .current_dir(root)
         .output()
@@ -114,7 +114,7 @@ fn test_validate_broken_workspace_multiple() {
         "[one](missing1.md)\n[two](missing2.md)\n[three](missing3.md)",
     );
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "validate"])
         .current_dir(root)
         .output()
@@ -144,7 +144,7 @@ fn test_refs_known_reference() {
     write_file(root, "a.md", "[link](b.md)");
     write_file(root, "b.md", "# B");
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "refs", "b.md"])
         .current_dir(root)
         .output()
@@ -172,7 +172,7 @@ fn test_refs_zero_references() {
     write_file(root, "a.md", "# No references here");
     write_file(root, "b.md", "# B");
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "refs", "b.md"])
         .current_dir(root)
         .output()
@@ -202,7 +202,7 @@ fn test_validate_piped_no_ansi_codes() {
     // Create a broken-ref workspace so the scanning header is also emitted
     write_file(root, "a.md", "[broken](nonexistent.md)");
 
-    let output = Command::new(mind_bin())
+    let output = Command::new(anchor_bin())
         .args(["file", "validate"])
         .current_dir(root)
         .output()

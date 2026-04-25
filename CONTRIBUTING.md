@@ -1,4 +1,4 @@
-# Contributing to mind-engine
+# Contributing to anchor
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ For install instructions, quick start, and command reference, see [README.md](RE
 ## Commit style
 
 ```
-feat: add --format json to mind file refs
+feat: add --format json to anchor file refs
 fix: emit "No references found." on zero-result query
 docs: add CONTRIBUTING.md
 chore: replace test fixture paths with generics

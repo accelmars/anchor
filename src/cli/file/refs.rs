@@ -1,4 +1,4 @@
-// src/cli/file/refs.rs — mind file refs (MF-007)
+// src/cli/file/refs.rs — anchor file refs
 //
 // List all files in workspace that reference a given file.
 // Pure read-only — no lock, no temp directory.
