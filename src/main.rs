@@ -121,6 +121,24 @@ fn main() {
                     eprintln!("error: --verbose and --format are mutually exclusive");
                     1
                 }
+                Err(cli::file::mv::MvError::SrcNotFound) => {
+                    use accelmars_anchor::core::scanner;
+                    use accelmars_anchor::core::suggest::{format_suggestions, suggest_similar};
+                    use accelmars_anchor::infra::workspace;
+                    let workspace_files: Vec<String> = workspace::find_workspace_root()
+                        .ok()
+                        .and_then(|root| scanner::scan_workspace(&root).ok())
+                        .unwrap_or_default();
+                    let suggestions = suggest_similar(&src, &workspace_files);
+                    let corrected_command = suggestions
+                        .first()
+                        .map(|s| format!("anchor file mv \"{}\" {}", s, dst));
+                    eprintln!(
+                        "{}",
+                        format_suggestions(&src, &suggestions, corrected_command.as_deref())
+                    );
+                    1
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     2
