@@ -3,6 +3,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use crate::core::suggest;
 use crate::infra::atomic;
 use crate::model::config::WorkspaceConfig;
 
@@ -166,7 +167,35 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     if let Some(p) = explicit_path {
         // --path provided: validate immediately, skip detection entirely.
         let dir = PathBuf::from(p);
-        validate_path(&dir)?;
+        match validate_path(&dir) {
+            Ok(()) => {}
+            Err(InitError::DirectoryNotFound(ref bad_path)) => {
+                // Suggest sibling directories from the parent.
+                // The workspace doesn't exist yet, so scan filesystem rather than workspace index.
+                let dir_name = bad_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string());
+                let siblings: Vec<String> = bad_path
+                    .parent()
+                    .and_then(|parent| std::fs::read_dir(parent).ok())
+                    .map(|entries| {
+                        let mut names: Vec<String> = entries
+                            .flatten()
+                            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                            .filter_map(|e| e.file_name().into_string().ok())
+                            .collect();
+                        names.sort();
+                        names
+                    })
+                    .unwrap_or_default();
+                let suggestions = suggest::suggest_similar(&dir_name, &siblings);
+                let msg = suggest::format_suggestions(&dir_name, &suggestions, None);
+                writeln!(writer, "{msg}")?;
+                return Err(InitError::DirectoryNotFound(bad_path.clone()));
+            }
+            Err(e) => return Err(e),
+        }
         chosen = dir;
         if yes {
             // --yes --path: no prompts at all.
@@ -897,6 +926,52 @@ mod tests {
         assert!(
             !out.contains("Detecting workspace root"),
             "output must not contain detection text, got:\n{}",
+            out
+        );
+    }
+
+    /// --path with a nonexistent directory shows sibling directory suggestions.
+    ///
+    /// When the parent directory exists and contains siblings, suggestions are
+    /// printed to the writer before returning DirectoryNotFound.
+    #[test]
+    fn test_path_not_found_shows_sibling_suggestions() {
+        use std::fs;
+
+        let parent = tempfile::tempdir().unwrap();
+        let start = tempfile::tempdir().unwrap();
+
+        // Create sibling directories in parent — one is a close match for the typo.
+        fs::create_dir(parent.path().join("anchor-foundation")).unwrap();
+        fs::create_dir(parent.path().join("anchor-forge")).unwrap();
+
+        // Typo: "anchor-foundtion" → should suggest "anchor-foundation"
+        let bad_path = parent
+            .path()
+            .join("anchor-foundtion")
+            .to_string_lossy()
+            .into_owned();
+
+        let input = "";
+        let mut output = Vec::new();
+
+        let result = run_with_io(start.path(), input.as_bytes(), &mut output, false, Some(&bad_path));
+
+        assert!(
+            matches!(result, Err(InitError::DirectoryNotFound(_))),
+            "expected DirectoryNotFound, got: {:?}",
+            result
+        );
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("Did you mean?"),
+            "output must contain 'Did you mean?' when siblings match, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("anchor-foundation"),
+            "output must suggest 'anchor-foundation', got:\n{}",
             out
         );
     }

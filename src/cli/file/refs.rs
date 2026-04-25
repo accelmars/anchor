@@ -4,10 +4,11 @@
 // Pure read-only — no lock, no temp directory.
 //
 // Exit codes:
-//   0 = always (zero refs is not an error — file may be a leaf node)
+//   0 = success (file exists in workspace, may have zero refs)
 //   2 = system error (I/O, workspace not found)
+//   2 = target not found in workspace (shows suggestions via suggest_similar)
 
-use crate::core::{parser, resolver, scanner};
+use crate::core::{parser, resolver, scanner, suggest};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
 use std::collections::HashSet;
@@ -35,7 +36,18 @@ pub fn run(target: &str, format: Option<OutputFormat>) -> i32 {
 /// Core refs logic on an explicit workspace root. Public for integration testing.
 pub fn run_on_root(workspace_root: &Path, target: &str, format: Option<OutputFormat>) -> i32 {
     match do_refs(workspace_root, target) {
-        Ok((target_canonical, hits)) => {
+        Ok((target_canonical, hits, absent)) => {
+            if absent {
+                // Target not present in workspace — show suggestions instead of "No references found."
+                let workspace_files: Vec<String> = scanner::scan_workspace(workspace_root)
+                    .unwrap_or_default();
+                let suggestions = suggest::suggest_similar(&target_canonical, &workspace_files);
+                eprintln!(
+                    "{}",
+                    suggest::format_suggestions(&target_canonical, &suggestions, None)
+                );
+                return 2;
+            }
             let result = if format == Some(OutputFormat::Json) {
                 format_json(&mut io::stdout(), &target_canonical, &hits)
             } else {
@@ -56,41 +68,49 @@ pub fn run_on_root(workspace_root: &Path, target: &str, format: Option<OutputFor
     }
 }
 
-fn do_refs(workspace_root: &Path, target: &str) -> Result<(String, Vec<(String, usize)>), String> {
+fn do_refs(
+    workspace_root: &Path,
+    target: &str,
+) -> Result<(String, Vec<(String, usize)>, bool), String> {
     // Normalize target to workspace-root-relative canonical form
     let target_canonical = normalize_target(workspace_root, target);
 
     let files =
         scanner::scan_workspace(workspace_root).map_err(|e| format!("scanner error: {e}"))?;
 
+    // Detect absent target: if the target path is not in the workspace file list,
+    // it does not exist — surface suggestions rather than "No references found."
+    let absent = !files.contains(&target_canonical);
+
     let mut hits: Vec<(String, usize)> = Vec::new(); // (source_file, line)
 
-    for file_path in &files {
-        let abs_path = workspace_root.join(file_path.as_str());
-        let content = std::fs::read_to_string(&abs_path)
-            .map_err(|e| format!("I/O error reading {file_path}: {e}"))?;
+    if !absent {
+        for file_path in &files {
+            let abs_path = workspace_root.join(file_path.as_str());
+            let content = std::fs::read_to_string(&abs_path)
+                .map_err(|e| format!("I/O error reading {file_path}: {e}"))?;
 
-        let refs = parser::parse_references(file_path, &content);
+            let refs = parser::parse_references(file_path, &content);
 
-        for reference in &refs {
-            let canonical = match reference.form {
-                RefForm::Standard => resolver::resolve_form1(file_path, &reference.target_raw),
-                RefForm::Wiki => match resolver::resolve_form2(&reference.target_raw, &files) {
-                    resolver::ResolveResult::Resolved(path) => path,
-                    resolver::ResolveResult::BrokenRef | resolver::ResolveResult::Ambiguous(_) => {
-                        continue
-                    }
-                },
-            };
+            for reference in &refs {
+                let canonical = match reference.form {
+                    RefForm::Standard => resolver::resolve_form1(file_path, &reference.target_raw),
+                    RefForm::Wiki => match resolver::resolve_form2(&reference.target_raw, &files) {
+                        resolver::ResolveResult::Resolved(path) => path,
+                        resolver::ResolveResult::BrokenRef
+                        | resolver::ResolveResult::Ambiguous(_) => continue,
+                    },
+                };
 
-            if canonical == target_canonical {
-                let line = byte_offset_to_line(&content, reference.span.0);
-                hits.push((file_path.clone(), line));
+                if canonical == target_canonical {
+                    let line = byte_offset_to_line(&content, reference.span.0);
+                    hits.push((file_path.clone(), line));
+                }
             }
         }
     }
 
-    Ok((target_canonical, hits))
+    Ok((target_canonical, hits, absent))
 }
 
 /// Render hits in human-readable format.
@@ -206,5 +226,57 @@ mod tests {
         assert_eq!(parsed["query_path"], "docs/guide.md");
         assert_eq!(parsed["count"], 0);
         assert!(parsed["refs"].as_array().unwrap().is_empty());
+    }
+
+    /// Absent target (not in workspace) → exit code 2.
+    /// The "Did you mean?" output goes to stderr; we verify only the exit code here.
+    #[test]
+    fn test_absent_target_exits_2() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json"),
+            r#"{"schema_version":"1"}"#,
+        )
+        .unwrap();
+        // Create a real .md file that is a close match for the typo query.
+        fs::write(root.path().join("design.md"), "# Design\n").unwrap();
+
+        let exit_code = run_on_root(root.path(), "desig.md", None);
+        assert_eq!(exit_code, 2, "absent target must exit 2, got: {exit_code}");
+    }
+
+    /// Existing file with zero inbound refs → exit 0, stdout "No references found."
+    ///
+    /// The absent-detection must NOT trigger when the file exists in the workspace.
+    #[test]
+    fn test_existing_file_zero_refs_exits_0() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json"),
+            r#"{"schema_version":"1"}"#,
+        )
+        .unwrap();
+        // File exists, nothing references it.
+        fs::write(root.path().join("leaf.md"), "# Leaf\n").unwrap();
+
+        let exit_code = run_on_root(root.path(), "leaf.md", None);
+        assert_eq!(
+            exit_code, 0,
+            "existing file with zero refs must exit 0, got: {exit_code}"
+        );
     }
 }

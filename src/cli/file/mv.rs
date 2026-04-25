@@ -103,8 +103,7 @@ pub fn run(
     // ── Pre-flight: hard errors before PLAN (03-COMMANDS.md §Rules) ──────────
     let src_abs = workspace_root.join(src_canonical.as_str());
     if !src_abs.exists() {
-        eprintln!("src not found: {src}");
-        process::exit(1);
+        return Err(MvError::SrcNotFound);
     }
 
     let dst_abs = workspace_root.join(dst_canonical.as_str());
@@ -327,6 +326,42 @@ mod tests {
         assert!(
             matches!(result, Err(MvError::ConflictingFlags(_))),
             "both flags must return ConflictingFlags error"
+        );
+    }
+
+    /// When src does not exist, run() returns Err(SrcNotFound) — not process::exit.
+    ///
+    /// This is the key contract change from AN-025: the inline exit was replaced with
+    /// a typed Err return so the caller (main.rs) can show "Did you mean?" suggestions.
+    /// If run() called process::exit, the test process would terminate and this assertion
+    /// would never be reached.
+    #[test]
+    fn test_src_not_found_returns_err_not_exit() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
+        std::fs::write(
+            root.path().join(".accelmars").join("anchor").join("config.json"),
+            r#"{"schema_version":"1"}"#,
+        )
+        .unwrap();
+        // Set cwd to the tempdir workspace so find_workspace_root() resolves here.
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(root.path()).unwrap();
+
+        let result = run(
+            "this-file-does-not-exist-9f3k2j.md",
+            "some-dst.md",
+            false,
+            None,
+        );
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            matches!(result, Err(MvError::SrcNotFound)),
+            "expected SrcNotFound for nonexistent src, got: {:?}",
+            result
         );
     }
 }
