@@ -9,7 +9,7 @@
 //   2 = system error (I/O, workspace not found)
 
 use crate::cli::file::refs::OutputFormat;
-use crate::core::{acked::AckedPatterns, parser, resolver, scanner};
+use crate::core::{acked::AckedPatterns, parser, resolver, scanner, suggest};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
 use std::io::{self, IsTerminal, Write};
@@ -21,6 +21,7 @@ struct ValidateResult {
     /// Unresolved (non-acknowledged) broken refs: (file, line, raw_target)
     broken: Vec<(String, usize, String)>,
     acknowledged: usize,
+    workspace_files: Vec<String>,
 }
 
 /// Execute `anchor file validate`. Returns exit code for process::exit.
@@ -51,7 +52,12 @@ pub fn run_on_root(workspace_root: &Path, format: Option<OutputFormat>) -> i32 {
                         return 2;
                     }
                 }
-            } else if let Err(e) = write_human_output(&mut io::stdout(), workspace_root, &result) {
+            } else if let Err(e) = write_human_output(
+                &mut io::stdout(),
+                workspace_root,
+                &result,
+                &result.workspace_files,
+            ) {
                 eprintln!("error writing output: {e}");
                 return 2;
             }
@@ -126,6 +132,7 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
         files_scanned: file_count,
         broken: unresolved,
         acknowledged: acked_refs.len(),
+        workspace_files: files,
     })
 }
 
@@ -134,6 +141,7 @@ fn write_human_output<W: Write>(
     w: &mut W,
     workspace_root: &Path,
     result: &ValidateResult,
+    workspace_files: &[String],
 ) -> io::Result<()> {
     let unresolved_count = result.broken.len();
     let acked_count = result.acknowledged;
@@ -169,6 +177,10 @@ fn write_human_output<W: Write>(
         for (file, line, raw) in &result.broken {
             writeln!(w, "  {file}:{line}")?;
             writeln!(w, "    → {raw}  (not found)")?;
+            let suggestions = suggest::suggest_similar(raw, workspace_files);
+            if let Some(top) = suggestions.first() {
+                writeln!(w, "    similar: {top}")?;
+            }
             writeln!(w)?;
         }
         if acked_count > 0 {
@@ -316,6 +328,73 @@ mod tests {
             !result.broken.is_empty(),
             "unresolved refs still present → broken must be non-empty"
         );
+    }
+
+    /// Broken ref where a close match (single-character typo) exists → "similar:" hint in output.
+    #[test]
+    fn test_human_output_suggests_similar_for_typo() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "source.md",
+            "[broken](anchor-foundtion/file.md)\n",
+        );
+        fs::create_dir_all(tmp.path().join("anchor-foundation")).unwrap();
+        write_file(tmp.path(), "anchor-foundation/file.md", "# Target\n");
+
+        let result = do_validate(tmp.path()).unwrap();
+        let mut out = Vec::new();
+        write_human_output(&mut out, tmp.path(), &result, &result.workspace_files).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("similar: anchor-foundation/file.md"),
+            "output must contain 'similar: anchor-foundation/file.md', got: {output}"
+        );
+    }
+
+    /// Broken ref with no close match → no "similar:" line in output.
+    #[test]
+    fn test_human_output_no_similar_when_no_close_match() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "source.md", "[broken](xyz123qwerty.md)\n");
+
+        let result = do_validate(tmp.path()).unwrap();
+        let mut out = Vec::new();
+        write_human_output(&mut out, tmp.path(), &result, &result.workspace_files).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            !output.contains("similar:"),
+            "output must not contain 'similar:' when no close match exists, got: {output}"
+        );
+    }
+
+    /// `--format json` output has no "similar" field even when suggestions exist.
+    #[test]
+    fn test_json_output_no_similar_field_when_suggestions_exist() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "source.md",
+            "[broken](anchor-foundtion/file.md)\n",
+        );
+        fs::create_dir_all(tmp.path().join("anchor-foundation")).unwrap();
+        write_file(tmp.path(), "anchor-foundation/file.md", "# Target\n");
+
+        let result = do_validate(tmp.path()).unwrap();
+        let mut out = Vec::new();
+        write_json_output(&mut out, &result).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert!(
+            parsed.get("similar").is_none(),
+            "top-level JSON must not have 'similar' field"
+        );
+        for entry in parsed["broken"].as_array().unwrap() {
+            assert!(
+                entry.get("similar").is_none(),
+                "broken entry must not have 'similar' field, got: {entry}"
+            );
+        }
     }
 
     /// `--format json` on a clean workspace outputs {"clean":true,...,"broken":[]}.
