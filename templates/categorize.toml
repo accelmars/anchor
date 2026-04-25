@@ -1,0 +1,32 @@
+[meta]
+name = "categorize"
+display = "Categorize"
+description = "Group flat items under a parent folder"
+version = "1"
+
+[[questions]]
+id = "parent"
+prompt = "Parent folder name:"
+type = "string"
+
+[[questions]]
+id = "items"
+prompt = "Items to categorize (one per line, blank to finish):"
+type = "list"
+
+[[questions]]
+id = "new_name"
+prompt = "New name for {{item}} [Enter to keep]:"
+type = "string"
+optional = true
+for_each = "items"
+
+[[ops_template]]
+type = "create_dir"
+path = "{{parent}}"
+
+[[ops_template]]
+type = "move"
+src = "{{item}}"
+dst = "{{parent}}/{{new_name | default: item_basename}}"
+for_each = "items"

@@ -1,0 +1,28 @@
+[meta]
+name = "batch-move"
+display = "Batch Move"
+description = "Explicit list of src→dst moves"
+version = "1"
+
+[[questions]]
+id = "count"
+prompt = "How many moves?"
+type = "number"
+
+[[questions]]
+id = "src"
+prompt = "Move source:"
+type = "string"
+repeat = "count"
+
+[[questions]]
+id = "dst"
+prompt = "Move destination:"
+type = "string"
+repeat = "count"
+
+[[ops_template]]
+type = "move"
+src = "{{src}}"
+dst = "{{dst}}"
+repeat = "count"
