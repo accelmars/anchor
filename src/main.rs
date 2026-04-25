@@ -26,6 +26,11 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Execute a plan file — applies all operations sequentially
+    Apply {
+        /// Path to the plan file (.toml)
+        plan: String,
+    },
     /// Preview what a plan file will do — no changes made
     Diff {
         /// Path to the plan file (.toml)
@@ -80,6 +85,7 @@ fn main() {
                 1
             }
         },
+        Commands::Apply { plan } => process::exit(cli::apply::run(&plan)),
         Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
         Commands::Root => cli::root::run(),
         Commands::File { subcommand } => match subcommand {
