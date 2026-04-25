@@ -418,6 +418,11 @@ pub fn apply(
 }
 
 /// Recursively copy a directory tree from `src` to `dst`.
+///
+/// Uses `entry.file_type()` (symlink-aware, does NOT follow symlinks) instead of
+/// `path.is_dir()` (follows symlinks). A symlink-to-directory via `is_dir()` would
+/// recurse infinitely if the symlink points to an ancestor. Symlinks are skipped —
+/// anchor operates on .md files and has no use case for preserving symlinks.
 fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
@@ -425,9 +430,14 @@ fn copy_dir_recursive(
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            // Skip symlinks — following them can create infinite recursion cycles.
+            continue;
+        }
         let src_child = entry.path();
         let dst_child = dst.join(entry.file_name());
-        if src_child.is_dir() {
+        if file_type.is_dir() {
             copy_dir_recursive(&src_child, &dst_child)?;
         } else {
             std::fs::copy(&src_child, &dst_child)?;
@@ -778,5 +788,36 @@ mod tests {
             compute_relative_path(&"ROOT.md".to_string(), &"projects/foo/bar.md".to_string()),
             "projects/foo/bar.md"
         );
+    }
+
+    /// Regression test: copy_dir_recursive must terminate and skip symlinks.
+    /// Incident: anchor v0.2.0 copy_dir_recursive used is_dir() which follows symlinks.
+    /// A symlink pointing to an ancestor caused infinite recursion until SIGKILL.
+    /// Fixed in v0.2.1: entry.file_type().is_dir() (does not follow symlinks) + symlink skip.
+    /// FS-004 in accelmars-codex.
+    #[test]
+    #[cfg(unix)]
+    fn test_copy_dir_recursive_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+
+        let src_tmp = TempDir::new().unwrap();
+        let src = src_tmp.path();
+
+        // Create a regular file
+        std::fs::write(src.join("file.md"), b"content").unwrap();
+
+        // Create a symlink inside src/ that points back to src/ (cycle)
+        symlink(src, src.join("self_link")).unwrap();
+
+        let dst_tmp = TempDir::new().unwrap();
+        let dst = dst_tmp.path().join("output");
+
+        // Must terminate — not hang
+        copy_dir_recursive(src, &dst).unwrap();
+
+        // file.md must be copied; symlink must be skipped (no self_link/ in dst)
+        assert!(dst.join("file.md").exists(), "regular file must be copied");
+        assert!(!dst.join("self_link").exists(), "symlink must be skipped");
     }
 }
