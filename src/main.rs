@@ -26,6 +26,11 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Preview what a plan file will do — no changes made
+    Diff {
+        /// Path to the plan file (.toml)
+        plan: String,
+    },
     /// Print the workspace root path
     Root,
     /// File operations
@@ -75,6 +80,7 @@ fn main() {
                 1
             }
         },
+        Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
         Commands::Root => cli::root::run(),
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
