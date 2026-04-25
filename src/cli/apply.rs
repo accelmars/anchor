@@ -32,11 +32,7 @@ pub fn run(plan_path: &str) -> i32 {
 ///
 /// Read: parse plan, scan workspace, pre-flight all Move ops, then execute sequentially.
 /// On op failure: print stopped message and return 1 — do NOT roll back already-committed moves.
-pub(crate) fn run_impl<W: Write>(
-    plan_path: &str,
-    workspace_root: &Path,
-    out: &mut W,
-) -> i32 {
+pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &mut W) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
     let plan = match plan::load_plan(path) {
@@ -73,7 +69,11 @@ pub(crate) fn run_impl<W: Write>(
                 let abs = workspace_root.join(dir_path);
                 if let Err(e) = std::fs::create_dir_all(&abs) {
                     eprintln!("error creating {dir_path}/: {e}");
-                    writeln!(out, "Stopped after {completed}/{total} operations completed.").ok();
+                    writeln!(
+                        out,
+                        "Stopped after {completed}/{total} operations completed."
+                    )
+                    .ok();
                     return 1;
                 }
                 completed += 1;
@@ -91,8 +91,11 @@ pub(crate) fn run_impl<W: Write>(
                     }
                     Err(e) => {
                         eprintln!("{e}");
-                        writeln!(out, "Stopped after {completed}/{total} operations completed.")
-                            .ok();
+                        writeln!(
+                            out,
+                            "Stopped after {completed}/{total} operations completed."
+                        )
+                        .ok();
                         return 1;
                     }
                 }
@@ -155,13 +158,18 @@ fn execute_move(
 ) -> Result<(usize, usize), String> {
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
-    let lock_guard = lock::acquire_lock(workspace_root, &lock_op)
-        .map_err(|e| format!("lock error: {e}"))?;
+    let lock_guard =
+        lock::acquire_lock(workspace_root, &lock_op).map_err(|e| format!("lock error: {e}"))?;
 
     // PLAN — CanonicalPath is String; convert &str to String
     let src_canonical = src.to_string();
     let dst_canonical = dst.to_string();
-    let rewrite_plan = match transaction::plan(workspace_root, &src_canonical, &dst_canonical, workspace_files) {
+    let rewrite_plan = match transaction::plan(
+        workspace_root,
+        &src_canonical,
+        &dst_canonical,
+        workspace_files,
+    ) {
         Ok(p) => p,
         Err(e) => {
             drop(lock_guard);
@@ -242,8 +250,14 @@ fn execute_move(
     }
 
     // COMMIT — lock_guard consumed here (released via Drop)
-    transaction::commit(workspace_root, &rewrite_plan, &op_dir, &mut manifest, lock_guard)
-        .map_err(|e| format!("commit error: {e}"))?;
+    transaction::commit(
+        workspace_root,
+        &rewrite_plan,
+        &op_dir,
+        &mut manifest,
+        lock_guard,
+    )
+    .map_err(|e| format!("commit error: {e}"))?;
 
     Ok((refs_rewritten, files_touched))
 }
@@ -623,8 +637,7 @@ dst = "projects/renamed.md"
         );
 
         // referrer.md must have been rewritten to point to renamed.md
-        let referrer_content =
-            fs::read_to_string(ws.path().join("projects/referrer.md")).unwrap();
+        let referrer_content = fs::read_to_string(ws.path().join("projects/referrer.md")).unwrap();
         assert!(
             referrer_content.contains("renamed.md"),
             "referrer must point to new dst path; got:\n{referrer_content}"
