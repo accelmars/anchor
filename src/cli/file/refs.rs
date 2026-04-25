@@ -68,10 +68,10 @@ pub fn run_on_root(workspace_root: &Path, target: &str, format: Option<OutputFor
     }
 }
 
-fn do_refs(
-    workspace_root: &Path,
-    target: &str,
-) -> Result<(String, Vec<(String, usize)>, bool), String> {
+/// Return type for `do_refs`: (canonical target path, hits (file, line), absent flag).
+type RefsResult = (String, Vec<(String, usize)>, bool);
+
+fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
     // Normalize target to workspace-root-relative canonical form
     let target_canonical = normalize_target(workspace_root, target);
 
