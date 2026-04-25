@@ -1,5 +1,6 @@
 pub mod config;
 pub mod manifest;
+pub mod plan;
 pub mod reference;
 pub mod rewrite;
 
