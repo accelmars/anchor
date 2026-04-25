@@ -11,7 +11,7 @@ pub fn run() -> i32 {
             0
         }
         Err(WorkspaceError::NotFound) => {
-            eprintln!("no workspace found. Run 'mind init' to configure.");
+            eprintln!("no workspace found. Run 'anchor init' to configure.");
             1
         }
         Err(e) => {

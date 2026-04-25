@@ -11,7 +11,7 @@ use crate::model::manifest::Manifest;
 use std::io::{self, Write};
 use std::process;
 
-/// Errors specific to the `mind file mv` command.
+/// Errors specific to the `anchor file mv` command.
 #[derive(Debug)]
 pub enum MvError {
     SrcNotFound,
@@ -74,7 +74,7 @@ impl From<temp::TempError> for MvError {
     }
 }
 
-/// Execute `mind file mv <src> <dst>`.
+/// Execute `anchor file mv <src> <dst>`.
 ///
 /// Default (no flags): silent on success (exit 0, no output).
 /// `--verbose`: prints "Moved. Rewrote N references in M files." on success.
@@ -140,9 +140,9 @@ pub fn run(
     };
 
     // ── Create temp op dir + manifest ─────────────────────────────────────────
-    let mind_dir = workspace_root.join(".mind");
-    if !mind_dir.exists() {
-        eprintln!("error: workspace not initialized. Run 'mind init' first.");
+    let anchor_dir = workspace_root.join(".accelmars").join("anchor");
+    if !anchor_dir.exists() {
+        eprintln!("error: workspace not initialized. Run 'anchor init' first.");
         drop(lock_guard);
         process::exit(2);
     }

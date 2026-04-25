@@ -14,13 +14,13 @@ use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 
-/// Output format for `mind file refs`.
+/// Output format for `anchor file refs`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
 pub enum OutputFormat {
     Json,
 }
 
-/// Execute `mind file refs <file>`. Returns exit code for process::exit.
+/// Execute `anchor file refs <file>`. Returns exit code for process::exit.
 pub fn run(target: &str, format: Option<OutputFormat>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,

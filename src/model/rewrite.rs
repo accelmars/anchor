@@ -23,7 +23,7 @@ pub struct RewriteEntry {
     pub new_text: String,
 }
 
-/// The complete rewrite plan for one `mind file mv` operation.
+/// The complete rewrite plan for one `anchor file mv` operation.
 ///
 /// Contains all RewriteEntry values for Case A and Case B references.
 /// Case C references are excluded — their relative paths are stable after the move.

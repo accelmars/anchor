@@ -23,7 +23,7 @@ struct ValidateResult {
     acknowledged: usize,
 }
 
-/// Execute `mind file validate`. Returns exit code for process::exit.
+/// Execute `anchor file validate`. Returns exit code for process::exit.
 pub fn run(format: Option<OutputFormat>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,

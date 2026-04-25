@@ -135,7 +135,7 @@ fn prompt_line<R: BufRead>(reader: &mut R) -> Result<String, io::Error> {
         .to_string())
 }
 
-/// Entry point for `mind init`. Detects workspace candidate from cwd.
+/// Entry point for `anchor init`. Detects workspace candidate from cwd.
 ///
 /// `yes` — accept detected workspace root without prompting (fully non-interactive).
 /// `path` — use given path instead of detection; skip detection entirely.
