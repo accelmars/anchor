@@ -29,11 +29,7 @@ pub fn run(plan_path: &str) -> i32 {
 ///
 /// Read-only: scans workspace once, runs PLAN phase per Move op, prints preview.
 /// Does not acquire a lock; does not call apply, validate, or commit.
-pub(crate) fn run_impl<W: Write>(
-    plan_path: &str,
-    workspace_root: &Path,
-    out: &mut W,
-) -> i32 {
+pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &mut W) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
     let plan = match plan::load_plan(path) {
@@ -75,7 +71,11 @@ pub(crate) fn run_impl<W: Write>(
             Op::Move { src, dst } => {
                 let src_abs = workspace_root.join(src);
                 if !src_abs.exists() {
-                    writeln!(out, "  move     {src} \u{2192} {dst}  [ERROR: src not found]").ok();
+                    writeln!(
+                        out,
+                        "  move     {src} \u{2192} {dst}  [ERROR: src not found]"
+                    )
+                    .ok();
                     let suggestions = suggest_similar(src, &workspace_files);
                     if let Some(top) = suggestions.first() {
                         writeln!(out, "           similar: {top}").ok();
@@ -115,8 +115,11 @@ pub(crate) fn run_impl<W: Write>(
 
     // Summary
     let op_count = plan.ops.len();
-    writeln!(out, "{op_count} operations \u{00b7} {total_refs} refs \u{00b7} {total_files} files")
-        .ok();
+    writeln!(
+        out,
+        "{op_count} operations \u{00b7} {total_refs} refs \u{00b7} {total_files} files"
+    )
+    .ok();
     writeln!(out, "Run `anchor apply {plan_path}` to execute.").ok();
 
     0
@@ -510,7 +513,10 @@ path = "new-dir"
     fn test_suggest_similar_no_match() {
         let candidates = vec!["anchor-foundation/identity.md".to_string()];
         let result = suggest_similar("xyz123qwerty", &candidates);
-        assert!(result.is_empty(), "unrelated name must return no suggestions");
+        assert!(
+            result.is_empty(),
+            "unrelated name must return no suggestions"
+        );
     }
 
     /// Single-character typo in basename → suggestion returned.
