@@ -95,7 +95,10 @@ pub fn find_workspace_root() -> Result<PathBuf, WorkspaceError> {
 /// Error message format (exact, per 260425-anchor-workspace-layout.md §4):
 /// `anchor workspace schema version "{v}" is not supported by this version of anchor.`
 pub fn load_and_check_config(workspace_root: &Path) -> Result<WorkspaceConfig, WorkspaceError> {
-    let config_path = workspace_root.join(".accelmars").join("anchor").join("config.json");
+    let config_path = workspace_root
+        .join(".accelmars")
+        .join("anchor")
+        .join("config.json");
     let content = std::fs::read_to_string(&config_path).map_err(WorkspaceError::IoError)?;
     let config: WorkspaceConfig =
         serde_json::from_str(&content).map_err(WorkspaceError::InvalidConfig)?;

@@ -238,7 +238,10 @@ mod tests {
         let guard = acquire_lock(root, "file mv src dst").unwrap();
 
         let lock_path = root.join(".accelmars").join("anchor").join("lock");
-        assert!(lock_path.exists(), ".accelmars/anchor/lock must exist after acquire");
+        assert!(
+            lock_path.exists(),
+            ".accelmars/anchor/lock must exist after acquire"
+        );
 
         let content = fs::read_to_string(&lock_path).unwrap();
         let lock: LockFile = serde_json::from_str(&content).unwrap();
@@ -273,7 +276,11 @@ mod tests {
             started: "2026-04-15T10:00:00Z".to_string(),
             op: "test".to_string(),
         };
-        fs::write(anchor_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
+        fs::write(
+            anchor_dir.join("lock"),
+            serde_json::to_string(&lock).unwrap(),
+        )
+        .unwrap();
 
         let err = acquire_lock(root, "test").unwrap_err();
         match err {
@@ -309,7 +316,11 @@ mod tests {
             started: "2026-04-15T10:00:00Z".to_string(),
             op: "test".to_string(),
         };
-        fs::write(anchor_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
+        fs::write(
+            anchor_dir.join("lock"),
+            serde_json::to_string(&lock).unwrap(),
+        )
+        .unwrap();
 
         let err = acquire_lock(root, "test").unwrap_err();
         match err {

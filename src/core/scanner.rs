@@ -115,7 +115,11 @@ mod tests {
 
         // .accelmars/ directory — must be excluded entirely
         fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
-        fs::write(root.join(".accelmars").join("anchor").join("hidden.md"), b"").unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("hidden.md"),
+            b"",
+        )
+        .unwrap();
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
@@ -255,11 +259,17 @@ mod tests {
         fs::write(root.join("README.md"), b"").unwrap();
         fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
         fs::write(
-            root.join(".accelmars").join("anchor").join("config.json.md"),
+            root.join(".accelmars")
+                .join("anchor")
+                .join("config.json.md"),
             b"",
         )
         .unwrap();
-        fs::write(root.join(".accelmars").join("anchor").join("secret.md"), b"").unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("secret.md"),
+            b"",
+        )
+        .unwrap();
 
         // No .accelmars/anchor/ignore — .accelmars/ must be excluded by hardcoded logic alone
         assert!(!root

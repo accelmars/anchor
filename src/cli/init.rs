@@ -441,7 +441,10 @@ fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
-    writeln!(writer, "Next: run 'anchor validate' to check reference health.")?;
+    writeln!(
+        writer,
+        "Next: run 'anchor validate' to check reference health."
+    )?;
 
     Ok(())
 }
@@ -495,7 +498,10 @@ fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
-    writeln!(writer, "Next: run 'anchor validate' to check reference health.")?;
+    writeln!(
+        writer,
+        "Next: run 'anchor validate' to check reference health."
+    )?;
 
     Ok(())
 }
@@ -564,11 +570,7 @@ mod tests {
         // Pre-existing initialization
         let anchor_dir = root.path().join(".accelmars").join("anchor");
         fs::create_dir_all(&anchor_dir).unwrap();
-        fs::write(
-            anchor_dir.join("config.json"),
-            r#"{"schema_version":"1"}"#,
-        )
-        .unwrap();
+        fs::write(anchor_dir.join("config.json"), r#"{"schema_version":"1"}"#).unwrap();
 
         // Fake knowledge.db — must NOT be touched (PHASE-2-BRIDGE Contract 3 guard)
         let knowledge_db_path = anchor_dir.join("knowledge.db");
