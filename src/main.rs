@@ -43,6 +43,21 @@ enum Commands {
         #[command(subcommand)]
         subcommand: FileCommands,
     },
+    /// Plan authoring
+    Plan {
+        #[command(subcommand)]
+        subcommand: PlanCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlanCommands {
+    /// Interactive wizard — generates a plan file from a template
+    New {
+        /// Output path for the generated plan (default: anchor-plan.toml)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -88,6 +103,11 @@ fn main() {
         Commands::Apply { plan } => process::exit(cli::apply::run(&plan)),
         Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
         Commands::Root => cli::root::run(),
+        Commands::Plan { subcommand } => match subcommand {
+            PlanCommands::New { output } => {
+                process::exit(cli::plan::run_new(output.as_deref()))
+            }
+        },
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
                 src,
