@@ -51,6 +51,23 @@ chore: replace test fixture paths with generics
 refactor: extract OutputFormat enum
 ```
 
+## Contributions welcome
+
+- Bug fixes — open an issue first for anything non-trivial
+- Documentation improvements
+- Performance improvements with benchmarks
+- New CLI flags that fit the existing command surface
+- Workspace format extensions (discuss in an issue first)
+
+Not accepted without prior discussion: new subcommands, changes to JSON output schema (breaking), changes to exit code contract.
+
+## What NOT to commit
+
+- Secrets, API keys, or credentials of any kind
+- Hardcoded file system paths (use relative paths or workspace-relative paths)
+- Internal development IDs — commit titles are for external readers. Do not use IDs like `MF-001`, `MX-008`, or similar internal tracking labels in commit messages or PR titles.
+- State labels (`DONE`, `READY`, `FAILED`) — these belong in issue trackers, not commit history
+
 ## License
 
 Apache 2.0 — contributions are accepted under the same license.
