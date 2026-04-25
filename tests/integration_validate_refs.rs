@@ -9,16 +9,15 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn mind_bin() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_BIN_EXE_mind"))
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_anchor"))
 }
 
 fn make_workspace() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    fs::write(root.join(".mind-root"), "").unwrap();
-    fs::create_dir_all(root.join(".mind")).unwrap();
+    fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
     fs::write(
-        root.join(".mind").join("config.json"),
+        root.join(".accelmars").join("anchor").join("config.json"),
         r#"{"schema_version":"1"}"#,
     )
     .unwrap();

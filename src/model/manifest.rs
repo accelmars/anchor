@@ -1,4 +1,4 @@
-// src/model/manifest.rs — Manifest struct serialized to .mind/tmp/.../manifest.json (MF-005)
+// src/model/manifest.rs — Manifest struct serialized to .accelmars/anchor/tmp/.../manifest.json (MF-005)
 #![allow(dead_code)]
 //
 // The manifest records the current operation and its phase. The phase field is updated
@@ -9,13 +9,13 @@ use crate::infra::atomic::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Operation manifest. Written to `.mind/tmp/op-{id}/manifest.json`.
+/// Operation manifest. Written to `.accelmars/anchor/tmp/op-{id}/manifest.json`.
 ///
 /// Phase transitions (from 04-TRANSACTIONS.md §manifest.json):
 ///   PLAN → APPLY → VALIDATE → COMMIT
 ///
 /// If the process dies, `phase` shows exactly where it stopped. This is the
-/// first thing to read when diagnosing stale state in `.mind/tmp/`.
+/// first thing to read when diagnosing stale state in `.accelmars/anchor/tmp/`.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Manifest {
     /// Operation type. Always `"file_mv"` for Phase 1.

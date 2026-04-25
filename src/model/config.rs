@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Workspace configuration — stored in `.mind/config.json`.
+/// Workspace configuration — stored in `.accelmars/anchor/config.json`.
 ///
 /// Phase 1 schema: `{"schema_version": "1"}`
 /// schema_version is a String (not integer) because future semver-style values

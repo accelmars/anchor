@@ -6,7 +6,7 @@ use crate::model::config::WorkspaceConfig;
 /// Errors returned by workspace discovery and config loading.
 #[derive(Debug)]
 pub enum WorkspaceError {
-    /// No `.mind-root` marker was found anywhere up the directory tree.
+    /// No `.accelmars/` directory was found anywhere up the directory tree.
     NotFound,
     /// An I/O error occurred while traversing the filesystem.
     IoError(io::Error),
@@ -22,13 +22,13 @@ impl std::fmt::Display for WorkspaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WorkspaceError::NotFound => {
-                write!(f, "no workspace found. Run 'mind init' to configure.")
+                write!(f, "no workspace found. Run 'anchor init' to configure.")
             }
             WorkspaceError::IoError(e) => write!(f, "I/O error: {}", e),
             WorkspaceError::UnsupportedSchemaVersion(v) => {
                 write!(
                     f,
-                    "mind workspace schema version \"{}\" is not supported by this version of mind.\nPlease upgrade: https://github.com/accelmars/mind-engine",
+                    "anchor workspace schema version \"{}\" is not supported by this version of anchor.\nPlease upgrade: https://github.com/accelmars/anchor",
                     v
                 )
             }
@@ -43,16 +43,16 @@ impl From<io::Error> for WorkspaceError {
     }
 }
 
-/// Walk up the directory tree from `start`, looking for a `.mind-root` marker file.
-/// Returns the path of the directory containing the marker, with no trailing slash.
+/// Walk up the directory tree from `start`, looking for a `.accelmars/` directory.
+/// Returns the path of the directory containing `.accelmars/`, with no trailing slash.
 ///
-/// Algorithm (verbatim from 02-WORKSPACE.md §Root Discovery Algorithm):
+/// Algorithm (verbatim from 260425-anchor-workspace-layout.md §4 Root Discovery):
 /// 1. Start at `start`
-/// 2. Check if .mind-root exists in current directory
+/// 2. Check if .accelmars/ directory exists in current directory
 /// 3. If yes → workspace root found, return this path
 /// 4. If no → move to parent directory
-/// 5. If reached filesystem root (/) with no .mind-root found:
-///    → hard error: "no workspace found. Run 'mind init' to configure."
+/// 5. If reached filesystem root (/) with no .accelmars/ found:
+///    → hard error: "no workspace found. Run 'anchor init' to configure."
 /// 6. Repeat from step 2
 ///
 /// Extracted from `find_workspace_root` so callers that already know their start
@@ -61,8 +61,8 @@ pub(crate) fn find_workspace_root_from(start: &Path) -> Result<PathBuf, Workspac
     let mut current = start.to_path_buf();
 
     loop {
-        let marker = current.join(".mind-root");
-        match marker.exists() {
+        let marker = current.join(".accelmars");
+        match marker.is_dir() {
             true => return Ok(current),
             false => {
                 let parent = current.parent().map(|p| p.to_path_buf());
@@ -78,24 +78,24 @@ pub(crate) fn find_workspace_root_from(start: &Path) -> Result<PathBuf, Workspac
 }
 
 /// Walk up the directory tree from the current working directory, looking for a
-/// `.mind-root` marker file. Returns the path of the directory containing the
-/// marker, with no trailing slash.
+/// `.accelmars/` directory. Returns the path of the directory containing it,
+/// with no trailing slash.
 pub fn find_workspace_root() -> Result<PathBuf, WorkspaceError> {
     let start = std::env::current_dir().map_err(WorkspaceError::IoError)?;
     find_workspace_root_from(&start)
 }
 
-/// Read `.mind/config.json` from the given workspace root, deserialize it,
+/// Read `.accelmars/anchor/config.json` from the given workspace root, deserialize it,
 /// and enforce schema version compatibility.
 #[allow(dead_code)]
 ///
 /// PHASE-2-BRIDGE Contract 2: schema_version is required and hard-enforced.
 /// Any unknown version causes a hard stop — never degrade silently.
 ///
-/// Error message format (exact, per 07-PHASE-BRIDGE.md §Contract 2):
-/// `mind workspace schema version "{v}" is not supported by this version of mind.`
+/// Error message format (exact, per 260425-anchor-workspace-layout.md §4):
+/// `anchor workspace schema version "{v}" is not supported by this version of anchor.`
 pub fn load_and_check_config(workspace_root: &Path) -> Result<WorkspaceConfig, WorkspaceError> {
-    let config_path = workspace_root.join(".mind").join("config.json");
+    let config_path = workspace_root.join(".accelmars").join("anchor").join("config.json");
     let content = std::fs::read_to_string(&config_path).map_err(WorkspaceError::IoError)?;
     let config: WorkspaceConfig =
         serde_json::from_str(&content).map_err(WorkspaceError::InvalidConfig)?;
@@ -112,13 +112,12 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Happy path: `.mind-root` exists in the start directory.
+    /// Happy path: `.accelmars/` directory exists in the start directory.
     /// Verifies: returns Ok(path) matching the temp dir, no trailing slash.
     #[test]
     fn test_found_happy_path() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let marker = dir.path().join(".mind-root");
-        fs::write(&marker, "").expect("failed to write marker");
+        fs::create_dir_all(dir.path().join(".accelmars")).unwrap();
 
         let root = find_workspace_root_from(dir.path()).expect("should find workspace root");
         // No trailing slash
@@ -135,12 +134,12 @@ mod tests {
         );
     }
 
-    /// Not found: no `.mind-root` anywhere up the tree from a fresh temp directory.
+    /// Not found: no `.accelmars/` anywhere up the tree from a fresh temp directory.
     /// Verifies: returns Err(WorkspaceError::NotFound), does not loop infinitely.
     #[test]
     fn test_not_found_filesystem_root_stop() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
-        // No .mind-root in dir or its ancestors (tempdir is not inside the workspace).
+        // No .accelmars/ in dir or its ancestors (tempdir is not inside the workspace).
         let result = find_workspace_root_from(dir.path());
         match result {
             Err(WorkspaceError::NotFound) => {}
@@ -148,13 +147,12 @@ mod tests {
         }
     }
 
-    /// Nested ascent: `.mind-root` at root of temp dir, start is a deep subdirectory.
-    /// Verifies: walk-up finds `.mind-root` at the correct root level.
+    /// Nested ascent: `.accelmars/` at root of temp dir, start is a deep subdirectory.
+    /// Verifies: walk-up finds `.accelmars/` at the correct root level.
     #[test]
     fn test_nested_subdirectory_ascent() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let marker = dir.path().join(".mind-root");
-        fs::write(&marker, "").expect("failed to write marker");
+        fs::create_dir_all(dir.path().join(".accelmars")).unwrap();
 
         let deep = dir.path().join("2").join("3").join("4");
         fs::create_dir_all(&deep).expect("failed to create nested dirs");
@@ -163,7 +161,7 @@ mod tests {
         assert_eq!(
             root.canonicalize().expect("canonicalize root"),
             dir.path().canonicalize().expect("canonicalize dir"),
-            "walk-up should find .mind-root at the workspace root, not at the deep subdirectory"
+            "walk-up should find .accelmars/ at the workspace root, not at the deep subdirectory"
         );
     }
 
@@ -172,15 +170,20 @@ mod tests {
     #[test]
     fn test_unsupported_schema_version() {
         let dir = tempfile::tempdir().unwrap();
-        let mind_dir = dir.path().join(".mind");
-        fs::create_dir_all(&mind_dir).unwrap();
-        fs::write(mind_dir.join("config.json"), r#"{"schema_version":"99"}"#).unwrap();
+        let anchor_dir = dir.path().join(".accelmars").join("anchor");
+        fs::create_dir_all(&anchor_dir).unwrap();
+        fs::write(anchor_dir.join("config.json"), r#"{"schema_version":"99"}"#).unwrap();
 
         let result = load_and_check_config(dir.path());
         match result {
             Err(WorkspaceError::UnsupportedSchemaVersion(v)) => {
                 assert_eq!(v, "99");
                 let msg = format!("{}", WorkspaceError::UnsupportedSchemaVersion(v));
+                assert!(
+                    msg.contains("anchor workspace schema version"),
+                    "error message must reference 'anchor workspace schema version', got: {}",
+                    msg
+                );
                 assert!(
                     msg.contains("not supported"),
                     "error message must contain 'not supported', got: {}",

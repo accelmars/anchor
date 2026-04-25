@@ -3,9 +3,9 @@
 // Exercises the full transaction pipeline: PLAN → APPLY → VALIDATE → COMMIT (or ROLLBACK).
 // Tests use the library API directly via accelmars_mind crate.
 
-use accelmars_mind::core::{scanner, transaction};
-use accelmars_mind::infra::{lock, temp};
-use accelmars_mind::model::manifest::Manifest;
+use accelmars_anchor::core::{scanner, transaction};
+use accelmars_anchor::infra::{lock, temp};
+use accelmars_anchor::model::manifest::Manifest;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -16,8 +16,7 @@ use tempfile::TempDir;
 fn make_workspace() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    fs::write(root.join(".mind-root"), "").unwrap();
-    fs::create_dir_all(root.join(".mind")).unwrap();
+    fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
     tmp
 }
 
@@ -102,7 +101,7 @@ fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
         phase: "PLAN".to_string(),
     };
 
-    if let Err(e) = accelmars_mind::model::manifest::write_manifest(&op_dir.path, &manifest) {
+    if let Err(e) = accelmars_anchor::model::manifest::write_manifest(&op_dir.path, &manifest) {
         drop(lock_guard);
         return MvOutcome::Error(format!("manifest: {e}"));
     }
@@ -285,7 +284,7 @@ fn test_apply_originals_not_touched() {
         },
         phase: "PLAN".to_string(),
     };
-    accelmars_mind::model::manifest::write_manifest(&op_dir.path, &manifest).unwrap();
+    accelmars_anchor::model::manifest::write_manifest(&op_dir.path, &manifest).unwrap();
 
     // Run APPLY only
     transaction::apply(root, &plan, &op_dir, &mut manifest).unwrap();
@@ -420,8 +419,8 @@ fn test_dst_already_exists_error() {
     assert_eq!(read_file(root, "a.md"), a_before, "a.md must be unchanged");
 }
 
-// ─── Test 9: Consecutive moves both succeed (no stale .mind/tmp/) ─────────────
-// Regression test for the bug where cleanup_op_dir left behind an empty .mind/tmp/,
+// ─── Test 9: Consecutive moves both succeed (no stale .accelmars/anchor/tmp/) ─
+// Regression test for the bug where cleanup_op_dir left behind an empty tmp/,
 // causing the second acquire_lock to return StaleLock.
 
 #[test]

@@ -173,7 +173,7 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
             step_total = 0;
         } else {
             // --path only: show remaining prompts, no workspace root step.
-            let is_reinit = chosen.join(".mind-root").exists();
+            let is_reinit = chosen.join(".accelmars").join("anchor").is_dir();
             let no_repos = count_git_repos(&chosen) == 0;
             step_total = compute_step_total(false, no_repos, is_reinit);
         }
@@ -201,7 +201,7 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
             )?;
             writeln!(writer)?;
 
-            let is_reinit_candidate = candidate.join(".mind-root").exists();
+            let is_reinit_candidate = candidate.join(".accelmars").join("anchor").is_dir();
             let no_repos_candidate = n_repos == 0;
             step_total = compute_step_total(true, no_repos_candidate, is_reinit_candidate);
 
@@ -284,8 +284,7 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     }
 
     // Check if already initialized at chosen path.
-    let mind_root_path = chosen.join(".mind-root");
-    if mind_root_path.exists() {
+    if chosen.join(".accelmars").join("anchor").is_dir() {
         if step_total > 0 {
             write!(
                 writer,
@@ -313,7 +312,7 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     if step_total > 0 {
         write!(
             writer,
-            "[{}/{}] Place .mind-root here? [Y/n]: ",
+            "[{}/{}] Place .accelmars/ here? [Y/n]: ",
             step_current, step_total
         )?;
         writer.flush()?;
@@ -326,38 +325,38 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     do_init(&chosen, &mut writer)
 }
 
-/// Default `.mindacked` content written by `mind init`.
+/// Default `.accelmars/anchor/acked` content written by `anchor init`.
 ///
 /// Contains a comment header explaining the syntax and purpose.
 /// No patterns are included by default — the list starts empty.
 /// Workspace-specific paths are NOT included as defaults — users add their own.
 ///
-/// Note: `.mindignore` (exclude from index) and `.mindacked` (suppress output) are
-/// orthogonal. A path in both is valid; `.mindignore` wins (not scanned = no refs).
-/// Adding the same path to `.mindacked` is harmless but redundant.
-const DEFAULT_MINDACKED: &str = "\
-# .mindacked — acknowledged broken references (deferred repair)
+/// Note: `.accelmars/anchor/ignore` (exclude from index) and `.accelmars/anchor/acked`
+/// (suppress output) are orthogonal. A path in both is valid; ignore wins (not scanned = no refs).
+/// Adding the same path to acked is harmless but redundant.
+const DEFAULT_ACKED: &str = "\
+# .accelmars/anchor/acked — acknowledged broken references (deferred repair)
 # Source paths matching these patterns will have their broken outbound refs
-# suppressed from `mind file validate` output.
+# suppressed from `anchor validate` output.
 # Syntax follows .gitignore rules (https://git-scm.com/docs/gitignore)
 # A pattern without / matches at any depth. /pattern anchors to workspace root.
 #
 # Files matching these patterns remain fully indexed — they are still valid
 # reference targets. This list represents repair debt — review it periodically.
-# Note: .mindignore (exclude from index) and .mindacked (suppress output) are
-# orthogonal. A path in both is valid; .mindignore wins (not scanned = no refs).
+# Note: .accelmars/anchor/ignore (exclude from index) and .accelmars/anchor/acked
+# (suppress output) are orthogonal. ignore wins (not scanned = no refs).
 ";
 
-/// Default `.mindignore` content written by `mind init`.
+/// Default `.accelmars/anchor/ignore` content written by `anchor init`.
 ///
 /// Contains sensible defaults (node_modules/, target/).
 /// Includes a comment header explaining the syntax and Phase 1 scope.
 /// Workspace-specific paths are NOT included as defaults — users add their own.
-const DEFAULT_MINDIGNORE: &str = "\
-# .mindignore — patterns excluded from mind file operations
+const DEFAULT_IGNORE: &str = "\
+# .accelmars/anchor/ignore — patterns excluded from anchor file operations
 # Syntax follows .gitignore rules (https://git-scm.com/docs/gitignore)
 # A pattern without / matches at any depth. /pattern anchors to workspace root.
-# Note: per-directory .mindignore files are not supported in Phase 1 — only
+# Note: per-directory ignore files are not supported in Phase 1 — only
 # the root-level file is read.
 
 # Third-party package directories
@@ -367,77 +366,82 @@ node_modules/
 target/
 ";
 
-/// Write `.mindignore` at `path` if it does not already exist.
+/// Write `.accelmars/anchor/ignore` if it does not already exist.
 ///
 /// Returns `true` if the file was created, `false` if it already existed and was skipped.
-/// Never overwrites an existing `.mindignore` — users may have customized it.
-fn ensure_mindignore(path: &Path) -> Result<bool, InitError> {
-    let mindignore_path = path.join(".mindignore");
-    if mindignore_path.exists() {
+/// Never overwrites an existing ignore file — users may have customized it.
+fn ensure_ignore(path: &Path) -> Result<bool, InitError> {
+    let ignore_path = path.join(".accelmars").join("anchor").join("ignore");
+    if ignore_path.exists() {
         Ok(false)
     } else {
-        std::fs::write(&mindignore_path, DEFAULT_MINDIGNORE)?;
+        std::fs::write(&ignore_path, DEFAULT_IGNORE)?;
         Ok(true)
     }
 }
 
-/// Write `.mindacked` at `path` if it does not already exist.
+/// Write `.accelmars/anchor/acked` if it does not already exist.
 ///
 /// Returns `true` if the file was created, `false` if it already existed and was skipped.
-/// Never overwrites an existing `.mindacked` — users may have customized it.
-fn ensure_mindacked(path: &Path) -> Result<bool, InitError> {
-    let mindacked_path = path.join(".mindacked");
-    if mindacked_path.exists() {
+/// Never overwrites an existing acked file — users may have customized it.
+fn ensure_acked(path: &Path) -> Result<bool, InitError> {
+    let acked_path = path.join(".accelmars").join("anchor").join("acked");
+    if acked_path.exists() {
         Ok(false)
     } else {
-        std::fs::write(&mindacked_path, DEFAULT_MINDACKED)?;
+        std::fs::write(&acked_path, DEFAULT_ACKED)?;
         Ok(true)
     }
 }
 
 /// Execute fresh initialization at `path`.
 fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
-    // a. Create .mind-root as empty file (zero bytes)
-    std::fs::write(path.join(".mind-root"), b"")?;
+    // a. Create .accelmars/ and .accelmars/anchor/ directories
+    std::fs::create_dir_all(path.join(".accelmars").join("anchor"))?;
 
-    // b. Create .mind/ directory
-    std::fs::create_dir_all(path.join(".mind"))?;
+    // b. Write .accelmars/config.json (workspace-level)
+    let workspace_config_path = path.join(".accelmars").join("config.json");
+    atomic::atomic_write(&workspace_config_path, r#"{"schema_version":"1"}"#)
+        .map_err(|e| InitError::Io(e.into()))?;
 
-    // c. Write .mind/config.json atomically
+    // c. Write .accelmars/anchor/config.json atomically
     let config = WorkspaceConfig::phase1();
     let config_json =
         serde_json::to_string(&config).expect("WorkspaceConfig serialization is infallible");
-    let config_path = path.join(".mind").join("config.json");
+    let config_path = path.join(".accelmars").join("anchor").join("config.json");
     atomic::atomic_write(&config_path, &config_json).map_err(|e| InitError::Io(e.into()))?;
 
-    // d. Write .mindignore at workspace root (only if not already present)
-    let mindignore_created = ensure_mindignore(path)?;
+    // d. Write .accelmars/anchor/ignore (only if not already present)
+    let ignore_created = ensure_ignore(path)?;
 
-    // e. Write .mindacked at workspace root (only if not already present)
-    let mindacked_created = ensure_mindacked(path)?;
+    // e. Write .accelmars/anchor/acked (only if not already present)
+    let acked_created = ensure_acked(path)?;
 
     // f. Confirmation output
-    writeln!(writer, "\u{2192} Created  .mind-root")?;
+    writeln!(writer, "\u{2192} Created  .accelmars/")?;
     writeln!(
         writer,
-        "\u{2192} Created  .mind/config.json  {{\"schema_version\": \"1\"}}"
+        "\u{2192} Created  .accelmars/anchor/config.json  {{\"schema_version\": \"1\"}}"
     )?;
-    if mindignore_created {
-        writeln!(writer, "\u{2192} Created  .mindignore")?;
+    if ignore_created {
+        writeln!(writer, "\u{2192} Created  .accelmars/anchor/ignore")?;
     } else {
-        writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+        writeln!(
+            writer,
+            "\u{2192} Skipped  .accelmars/anchor/ignore (already exists)"
+        )?;
     }
-    if mindacked_created {
-        writeln!(writer, "\u{2192} Created  .mindacked")?;
+    if acked_created {
+        writeln!(writer, "\u{2192} Created  .accelmars/anchor/acked")?;
     } else {
-        writeln!(writer, "\u{2192} Skipped  .mindacked (already exists)")?;
+        writeln!(
+            writer,
+            "\u{2192} Skipped  .accelmars/anchor/acked (already exists)"
+        )?;
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
-    writeln!(
-        writer,
-        "Next: run 'mind file validate' to check reference health."
-    )?;
+    writeln!(writer, "Next: run 'anchor validate' to check reference health.")?;
 
     Ok(())
 }
@@ -446,49 +450,52 @@ fn do_init<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
 ///
 /// PHASE-2-BRIDGE Contract 3 guard: never touch knowledge.db
 /// even though it doesn't exist in Phase 1.
-/// Re-init writes config.json only. All other .mind/ contents (including
-/// knowledge.db when it exists in Phase 2) are explicitly preserved.
+/// Re-init writes config.json only. All other .accelmars/anchor/ contents
+/// (including knowledge.db when it exists in Phase 2) are explicitly preserved.
 fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
-    let mind_dir = path.join(".mind");
-    std::fs::create_dir_all(&mind_dir)?;
+    let anchor_dir = path.join(".accelmars").join("anchor");
+    std::fs::create_dir_all(&anchor_dir)?;
 
     // PHASE-2-BRIDGE Contract 3 guard: never touch knowledge.db
     // even though it doesn't exist in Phase 1.
     // The only file we write in re-init is config.json.
-    // All other .mind/ contents — including knowledge.db — are not touched.
+    // All other .accelmars/anchor/ contents — including knowledge.db — are not touched.
 
     let config = WorkspaceConfig::phase1();
     let config_json =
         serde_json::to_string(&config).expect("WorkspaceConfig serialization is infallible");
-    let config_path = mind_dir.join("config.json");
+    let config_path = anchor_dir.join("config.json");
     atomic::atomic_write(&config_path, &config_json).map_err(|e| InitError::Io(e.into()))?;
 
-    // Write .mindignore if not present (safe to add to existing workspaces)
-    let mindignore_created = ensure_mindignore(path)?;
+    // Write ignore file if not present (safe to add to existing workspaces)
+    let ignore_created = ensure_ignore(path)?;
 
-    // Write .mindacked if not present (safe to add to existing workspaces)
-    let mindacked_created = ensure_mindacked(path)?;
+    // Write acked file if not present (safe to add to existing workspaces)
+    let acked_created = ensure_acked(path)?;
 
     writeln!(
         writer,
-        "\u{2192} Created  .mind/config.json  {{\"schema_version\": \"1\"}}"
+        "\u{2192} Created  .accelmars/anchor/config.json  {{\"schema_version\": \"1\"}}"
     )?;
-    if mindignore_created {
-        writeln!(writer, "\u{2192} Created  .mindignore")?;
+    if ignore_created {
+        writeln!(writer, "\u{2192} Created  .accelmars/anchor/ignore")?;
     } else {
-        writeln!(writer, "\u{2192} Skipped  .mindignore (already exists)")?;
+        writeln!(
+            writer,
+            "\u{2192} Skipped  .accelmars/anchor/ignore (already exists)"
+        )?;
     }
-    if mindacked_created {
-        writeln!(writer, "\u{2192} Created  .mindacked")?;
+    if acked_created {
+        writeln!(writer, "\u{2192} Created  .accelmars/anchor/acked")?;
     } else {
-        writeln!(writer, "\u{2192} Skipped  .mindacked (already exists)")?;
+        writeln!(
+            writer,
+            "\u{2192} Skipped  .accelmars/anchor/acked (already exists)"
+        )?;
     }
     writeln!(writer)?;
     writeln!(writer, "Done. Workspace root: {}", path.display())?;
-    writeln!(
-        writer,
-        "Next: run 'mind file validate' to check reference health."
-    )?;
+    writeln!(writer, "Next: run 'anchor validate' to check reference health.")?;
 
     Ok(())
 }
@@ -503,7 +510,7 @@ mod tests {
     }
 
     /// Happy path: temp dir with two git repo subdirs (but no .git itself).
-    /// Verifies: .mind-root is zero bytes, config.json deserializes to schema_version "1",
+    /// Verifies: .accelmars/anchor/config.json deserializes to schema_version "1",
     /// no .tmp file left behind.
     #[test]
     fn test_happy_path() {
@@ -512,24 +519,22 @@ mod tests {
         make_git_repo(&root.path().join("repo-b"));
 
         // detect_candidate(root) → root (not a git repo, contains 2 git repo subdirs)
-        // Input: accept default root (Enter), accept "Place .mind-root here?" (Enter)
+        // Input: accept default root (Enter), accept "Place .accelmars/ here?" (Enter)
         let input = "\n\n";
         let mut output = Vec::new();
 
         run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
 
-        // .mind-root exists at root and is zero bytes
-        let mind_root = root.path().join(".mind-root");
-        assert!(mind_root.exists(), ".mind-root must exist");
-        assert_eq!(
-            fs::metadata(&mind_root).unwrap().len(),
-            0,
-            ".mind-root must be zero bytes"
+        // .accelmars/anchor/config.json exists and deserializes correctly
+        let config_path = root
+            .path()
+            .join(".accelmars")
+            .join("anchor")
+            .join("config.json");
+        assert!(
+            config_path.exists(),
+            ".accelmars/anchor/config.json must exist"
         );
-
-        // .mind/config.json exists and deserializes correctly
-        let config_path = root.path().join(".mind").join("config.json");
-        assert!(config_path.exists(), ".mind/config.json must exist");
         let content = fs::read_to_string(&config_path).unwrap();
         let config: WorkspaceConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(
@@ -538,36 +543,40 @@ mod tests {
         );
 
         // Atomic write: no .tmp file left behind
-        let tmp_path = root.path().join(".mind").join("config.json.tmp");
+        let tmp_path = root
+            .path()
+            .join(".accelmars")
+            .join("anchor")
+            .join("config.json.tmp");
         assert!(
             !tmp_path.exists(),
             ".tmp file must not be left behind after init"
         );
     }
 
-    /// Re-init: existing .mind-root + config.json. Simulate confirming re-init.
-    /// Verifies: only config.json overwritten, knowledge.db and other .mind/ contents untouched.
+    /// Re-init: existing .accelmars/anchor/ structure. Simulate confirming re-init.
+    /// Verifies: only config.json overwritten, knowledge.db and other .accelmars/anchor/ contents untouched.
     #[test]
     fn test_reinit() {
         let root = tempfile::tempdir().unwrap();
         make_git_repo(&root.path().join("repo-a"));
 
         // Pre-existing initialization
-        fs::write(root.path().join(".mind-root"), b"").unwrap();
-        fs::create_dir_all(root.path().join(".mind")).unwrap();
+        let anchor_dir = root.path().join(".accelmars").join("anchor");
+        fs::create_dir_all(&anchor_dir).unwrap();
         fs::write(
-            root.path().join(".mind").join("config.json"),
+            anchor_dir.join("config.json"),
             r#"{"schema_version":"1"}"#,
         )
         .unwrap();
 
         // Fake knowledge.db — must NOT be touched (PHASE-2-BRIDGE Contract 3 guard)
-        let knowledge_db_path = root.path().join(".mind").join("knowledge.db");
+        let knowledge_db_path = anchor_dir.join("knowledge.db");
         let original_db_content = b"fake knowledge db content";
         fs::write(&knowledge_db_path, original_db_content).unwrap();
 
-        // Other .mind/ content — must also be preserved
-        let other_file = root.path().join(".mind").join("other.txt");
+        // Other .accelmars/anchor/ content — must also be preserved
+        let other_file = anchor_dir.join("other.txt");
         fs::write(&other_file, b"preserved").unwrap();
 
         // Input: accept default root (Enter), confirm re-init with "y"
@@ -577,7 +586,7 @@ mod tests {
         run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
 
         // config.json was overwritten with valid content
-        let config_path = root.path().join(".mind").join("config.json");
+        let config_path = anchor_dir.join("config.json");
         let content = fs::read_to_string(&config_path).unwrap();
         let config: WorkspaceConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(config.schema_version, "1");
@@ -628,15 +637,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         make_git_repo(&root.path().join("repo-a"));
 
-        // Pre-existing .mind-root + config.json
-        fs::write(root.path().join(".mind-root"), b"").unwrap();
-        fs::create_dir_all(root.path().join(".mind")).unwrap();
+        // Pre-existing .accelmars/anchor/ structure
+        let anchor_dir = root.path().join(".accelmars").join("anchor");
+        fs::create_dir_all(&anchor_dir).unwrap();
         let original_config = r#"{"schema_version":"1"}"#;
-        fs::write(
-            root.path().join(".mind").join("config.json"),
-            original_config.as_bytes(),
-        )
-        .unwrap();
+        fs::write(anchor_dir.join("config.json"), original_config.as_bytes()).unwrap();
 
         // Input: accept default root (Enter), decline re-init with "n"
         let input = "\nn\n";
@@ -651,7 +656,7 @@ mod tests {
         );
 
         // config.json unchanged
-        let content = fs::read_to_string(root.path().join(".mind").join("config.json")).unwrap();
+        let content = fs::read_to_string(anchor_dir.join("config.json")).unwrap();
         assert_eq!(
             content, original_config,
             "config.json must be unchanged after declining"
@@ -687,7 +692,7 @@ mod tests {
     }
 
     /// Error retry succeeds: first path does not exist, second path is valid.
-    /// Verifies: wizard completes successfully and .mind-root created at second path.
+    /// Verifies: wizard completes successfully and .accelmars/anchor/ created at second path.
     #[test]
     fn test_error_retry_succeeds() {
         let root = tempfile::tempdir().unwrap();
@@ -705,15 +710,20 @@ mod tests {
         // start = root, but user types second.path() as the override
         run_with_io(root.path(), input.as_bytes(), &mut output, false, None).unwrap();
 
-        // .mind-root must be at second path (where user retried to)
+        // .accelmars/anchor/config.json must be at second path (where user retried to)
         assert!(
-            second.path().join(".mind-root").exists(),
-            ".mind-root must exist at retry path"
+            second
+                .path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist at retry path"
         );
         // NOT at root
         assert!(
-            !root.path().join(".mind-root").exists(),
-            ".mind-root must NOT exist at original root"
+            !root.path().join(".accelmars").join("anchor").is_dir(),
+            ".accelmars/anchor/ must NOT exist at original root"
         );
     }
 
@@ -745,7 +755,7 @@ mod tests {
     }
 
     /// --yes accepts detected root without prompting.
-    /// Verifies: .mind-root created, no workspace prompt in output.
+    /// Verifies: .accelmars/anchor/config.json created, no workspace prompt in output.
     #[test]
     fn test_yes_accepts_detected_root() {
         let root = tempfile::tempdir().unwrap();
@@ -756,8 +766,12 @@ mod tests {
         run_with_io(root.path(), "".as_bytes(), &mut output, true, None).unwrap();
 
         assert!(
-            root.path().join(".mind-root").exists(),
-            ".mind-root must exist after --yes init"
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist after --yes init"
         );
 
         // No step indicator or workspace prompt in output
@@ -802,7 +816,7 @@ mod tests {
     }
 
     /// --path skips detection and uses the given path.
-    /// Verifies: .mind-root created at explicit path, no "Detecting" output.
+    /// Verifies: .accelmars/anchor/config.json created at explicit path, no "Detecting" output.
     #[test]
     fn test_path_skips_detection() {
         let explicit = tempfile::tempdir().unwrap();
@@ -825,8 +839,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            explicit.path().join(".mind-root").exists(),
-            ".mind-root must exist at explicit path"
+            explicit
+                .path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist at explicit path"
         );
 
         let out = String::from_utf8(output).unwrap();
@@ -838,7 +857,7 @@ mod tests {
     }
 
     /// --yes --path uses explicit path and emits no prompts.
-    /// Verifies: .mind-root created, no step indicators or prompt text.
+    /// Verifies: .accelmars/anchor/config.json created, no step indicators or prompt text.
     #[test]
     fn test_yes_and_path_together() {
         let explicit = tempfile::tempdir().unwrap();
@@ -858,8 +877,13 @@ mod tests {
         .unwrap();
 
         assert!(
-            explicit.path().join(".mind-root").exists(),
-            ".mind-root must exist after --yes --path init"
+            explicit
+                .path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist after --yes --path init"
         );
 
         let out = String::from_utf8(output).unwrap();

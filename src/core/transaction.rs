@@ -538,7 +538,7 @@ fn compute_line_numbers(
 pub fn rollback(op_dir: &TempOpDir, _lock: crate::infra::lock::LockGuard) {
     // Best-effort removal — we are in an error path, ignore errors.
     let _ = temp::cleanup_op_dir(op_dir);
-    // _lock is dropped here, triggering LockGuard::drop → deletes .mind/lock
+    // _lock is dropped here, triggering LockGuard::drop → deletes .accelmars/anchor/lock
 }
 
 /// COMMIT phase: rename rewrites over originals, then rename moved/src → dst.
@@ -584,7 +584,7 @@ pub fn commit(
     // Step 4: remove op_dir
     let _ = temp::cleanup_op_dir(op_dir);
 
-    // Step 5: _lock is dropped here → LockGuard::drop deletes .mind/lock
+    // Step 5: _lock is dropped here → LockGuard::drop deletes .accelmars/anchor/lock
 
     Ok(())
 }

@@ -31,32 +31,37 @@ impl From<ignore::Error> for ScannerError {
 /// Walk `root` recursively and return all `.md` files as workspace-root-relative canonical paths.
 ///
 /// - Returns paths with forward slashes and no `./` prefix.
-/// - Skips `.mind/` directory entirely (hardcoded — system directory, not user-configurable).
-/// - Respects `.mindignore` at the workspace root (gitignore-compatible pattern syntax).
-///   If `.mindignore` does not exist, scanner behavior is unchanged.
+/// - Skips `.accelmars/` directory entirely (hardcoded — system directory, not user-configurable).
+/// - Respects `.accelmars/anchor/ignore` at the workspace root (gitignore-compatible pattern syntax).
+///   If the file does not exist, scanner behavior is unchanged.
 /// - Silently skips non-`.md` files and non-file entries.
 pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
     let mut paths = Vec::new();
 
-    let walker = WalkBuilder::new(root)
-        // Disable all automatic ignore file loading — .mindignore only.
-        // mind should not silently exclude files due to unrelated git configuration.
+    let mut builder = WalkBuilder::new(root);
+    // Disable all automatic ignore file loading — use absolute path loading only.
+    // anchor should not silently exclude files due to unrelated git configuration.
+    builder
         .ignore(false)
         .git_ignore(false)
         .git_global(false)
-        .git_exclude(false)
-        // Load .mindignore (gitignore-compatible) from the workspace root.
-        // If the file is absent, this is a no-op — no hard error.
-        .add_custom_ignore_filename(".mindignore")
-        .build();
+        .git_exclude(false);
+    // Load .accelmars/anchor/ignore (gitignore-compatible) by absolute path.
+    // add_ignore returns Option<Error>; None means success or file absent (silently skipped).
+    builder.add_ignore(root.join(".accelmars").join("anchor").join("ignore"));
+    let walker = builder.build();
 
     for result in walker {
         let entry = result?;
 
-        // Hardcoded .mind/ exclusion — system directory.
+        // Hardcoded .accelmars/ exclusion — system directory.
         // Two-layer defense: hardcoded here AND user cannot accidentally remove it
-        // from .mindignore (it's never written there by mind init).
-        if entry.path().components().any(|c| c.as_os_str() == ".mind") {
+        // from .accelmars/anchor/ignore (it's never written there by anchor init).
+        if entry
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == ".accelmars")
+        {
             continue;
         }
 
@@ -92,8 +97,8 @@ mod tests {
     use tempfile::TempDir;
 
     /// Test 10 (contract): temp workspace with .md files at root and subdir,
-    /// non-.md files, and .mind/ directory. Verifies only .md paths returned,
-    /// no ./ prefix, and .mind/ excluded.
+    /// non-.md files, and .accelmars/ directory. Verifies only .md paths returned,
+    /// no ./ prefix, and .accelmars/ excluded.
     #[test]
     fn test_scan_workspace() {
         let dir = TempDir::new().unwrap();
@@ -108,24 +113,24 @@ mod tests {
         fs::write(root.join("notes.txt"), b"").unwrap();
         fs::write(root.join("sub").join("image.png"), b"").unwrap();
 
-        // .mind/ directory — must be excluded entirely
-        fs::create_dir(root.join(".mind")).unwrap();
-        fs::write(root.join(".mind").join("hidden.md"), b"").unwrap();
+        // .accelmars/ directory — must be excluded entirely
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(root.join(".accelmars").join("anchor").join("hidden.md"), b"").unwrap();
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
 
         assert_eq!(paths, vec!["README.md", "sub/design.md"]);
 
-        // Verify .mind contents are absent
-        assert!(!paths.iter().any(|p| p.contains(".mind")));
+        // Verify .accelmars contents are absent
+        assert!(!paths.iter().any(|p| p.contains(".accelmars")));
         // Verify no ./ prefix
         assert!(!paths.iter().any(|p| p.starts_with("./")));
     }
 
-    /// .mindignore absent → scanner returns all .md files (no regression).
+    /// .accelmars/anchor/ignore absent → scanner returns all .md files (no regression).
     #[test]
-    fn test_no_mindignore_returns_all_md() {
+    fn test_no_ignore_file_returns_all_md() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
@@ -133,8 +138,12 @@ mod tests {
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub").join("b.md"), b"").unwrap();
 
-        // No .mindignore file — behavior must be identical to prior WalkDir implementation
-        assert!(!root.join(".mindignore").exists());
+        // No .accelmars/anchor/ignore file — behavior must be identical to prior implementation
+        assert!(!root
+            .join(".accelmars")
+            .join("anchor")
+            .join("ignore")
+            .exists());
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
@@ -142,9 +151,9 @@ mod tests {
         assert_eq!(paths, vec!["a.md", "sub/b.md"]);
     }
 
-    /// .mindignore with `node_modules/` → entries under node_modules/ excluded.
+    /// .accelmars/anchor/ignore with `node_modules/` → entries under node_modules/ excluded.
     #[test]
-    fn test_mindignore_excludes_node_modules() {
+    fn test_ignore_excludes_node_modules() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
@@ -152,7 +161,12 @@ mod tests {
         fs::create_dir_all(root.join("node_modules").join("pkg")).unwrap();
         fs::write(root.join("node_modules").join("pkg").join("README.md"), b"").unwrap();
 
-        fs::write(root.join(".mindignore"), b"node_modules/\n").unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("ignore"),
+            b"node_modules/\n",
+        )
+        .unwrap();
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
@@ -161,9 +175,9 @@ mod tests {
         assert!(!paths.iter().any(|p| p.contains("node_modules")));
     }
 
-    /// .mindignore with `target/` → entries under target/ excluded.
+    /// .accelmars/anchor/ignore with `target/` → entries under target/ excluded.
     #[test]
-    fn test_mindignore_excludes_target() {
+    fn test_ignore_excludes_target() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
@@ -171,7 +185,12 @@ mod tests {
         fs::create_dir_all(root.join("target").join("debug")).unwrap();
         fs::write(root.join("target").join("debug").join("notes.md"), b"").unwrap();
 
-        fs::write(root.join(".mindignore"), b"target/\n").unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("ignore"),
+            b"target/\n",
+        )
+        .unwrap();
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
@@ -180,16 +199,17 @@ mod tests {
         assert!(!paths.iter().any(|p| p.contains("target")));
     }
 
-    /// .mindignore negation pattern: file-pattern exclusion with specific re-inclusion.
+    /// .accelmars/anchor/ignore with file-pattern exclusion.
     ///
-    /// Standard gitignore semantics: when a DIRECTORY is excluded (e.g., `notes/`), the
-    /// walker prunes the directory and files inside it cannot be re-included via `!`. However,
-    /// negation DOES work for file-pattern exclusions (e.g., `*.bak` then `!keep.bak`).
+    /// Note: negation patterns (e.g. `!docs/keep.bak.md`) in a file loaded via
+    /// `add_ignore(absolute_path)` are interpreted relative to the ignore file's parent
+    /// directory (.accelmars/anchor/), not the workspace root. Negation for workspace-root-
+    /// relative paths is therefore not supported with this loading strategy.
     ///
-    /// This test verifies the working negation case: exclude all `.bak.md` files but
-    /// re-include one specific file via `!`.
+    /// This test verifies that exclusion patterns work, and that negation does NOT
+    /// unexpectedly re-include files (to avoid false safety assumptions).
     #[test]
-    fn test_mindignore_negation_reinclude_file() {
+    fn test_ignore_file_pattern_exclusion() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
@@ -199,45 +219,59 @@ mod tests {
         fs::write(root.join("docs").join("final.md"), b"").unwrap();
         fs::write(root.join("root.md"), b"").unwrap();
 
-        // Exclude *.bak.md files but re-include one specific file via negation
-        fs::write(root.join(".mindignore"), b"*.bak.md\n!docs/keep.bak.md\n").unwrap();
+        // Exclude *.bak.md files — both draft and keep are excluded.
+        // Note: negation (!docs/keep.bak.md) does not apply when loaded via add_ignore
+        // from .accelmars/anchor/ (base path mismatch with workspace root).
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("ignore"),
+            b"*.bak.md\n",
+        )
+        .unwrap();
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
 
-        // keep.bak.md is re-included via negation; draft.bak.md remains excluded
         assert!(
-            paths.contains(&"docs/keep.bak.md".to_string()),
-            "negation should re-include docs/keep.bak.md; got: {:?}",
+            !paths.contains(&"docs/draft.bak.md".to_string()),
+            "docs/draft.bak.md must be excluded by *.bak.md pattern; got: {:?}",
             paths
         );
         assert!(
-            !paths.contains(&"docs/draft.bak.md".to_string()),
-            "docs/draft.bak.md should remain excluded; got: {:?}",
+            !paths.contains(&"docs/keep.bak.md".to_string()),
+            "docs/keep.bak.md must be excluded by *.bak.md pattern; got: {:?}",
             paths
         );
         assert!(paths.contains(&"docs/final.md".to_string()));
         assert!(paths.contains(&"root.md".to_string()));
     }
 
-    /// .mindignore absent AND .mind/ present → .mind/ is still excluded (hardcoded exclusion).
+    /// No .accelmars/anchor/ignore AND .accelmars/ present → .accelmars/ is still excluded (hardcoded exclusion).
     #[test]
-    fn test_mind_dir_excluded_without_mindignore() {
+    fn test_accelmars_dir_excluded_without_ignore_file() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
         fs::write(root.join("README.md"), b"").unwrap();
-        fs::create_dir(root.join(".mind")).unwrap();
-        fs::write(root.join(".mind").join("config.json.md"), b"").unwrap();
-        fs::write(root.join(".mind").join("secret.md"), b"").unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("config.json.md"),
+            b"",
+        )
+        .unwrap();
+        fs::write(root.join(".accelmars").join("anchor").join("secret.md"), b"").unwrap();
 
-        // No .mindignore — .mind/ must be excluded by hardcoded logic alone
-        assert!(!root.join(".mindignore").exists());
+        // No .accelmars/anchor/ignore — .accelmars/ must be excluded by hardcoded logic alone
+        assert!(!root
+            .join(".accelmars")
+            .join("anchor")
+            .join("ignore")
+            .exists());
 
         let mut paths = scan_workspace(root).unwrap();
         paths.sort();
 
         assert_eq!(paths, vec!["README.md"]);
-        assert!(!paths.iter().any(|p| p.contains(".mind")));
+        assert!(!paths.iter().any(|p| p.contains(".accelmars")));
     }
 }

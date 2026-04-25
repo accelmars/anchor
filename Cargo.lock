@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "accelmars-mind"
+name = "accelmars-anchor"
 version = "0.1.1"
 dependencies = [
  "clap",

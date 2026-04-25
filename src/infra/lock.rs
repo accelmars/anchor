@@ -1,15 +1,15 @@
-// src/infra/lock.rs — .mind/lock create/release/check (MF-005)
+// src/infra/lock.rs — .accelmars/anchor/lock create/release/check (MF-005)
 #![allow(dead_code)]
 //
-// PHASE-2-BRIDGE Contract 3: silently ignore unrecognized .mind/ files.
+// PHASE-2-BRIDGE Contract 3: silently ignore unrecognized .accelmars/anchor/ files.
 // knowledge.db (Phase 2) must not be deleted or errored on.
-// Any file in .mind/ not in {config.json, lock, tmp/} is silently skipped.
+// Any file in .accelmars/anchor/ not in {config.json, lock, tmp/} is silently skipped.
 
 use crate::infra::atomic::{atomic_write, AtomicWriteError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Contents of `.mind/lock`. Serialized as JSON.
+/// Contents of `.accelmars/anchor/lock`. Serialized as JSON.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LockFile {
     pub pid: u32,
@@ -17,7 +17,7 @@ pub struct LockFile {
     pub op: String,
 }
 
-/// RAII guard that releases `.mind/lock` on drop.
+/// RAII guard that releases `.accelmars/anchor/lock` on drop.
 ///
 /// Created by `acquire_lock`. Dropping this guard deletes the lock file,
 /// which releases the workspace lock. This fires on both clean exit and panic unwind.
@@ -38,7 +38,7 @@ impl Drop for LockGuard {
 pub enum LockError {
     /// Another mind process is already running with the given PID.
     AlreadyRunning { pid: u32 },
-    /// Stale `.mind/tmp/` found — a previous operation did not complete cleanly.
+    /// Stale `.accelmars/anchor/tmp/` found — a previous operation did not complete cleanly.
     StaleLock { message: String },
     /// I/O error during lock file operations.
     Io(std::io::Error),
@@ -52,7 +52,7 @@ impl std::fmt::Display for LockError {
             LockError::AlreadyRunning { pid } => {
                 write!(
                     f,
-                    "mind is already running (pid {pid}). Wait for it to finish."
+                    "anchor is already running (pid {pid}). Wait for it to finish."
                 )
             }
             LockError::StaleLock { message } => write!(f, "{message}"),
@@ -93,12 +93,12 @@ fn is_pid_alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
-/// Read `.mind/tmp/` and return the id suffix of the first op directory found.
+/// Read `.accelmars/anchor/tmp/` and return the id suffix of the first op directory found.
 /// Returns `"?"` if the directory is empty, doesn't exist, or has no `op-*` entries.
 ///
 /// PHASE-2-BRIDGE Contract 3: silently skip entries not matching the `op-*` pattern.
 fn read_op_id(workspace_root: &Path) -> String {
-    let tmp_dir = workspace_root.join(".mind").join("tmp");
+    let tmp_dir = workspace_root.join(".accelmars").join("anchor").join("tmp");
     let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
         return "?".to_string();
     };
@@ -112,24 +112,24 @@ fn read_op_id(workspace_root: &Path) -> String {
     "?".to_string()
 }
 
-/// Build the verbatim stale error message from 04-TRANSACTIONS.md §Stale error message.
+/// Build the verbatim stale error message from 260425-anchor-workspace-layout.md §Stale.
 ///
 /// Exact format required:
 /// ```text
-/// Found incomplete operation in .mind/tmp/.
-/// This usually means mind was killed mid-commit.
+/// Found incomplete operation in .accelmars/anchor/tmp/.
+/// This usually means anchor was killed mid-commit.
 ///
-/// Inspect: .mind/tmp/op-{id}/manifest.json
-/// When safe, delete .mind/tmp/ and retry.
+/// Inspect: .accelmars/anchor/tmp/op-{id}/manifest.json
+/// When safe, delete .accelmars/anchor/tmp/ and retry.
 /// ```
 fn stale_message(workspace_root: &Path) -> String {
     let id = read_op_id(workspace_root);
     format!(
-        "Found incomplete operation in .mind/tmp/.\n\
-         This usually means mind was killed mid-commit.\n\
+        "Found incomplete operation in .accelmars/anchor/tmp/.\n\
+         This usually means anchor was killed mid-commit.\n\
          \n\
-         Inspect: .mind/tmp/op-{id}/manifest.json\n\
-         When safe, delete .mind/tmp/ and retry."
+         Inspect: .accelmars/anchor/tmp/op-{id}/manifest.json\n\
+         When safe, delete .accelmars/anchor/tmp/ and retry."
     )
 }
 
@@ -169,19 +169,19 @@ pub fn unix_secs_to_iso8601(secs: u64) -> String {
 
 /// Acquire the workspace lock.
 ///
-/// Algorithm from 04-TRANSACTIONS.md §Lock check on operation start:
-/// 1. If `.mind/lock` exists:
+/// Algorithm from 260425-anchor-workspace-layout.md §Lock check on operation start:
+/// 1. If `.accelmars/anchor/lock` exists:
 ///    a. Deserialize and check PID liveness.
 ///    b. PID alive → `LockError::AlreadyRunning`
 ///    c. PID dead → `LockError::StaleLock`
-/// 2. If `.mind/lock` does NOT exist but `.mind/tmp/` exists → `LockError::StaleLock`
-/// 3. Neither exists → create `.mind/lock` atomically, return `LockGuard`.
+/// 2. If `.accelmars/anchor/lock` does NOT exist but `.accelmars/anchor/tmp/` exists → `LockError::StaleLock`
+/// 3. Neither exists → create `.accelmars/anchor/lock` atomically, return `LockGuard`.
 ///
 /// The returned `LockGuard` releases the lock when dropped.
 pub fn acquire_lock(workspace_root: &Path, op: &str) -> Result<LockGuard, LockError> {
-    let mind_dir = workspace_root.join(".mind");
-    let lock_path = mind_dir.join("lock");
-    let tmp_dir = mind_dir.join("tmp");
+    let anchor_dir = workspace_root.join(".accelmars").join("anchor");
+    let lock_path = anchor_dir.join("lock");
+    let tmp_dir = anchor_dir.join("tmp");
 
     if lock_path.exists() {
         // Lock file exists — determine liveness of the owning process.
@@ -197,7 +197,7 @@ pub fn acquire_lock(workspace_root: &Path, op: &str) -> Result<LockGuard, LockEr
         }
     }
 
-    // No lock file — check for orphan .mind/tmp/ (stale state without lock).
+    // No lock file — check for orphan .accelmars/anchor/tmp/ (stale state without lock).
     if tmp_dir.exists() {
         return Err(LockError::StaleLock {
             message: stale_message(workspace_root),
@@ -222,23 +222,23 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn make_mind_dir(root: &Path) -> PathBuf {
-        let mind = root.join(".mind");
-        fs::create_dir_all(&mind).unwrap();
-        mind
+    fn make_anchor_dir(root: &Path) -> PathBuf {
+        let anchor = root.join(".accelmars").join("anchor");
+        fs::create_dir_all(&anchor).unwrap();
+        anchor
     }
 
-    /// Test 1: Create lock — `.mind/lock` created with correct pid, started (ISO timestamp), op fields.
+    /// Test 1: Create lock — `.accelmars/anchor/lock` created with correct pid, started (ISO timestamp), op fields.
     #[test]
     fn test_create_lock_fields() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        make_mind_dir(root);
+        make_anchor_dir(root);
 
         let guard = acquire_lock(root, "file mv src dst").unwrap();
 
-        let lock_path = root.join(".mind").join("lock");
-        assert!(lock_path.exists(), ".mind/lock must exist after acquire");
+        let lock_path = root.join(".accelmars").join("anchor").join("lock");
+        assert!(lock_path.exists(), ".accelmars/anchor/lock must exist after acquire");
 
         let content = fs::read_to_string(&lock_path).unwrap();
         let lock: LockFile = serde_json::from_str(&content).unwrap();
@@ -264,7 +264,7 @@ mod tests {
     fn test_acquire_already_running() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let mind_dir = make_mind_dir(root);
+        let anchor_dir = make_anchor_dir(root);
 
         // Write a lock file with the current process's PID (always alive during the test)
         let pid = std::process::id();
@@ -273,7 +273,7 @@ mod tests {
             started: "2026-04-15T10:00:00Z".to_string(),
             op: "test".to_string(),
         };
-        fs::write(mind_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
+        fs::write(anchor_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
 
         let err = acquire_lock(root, "test").unwrap_err();
         match err {
@@ -282,7 +282,7 @@ mod tests {
                 let msg = format!("{err}");
                 assert_eq!(
                     msg,
-                    format!("mind is already running (pid {pid}). Wait for it to finish.")
+                    format!("anchor is already running (pid {pid}). Wait for it to finish.")
                 );
             }
             other => panic!("expected AlreadyRunning, got: {other:?}"),
@@ -297,10 +297,10 @@ mod tests {
     fn test_acquire_stale_dead_pid() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let mind_dir = make_mind_dir(root);
+        let anchor_dir = make_anchor_dir(root);
 
-        // Create .mind/tmp/op-99999/ so the stale message has a known id
-        fs::create_dir_all(mind_dir.join("tmp").join("op-99999")).unwrap();
+        // Create .accelmars/anchor/tmp/op-99999/ so the stale message has a known id
+        fs::create_dir_all(anchor_dir.join("tmp").join("op-99999")).unwrap();
 
         // Write a lock file with a definitely-dead PID
         let dead_pid: u32 = 999_999_999;
@@ -309,26 +309,26 @@ mod tests {
             started: "2026-04-15T10:00:00Z".to_string(),
             op: "test".to_string(),
         };
-        fs::write(mind_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
+        fs::write(anchor_dir.join("lock"), serde_json::to_string(&lock).unwrap()).unwrap();
 
         let err = acquire_lock(root, "test").unwrap_err();
         match err {
             LockError::StaleLock { message } => {
-                // Verify verbatim stale message from 04-TRANSACTIONS.md §Stale error message
+                // Verify verbatim stale message format
                 assert!(
-                    message.contains("Found incomplete operation in .mind/tmp/."),
+                    message.contains("Found incomplete operation in .accelmars/anchor/tmp/."),
                     "missing first line, got:\n{message}"
                 );
                 assert!(
-                    message.contains("This usually means mind was killed mid-commit."),
+                    message.contains("This usually means anchor was killed mid-commit."),
                     "missing second line, got:\n{message}"
                 );
                 assert!(
-                    message.contains("Inspect: .mind/tmp/op-99999/manifest.json"),
+                    message.contains("Inspect: .accelmars/anchor/tmp/op-99999/manifest.json"),
                     "missing inspect line with correct op id, got:\n{message}"
                 );
                 assert!(
-                    message.contains("When safe, delete .mind/tmp/ and retry."),
+                    message.contains("When safe, delete .accelmars/anchor/tmp/ and retry."),
                     "missing final line, got:\n{message}"
                 );
             }
@@ -336,25 +336,25 @@ mod tests {
         }
     }
 
-    /// Test 4: `.mind/tmp/` exists without `.mind/lock` → StaleLock.
+    /// Test 4: `.accelmars/anchor/tmp/` exists without `.accelmars/anchor/lock` → StaleLock.
     #[test]
     fn test_acquire_tmp_without_lock() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let mind_dir = make_mind_dir(root);
+        let anchor_dir = make_anchor_dir(root);
 
-        // Create .mind/tmp/op-12345/ but NO lock file
-        fs::create_dir_all(mind_dir.join("tmp").join("op-12345")).unwrap();
+        // Create .accelmars/anchor/tmp/op-12345/ but NO lock file
+        fs::create_dir_all(anchor_dir.join("tmp").join("op-12345")).unwrap();
 
         let err = acquire_lock(root, "test").unwrap_err();
         match err {
             LockError::StaleLock { message } => {
                 assert!(
-                    message.contains("Found incomplete operation in .mind/tmp/."),
+                    message.contains("Found incomplete operation in .accelmars/anchor/tmp/."),
                     "stale message must contain first line, got:\n{message}"
                 );
                 assert!(
-                    message.contains("Inspect: .mind/tmp/op-12345/manifest.json"),
+                    message.contains("Inspect: .accelmars/anchor/tmp/op-12345/manifest.json"),
                     "stale message must contain op id, got:\n{message}"
                 );
             }
@@ -362,14 +362,14 @@ mod tests {
         }
     }
 
-    /// Test 5: LockGuard drop releases lock — `.mind/lock` must be absent after drop.
+    /// Test 5: LockGuard drop releases lock — `.accelmars/anchor/lock` must be absent after drop.
     #[test]
     fn test_lockguard_drop_releases_lock() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        make_mind_dir(root);
+        make_anchor_dir(root);
 
-        let lock_path = root.join(".mind").join("lock");
+        let lock_path = root.join(".accelmars").join("anchor").join("lock");
 
         {
             let _guard = acquire_lock(root, "test").unwrap();
@@ -378,7 +378,7 @@ mod tests {
 
         assert!(
             !lock_path.exists(),
-            ".mind/lock must be deleted after LockGuard is dropped"
+            ".accelmars/anchor/lock must be deleted after LockGuard is dropped"
         );
     }
 

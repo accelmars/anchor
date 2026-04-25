@@ -1,12 +1,12 @@
-use accelmars_mind::cli;
-use accelmars_mind::cli::file::refs::OutputFormat;
+use accelmars_anchor::cli;
+use accelmars_anchor::cli::file::refs::OutputFormat;
 
 use clap::{Parser, Subcommand};
 use std::process;
 
 #[derive(Parser)]
 #[command(
-    name = "mind",
+    name = "anchor",
     about = "Reference-safe file operations for Markdown workspaces",
     version
 )]
@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new mind workspace
+    /// Initialize a new anchor workspace
     Init {
         /// Accept detected workspace root without prompting
         #[arg(long)]

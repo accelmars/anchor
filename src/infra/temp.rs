@@ -1,8 +1,8 @@
-// src/infra/temp.rs — .mind/tmp/ creation and cleanup (MF-005)
+// src/infra/temp.rs — .accelmars/anchor/tmp/ creation and cleanup (MF-005)
 #![allow(dead_code)]
 //
-// Temp directory structure per 04-TRANSACTIONS.md §Temp Directory Structure:
-//   .mind/tmp/
+// Temp directory structure per 260425-anchor-workspace-layout.md §Temp Directory:
+//   .accelmars/anchor/tmp/
 //     op-{timestamp-ms}/
 //       manifest.json
 //       rewrites/
@@ -37,18 +37,18 @@ impl From<std::io::Error> for TempError {
     }
 }
 
-/// Create an operation temp directory at `.mind/tmp/op-{timestamp_ms}/`.
+/// Create an operation temp directory at `.accelmars/anchor/tmp/op-{timestamp_ms}/`.
 ///
 /// Creates:
-/// - `.mind/tmp/op-{timestamp_ms}/`
-/// - `.mind/tmp/op-{timestamp_ms}/rewrites/`
-/// - `.mind/tmp/op-{timestamp_ms}/moved/`
+/// - `.accelmars/anchor/tmp/op-{timestamp_ms}/`
+/// - `.accelmars/anchor/tmp/op-{timestamp_ms}/rewrites/`
+/// - `.accelmars/anchor/tmp/op-{timestamp_ms}/moved/`
 ///
 /// Returns the created `TempOpDir`. The caller is responsible for cleanup via
 /// `cleanup_op_dir` (during rollback or after commit).
 ///
-/// Note: `.mind/tmp/` must reside on the same filesystem as the workspace so
-/// that `rename(2)` is atomic during COMMIT. Do not relocate it.
+/// Note: `.accelmars/anchor/tmp/` must reside on the same filesystem as the workspace
+/// so that `rename(2)` is atomic during COMMIT. Do not relocate it.
 pub fn create_op_dir(workspace_root: &Path) -> Result<TempOpDir, TempError> {
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -56,7 +56,11 @@ pub fn create_op_dir(workspace_root: &Path) -> Result<TempOpDir, TempError> {
         .as_millis() as u64;
 
     let op_dir_name = format!("op-{timestamp_ms}");
-    let op_dir = workspace_root.join(".mind").join("tmp").join(&op_dir_name);
+    let op_dir = workspace_root
+        .join(".accelmars")
+        .join("anchor")
+        .join("tmp")
+        .join(&op_dir_name);
 
     std::fs::create_dir_all(op_dir.join("rewrites"))?;
     std::fs::create_dir_all(op_dir.join("moved"))?;
@@ -81,7 +85,7 @@ pub fn encode_path(canonical: &CanonicalPath) -> String {
 /// identical to before the operation started.
 pub fn cleanup_op_dir(op_dir: &TempOpDir) -> Result<(), TempError> {
     std::fs::remove_dir_all(&op_dir.path)?;
-    // Remove parent `.mind/tmp/` if now empty. Best-effort: errors ignored.
+    // Remove parent `.accelmars/anchor/tmp/` if now empty. Best-effort: errors ignored.
     // `remove_dir` is safe — it only removes empty directories, so a concurrent
     // op-dir created after our remove_dir_all cannot be destroyed.
     if let Some(parent) = op_dir.path.parent() {
@@ -96,18 +100,18 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Verify create_op_dir creates `.mind/tmp/op-{timestamp}/` with `rewrites/` and `moved/` subdirs.
+    /// Verify create_op_dir creates `.accelmars/anchor/tmp/op-{timestamp}/` with `rewrites/` and `moved/` subdirs.
     #[test]
     fn test_create_op_dir_structure() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        fs::create_dir_all(root.join(".mind")).unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
 
         let op = create_op_dir(root).unwrap();
 
-        // op-{timestamp_ms}/ must be inside .mind/tmp/
-        let tmp_dir = root.join(".mind").join("tmp");
-        assert!(tmp_dir.exists(), ".mind/tmp/ must exist");
+        // op-{timestamp_ms}/ must be inside .accelmars/anchor/tmp/
+        let tmp_dir = root.join(".accelmars").join("anchor").join("tmp");
+        assert!(tmp_dir.exists(), ".accelmars/anchor/tmp/ must exist");
         assert!(op.path.exists(), "op dir must exist");
 
         // op dir name must start with "op-"
@@ -137,20 +141,20 @@ mod tests {
         assert_eq!(encode_path(&"README.md".to_string()), "README.md");
     }
 
-    /// Verify cleanup_op_dir removes the parent `.mind/tmp/` after removing the op dir.
+    /// Verify cleanup_op_dir removes the parent `.accelmars/anchor/tmp/` after removing the op dir.
     #[test]
     fn test_cleanup_op_dir_removes_parent() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        fs::create_dir_all(root.join(".mind")).unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
 
         let op = create_op_dir(root).unwrap();
         cleanup_op_dir(&op).unwrap();
 
-        let tmp_dir = root.join(".mind").join("tmp");
+        let tmp_dir = root.join(".accelmars").join("anchor").join("tmp");
         assert!(
             !tmp_dir.exists(),
-            ".mind/tmp/ must be absent after cleanup_op_dir"
+            ".accelmars/anchor/tmp/ must be absent after cleanup_op_dir"
         );
     }
 
@@ -159,7 +163,7 @@ mod tests {
     fn test_cleanup_op_dir() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        fs::create_dir_all(root.join(".mind")).unwrap();
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
 
         let op = create_op_dir(root).unwrap();
         let op_path = op.path.clone();

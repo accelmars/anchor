@@ -1,5 +1,5 @@
 [package]
-name = "accelmars-mind"
+name = "accelmars-anchor"
 version = "0.1.1"
 edition = "2021"
 description = "Reference-safe file operations for Markdown workspaces"
@@ -7,11 +7,11 @@ license = "Apache-2.0"
 repository = "https://github.com/accelmars/mind-engine"
 
 [lib]
-name = "accelmars_mind"
+name = "accelmars_anchor"
 path = "src/lib.rs"
 
 [[bin]]
-name = "mind"
+name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
