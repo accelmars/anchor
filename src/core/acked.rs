@@ -1,14 +1,14 @@
-//! Acknowledged broken-reference patterns (.mindacked).
+//! Acknowledged broken-reference patterns (.accelmars/anchor/acked).
 //!
-//! Reads `.mindacked` at the workspace root. Source canonical paths matching
+//! Reads `.accelmars/anchor/acked` at the workspace root. Source canonical paths matching
 //! any pattern have their broken outbound refs suppressed from validate output.
 //! Files are still scanned and indexed — suppression applies to output only.
 //!
-//! If `.mindacked` does not exist or cannot be read, no suppression occurs.
+//! If `.accelmars/anchor/acked` does not exist or cannot be read, no suppression occurs.
 //!
-//! Note: `.mindignore` (exclude from index) and `.mindacked` (suppress output) are
-//! orthogonal. A path in both is valid; `.mindignore` wins (not scanned = no refs
-//! produced). Adding the same path to `.mindacked` is harmless but redundant.
+//! Note: `.accelmars/anchor/ignore` (exclude from index) and `.accelmars/anchor/acked` (suppress output) are
+//! orthogonal. A path in both is valid; `.accelmars/anchor/ignore` wins (not scanned = no refs
+//! produced). Adding the same path to `.accelmars/anchor/acked` is harmless but redundant.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::Path;
@@ -18,10 +18,13 @@ pub struct AckedPatterns {
 }
 
 impl AckedPatterns {
-    /// Load `.mindacked` from `workspace_root`. Returns an instance with no
+    /// Load `.accelmars/anchor/acked` from `workspace_root`. Returns an instance with no
     /// patterns if the file is absent or unreadable (not an error).
     pub fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root.join(".mindacked");
+        let path = workspace_root
+            .join(".accelmars")
+            .join("anchor")
+            .join("acked");
         if !path.exists() {
             return Self { inner: None };
         }
@@ -59,11 +62,16 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn write_mindacked(root: &Path, content: &str) {
-        fs::write(root.join(".mindacked"), content).unwrap();
+    fn write_anchor_acked(root: &Path, content: &str) {
+        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            root.join(".accelmars").join("anchor").join("acked"),
+            content,
+        )
+        .unwrap();
     }
 
-    /// No .mindacked file → is_acked always returns false.
+    /// No .accelmars/anchor/acked file → is_acked always returns false.
     #[test]
     fn test_absent_returns_false() {
         let tmp = TempDir::new().unwrap();
@@ -76,7 +84,7 @@ mod tests {
     #[test]
     fn test_matching_pattern_returns_true() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "my-workspace/projects/archive/\n");
+        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
         let acked = AckedPatterns::load(tmp.path());
         assert!(acked.is_acked("my-workspace/projects/archive/old-contract.md"));
     }
@@ -85,7 +93,7 @@ mod tests {
     #[test]
     fn test_non_matching_pattern_returns_false() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "my-workspace/projects/archive/\n");
+        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
         let acked = AckedPatterns::load(tmp.path());
         assert!(!acked.is_acked("my-workspace/projects/active/current.md"));
     }
@@ -94,27 +102,27 @@ mod tests {
     #[test]
     fn test_multiple_patterns() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "my-workspace/projects/archive/\nother-repo/\n");
+        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\nother-repo/\n");
         let acked = AckedPatterns::load(tmp.path());
         assert!(acked.is_acked("my-workspace/projects/archive/foo.md"));
         assert!(acked.is_acked("other-repo/design/old.md"));
         assert!(!acked.is_acked("my-workspace/active/current.md"));
     }
 
-    /// Empty .mindacked file → no patterns → is_acked always false.
+    /// Empty .accelmars/anchor/acked file → no patterns → is_acked always false.
     #[test]
     fn test_empty_file_no_patterns() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "");
+        write_anchor_acked(tmp.path(), "");
         let acked = AckedPatterns::load(tmp.path());
         assert!(!acked.is_acked("any/path.md"));
     }
 
-    /// Comments-only .mindacked file → no active patterns → is_acked false.
+    /// Comments-only .accelmars/anchor/acked file → no active patterns → is_acked false.
     #[test]
     fn test_comments_only() {
         let tmp = TempDir::new().unwrap();
-        write_mindacked(tmp.path(), "# this is a comment\n# another comment\n");
+        write_anchor_acked(tmp.path(), "# this is a comment\n# another comment\n");
         let acked = AckedPatterns::load(tmp.path());
         assert!(!acked.is_acked("any/path.md"));
     }

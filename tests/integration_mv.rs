@@ -1,7 +1,7 @@
-// Integration tests for `mind file mv` — MF-006
+// Integration tests for `anchor file mv`
 //
 // Exercises the full transaction pipeline: PLAN → APPLY → VALIDATE → COMMIT (or ROLLBACK).
-// Tests use the library API directly via accelmars_mind crate.
+// Tests use the library API directly via accelmars_anchor crate.
 
 use accelmars_anchor::core::{scanner, transaction};
 use accelmars_anchor::infra::{lock, temp};
@@ -43,7 +43,7 @@ enum MvOutcome {
     Error(String),
 }
 
-/// Run the full mind file mv pipeline (PLAN→APPLY→VALIDATE→COMMIT or ROLLBACK).
+/// Run the full anchor file mv pipeline (PLAN→APPLY→VALIDATE→COMMIT or ROLLBACK).
 fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
     let src_canonical = src.to_string();
     let dst_canonical = dst.to_string();

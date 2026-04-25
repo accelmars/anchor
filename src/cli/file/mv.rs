@@ -1,4 +1,4 @@
-// src/cli/file/mv.rs — mind file mv CLI entry point (MF-006)
+// src/cli/file/mv.rs — anchor file mv
 //
 // Atomicity is filesystem-level — the final rename() step is atomic on
 // same-filesystem moves. Cross-filesystem moves (different mount points) are

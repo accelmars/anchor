@@ -1,4 +1,4 @@
-// mind init — workspace initialization wizard (MF-002 / MX-003)
+// anchor init — workspace initialization wizard
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
