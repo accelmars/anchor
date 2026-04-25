@@ -18,7 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ### Fixed
 
-- `anchor file mv` now removes empty `.mind/tmp/` directory after a successful operation (MX-008)
+- `anchor file mv` now removes empty `.mind/tmp/` directory after a successful operation
 
 ### Added
 

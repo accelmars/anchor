@@ -233,6 +233,42 @@ Zero results with `--format json`:
 
 ---
 
+## Architecture
+
+anchor works at the **workspace** level — a directory that contains one or more git repositories (not a single repo). When you run `anchor init`, it detects or accepts a workspace root and writes configuration there.
+
+Inside that workspace, anchor tracks two kinds of Markdown references:
+
+- `[text](path.md)` — standard Markdown links to other `.md` files
+- `[[wiki]]` — wiki-style links by filename stem
+
+When you move a file with `anchor file mv`, anchor rewrites every inbound reference to that file across the entire workspace before committing the filesystem rename. The rename and reference rewrites are applied as a single atomic transaction — if anything fails, the workspace rolls back to its original state unchanged.
+
+anchor does **not** track:
+
+- Non-Markdown files (code, images, binaries, data files)
+- Plain text that looks like a path but is not a Markdown link
+- References in files excluded by `.accelmars/anchor/ignore`
+
+---
+
+## When NOT to use anchor
+
+anchor is purpose-built for Markdown workspaces with cross-file links. It is the wrong tool for:
+
+- **Moving non-Markdown files.** Code, images, and binaries are not tracked. Use `git mv` or your shell for those.
+- **Global search-and-replace.** anchor rewrites references, not arbitrary strings. Use `sed` or your editor's find-and-replace.
+- **Repos with no cross-file Markdown links.** If your `.md` files don't link to each other, anchor adds overhead with no benefit.
+- **Replacing `git mv` on source code.** anchor is not a general-purpose file manager. Source code moves belong in your normal git workflow.
+
+---
+
+## Telemetry
+
+anchor collects no telemetry. No data leaves your machine.
+
+---
+
 ## Exit codes
 
 | Code | Meaning |
