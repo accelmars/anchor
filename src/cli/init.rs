@@ -955,7 +955,13 @@ mod tests {
         let input = "";
         let mut output = Vec::new();
 
-        let result = run_with_io(start.path(), input.as_bytes(), &mut output, false, Some(&bad_path));
+        let result = run_with_io(
+            start.path(),
+            input.as_bytes(),
+            &mut output,
+            false,
+            Some(&bad_path),
+        );
 
         assert!(
             matches!(result, Err(InitError::DirectoryNotFound(_))),

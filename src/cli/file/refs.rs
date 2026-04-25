@@ -39,8 +39,8 @@ pub fn run_on_root(workspace_root: &Path, target: &str, format: Option<OutputFor
         Ok((target_canonical, hits, absent)) => {
             if absent {
                 // Target not present in workspace — show suggestions instead of "No references found."
-                let workspace_files: Vec<String> = scanner::scan_workspace(workspace_root)
-                    .unwrap_or_default();
+                let workspace_files: Vec<String> =
+                    scanner::scan_workspace(workspace_root).unwrap_or_default();
                 let suggestions = suggest::suggest_similar(&target_canonical, &workspace_files);
                 eprintln!(
                     "{}",

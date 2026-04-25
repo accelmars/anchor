@@ -341,7 +341,10 @@ mod tests {
         let root = tempdir().unwrap();
         std::fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
         std::fs::write(
-            root.path().join(".accelmars").join("anchor").join("config.json"),
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json"),
             r#"{"schema_version":"1"}"#,
         )
         .unwrap();
