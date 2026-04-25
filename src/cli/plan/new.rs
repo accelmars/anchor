@@ -124,11 +124,16 @@ fn wizard_categorize<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec
     let _ = output.flush();
     let parent = read_line(input).unwrap_or_default().trim().to_string();
 
-    let _ = writeln!(output, "Items to categorize (one per line, blank to finish):");
+    let _ = writeln!(
+        output,
+        "Items to categorize (one per line, blank to finish):"
+    );
     let _ = output.flush();
     let items = collect_lines(input);
 
-    let mut ops = vec![Op::CreateDir { path: parent.clone() }];
+    let mut ops = vec![Op::CreateDir {
+        path: parent.clone(),
+    }];
 
     for item in &items {
         let basename = Path::new(item.as_str())
@@ -165,7 +170,9 @@ fn wizard_archive<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec<Op
     let _ = output.flush();
     let items = collect_lines(input);
 
-    let mut ops = vec![Op::CreateDir { path: archive.clone() }];
+    let mut ops = vec![Op::CreateDir {
+        path: archive.clone(),
+    }];
 
     for item in &items {
         let basename = Path::new(item.as_str())
@@ -214,7 +221,10 @@ fn wizard_rename<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec<Op>
 }
 
 fn wizard_scaffold<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec<Op> {
-    let _ = writeln!(output, "Directories to create (one per line, blank to finish):");
+    let _ = writeln!(
+        output,
+        "Directories to create (one per line, blank to finish):"
+    );
     let _ = output.flush();
     collect_lines(input)
         .into_iter()
@@ -239,7 +249,11 @@ fn read_line<R: BufRead>(input: &mut R) -> Option<String> {
     let mut line = String::new();
     match input.read_line(&mut line) {
         Ok(0) => None,
-        Ok(_) => Some(line.trim_end_matches('\n').trim_end_matches('\r').to_string()),
+        Ok(_) => Some(
+            line.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string(),
+        ),
         Err(_) => None,
     }
 }
@@ -273,8 +287,18 @@ mod tests {
 
         let plan = load_plan(&out).unwrap();
         assert_eq!(plan.ops.len(), 2);
-        assert_eq!(plan.ops[0], Op::CreateDir { path: "foundations".to_string() });
-        assert_eq!(plan.ops[1], Op::CreateDir { path: "archive".to_string() });
+        assert_eq!(
+            plan.ops[0],
+            Op::CreateDir {
+                path: "foundations".to_string()
+            }
+        );
+        assert_eq!(
+            plan.ops[1],
+            Op::CreateDir {
+                path: "archive".to_string()
+            }
+        );
     }
 
     // ── batch-move ────────────────────────────────────────────────────────────
@@ -297,11 +321,17 @@ mod tests {
         assert_eq!(plan.ops.len(), 2);
         assert_eq!(
             plan.ops[0],
-            Op::Move { src: "file-a.md".to_string(), dst: "new-a.md".to_string() }
+            Op::Move {
+                src: "file-a.md".to_string(),
+                dst: "new-a.md".to_string()
+            }
         );
         assert_eq!(
             plan.ops[1],
-            Op::Move { src: "file-b.md".to_string(), dst: "new-b.md".to_string() }
+            Op::Move {
+                src: "file-b.md".to_string(),
+                dst: "new-b.md".to_string()
+            }
         );
     }
 
@@ -317,22 +347,30 @@ mod tests {
 
         // template 2, parent=docs, item1=old-a.md, item2=old-b.md, blank,
         // custom name "a.md" for item1, Enter (default) for item2, blank description
-        let (code, _) = wizard(
-            "2\ndocs\nold-a.md\nold-b.md\n\na.md\n\n\n",
-            Some(&out_str),
-        );
+        let (code, _) = wizard("2\ndocs\nold-a.md\nold-b.md\n\na.md\n\n\n", Some(&out_str));
         assert_eq!(code, 0);
 
         let plan = load_plan(&out).unwrap();
         assert_eq!(plan.ops.len(), 3);
-        assert_eq!(plan.ops[0], Op::CreateDir { path: "docs".to_string() });
+        assert_eq!(
+            plan.ops[0],
+            Op::CreateDir {
+                path: "docs".to_string()
+            }
+        );
         assert_eq!(
             plan.ops[1],
-            Op::Move { src: "old-a.md".to_string(), dst: "docs/a.md".to_string() }
+            Op::Move {
+                src: "old-a.md".to_string(),
+                dst: "docs/a.md".to_string()
+            }
         );
         assert_eq!(
             plan.ops[2],
-            Op::Move { src: "old-b.md".to_string(), dst: "docs/old-b.md".to_string() }
+            Op::Move {
+                src: "old-b.md".to_string(),
+                dst: "docs/old-b.md".to_string()
+            }
         );
     }
 
@@ -354,7 +392,12 @@ mod tests {
 
         let plan = load_plan(&out).unwrap();
         assert_eq!(plan.ops.len(), 3);
-        assert_eq!(plan.ops[0], Op::CreateDir { path: "archive".to_string() });
+        assert_eq!(
+            plan.ops[0],
+            Op::CreateDir {
+                path: "archive".to_string()
+            }
+        );
         assert_eq!(
             plan.ops[1],
             Op::Move {
@@ -382,17 +425,17 @@ mod tests {
 
         // template 4, item1, item2, blank to finish,
         // new name for item1, Enter to skip item2, blank description
-        let (code, _) = wizard(
-            "4\nold-a.md\nold-b.md\n\nnew-a.md\n\n\n",
-            Some(&out_str),
-        );
+        let (code, _) = wizard("4\nold-a.md\nold-b.md\n\nnew-a.md\n\n\n", Some(&out_str));
         assert_eq!(code, 0);
 
         let plan = load_plan(&out).unwrap();
         assert_eq!(plan.ops.len(), 1);
         assert_eq!(
             plan.ops[0],
-            Op::Move { src: "old-a.md".to_string(), dst: "new-a.md".to_string() }
+            Op::Move {
+                src: "old-a.md".to_string(),
+                dst: "new-a.md".to_string()
+            }
         );
     }
 
@@ -406,7 +449,10 @@ mod tests {
         // Clean up regardless of outcome
         let _ = std::fs::remove_file("anchor-plan.toml");
         assert_eq!(code, 0);
-        assert!(msgs.contains("anchor-plan.toml"), "expected 'anchor-plan.toml' in output");
+        assert!(
+            msgs.contains("anchor-plan.toml"),
+            "expected 'anchor-plan.toml' in output"
+        );
     }
 
     /// --output overrides write path; written path appears in output message.
@@ -419,7 +465,10 @@ mod tests {
         let (code, msgs) = wizard("5\nmy-dir\n\n\n", Some(&out_str));
         assert_eq!(code, 0);
         assert!(out.exists(), "plan file should exist at custom path");
-        assert!(msgs.contains(&out_str), "output path should appear in Written message");
+        assert!(
+            msgs.contains(&out_str),
+            "output path should appear in Written message"
+        );
     }
 
     // ── roundtrip ─────────────────────────────────────────────────────────────
@@ -432,9 +481,9 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             ("batch-move", "1\n1\na.md\nb.md\n\n"),
             ("categorize", "2\nparent\nitem.md\n\n\n\n"),
-            ("archive",    "3\narc\nfile.md\n\n\n"),
-            ("rename",     "4\nfile.md\n\nnew.md\n\n"),
-            ("scaffold",   "5\ndir1\n\n\n"),
+            ("archive", "3\narc\nfile.md\n\n\n"),
+            ("rename", "4\nfile.md\n\nnew.md\n\n"),
+            ("scaffold", "5\ndir1\n\n\n"),
         ];
 
         for (name, input) in cases {
