@@ -42,7 +42,10 @@ fn basename(path: &str) -> &str {
 
 /// Return the number of leading path components shared between two paths.
 fn prefix_overlap(a: &str, b: &str) -> usize {
-    a.split('/').zip(b.split('/')).take_while(|(x, y)| x == y).count()
+    a.split('/')
+        .zip(b.split('/'))
+        .take_while(|(x, y)| x == y)
+        .count()
 }
 
 /// Return up to 3 workspace-relative candidate paths closest to `missing`.
@@ -78,7 +81,11 @@ pub fn suggest_similar(missing: &str, candidates: &[String]) -> Vec<String> {
             .then_with(|| b.1.cmp(&a.1))
     });
 
-    scored.into_iter().take(3).map(|(_, _, c)| c.clone()).collect()
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, _, c)| c.clone())
+        .collect()
 }
 
 /// Format a "Did you mean?" stderr block.
