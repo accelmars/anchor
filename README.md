@@ -31,7 +31,7 @@ mind root
 # /Users/you/projects
 ```
 
-Use in scripts: `$(mind root)/path/to/file`
+Use in scripts: `$(anchor root)/path/to/file`
 
 ---
 
