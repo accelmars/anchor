@@ -104,9 +104,7 @@ fn main() {
         Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
         Commands::Root => cli::root::run(),
         Commands::Plan { subcommand } => match subcommand {
-            PlanCommands::New { output } => {
-                process::exit(cli::plan::run_new(output.as_deref()))
-            }
+            PlanCommands::New { output } => process::exit(cli::plan::run_new(output.as_deref())),
         },
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
