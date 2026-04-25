@@ -1,0 +1,15 @@
+[meta]
+name = "scaffold"
+display = "Scaffold"
+description = "Create a directory structure"
+version = "1"
+
+[[questions]]
+id = "dirs"
+prompt = "Directories to create (one per line, blank to finish):"
+type = "list"
+
+[[ops_template]]
+type = "create_dir"
+path = "{{dir}}"
+for_each = "dirs"

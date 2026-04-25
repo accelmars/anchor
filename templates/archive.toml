@@ -1,0 +1,25 @@
+[meta]
+name = "archive"
+display = "Archive"
+description = "Move completed items to an archive location"
+version = "1"
+
+[[questions]]
+id = "archive_folder"
+prompt = "Archive folder:"
+type = "string"
+
+[[questions]]
+id = "items"
+prompt = "Items to archive (one per line, blank to finish):"
+type = "list"
+
+[[ops_template]]
+type = "create_dir"
+path = "{{archive_folder}}"
+
+[[ops_template]]
+type = "move"
+src = "{{item}}"
+dst = "{{archive_folder}}/{{item_basename}}"
+for_each = "items"

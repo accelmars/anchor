@@ -1,0 +1,24 @@
+[meta]
+name = "rename"
+display = "Rename"
+description = "Rename items by specifying new names"
+version = "1"
+
+[[questions]]
+id = "items"
+prompt = "Items to rename (one per line, blank to finish):"
+type = "list"
+
+[[questions]]
+id = "new_name"
+prompt = "New name for {{item}} [Enter to skip]:"
+type = "string"
+optional = true
+for_each = "items"
+
+[[ops_template]]
+type = "move"
+src = "{{item}}"
+dst = "{{new_name}}"
+for_each = "items"
+skip_if_empty = "new_name"
