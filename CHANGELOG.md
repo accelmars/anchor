@@ -4,6 +4,11 @@ All notable changes to anchor are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+
 
 ## [0.2.0] — 2026-04-25
 
