@@ -888,7 +888,13 @@ mod tests {
         crossfs_fallback_copy(&src_dir, &dst_dir).unwrap();
 
         assert!(!src_dir.exists(), "src dir must be removed after fallback");
-        assert!(dst_dir.join("a.md").exists(), "top-level file must be copied");
-        assert!(dst_dir.join("sub").join("b.md").exists(), "nested file must be copied");
+        assert!(
+            dst_dir.join("a.md").exists(),
+            "top-level file must be copied"
+        );
+        assert!(
+            dst_dir.join("sub").join("b.md").exists(),
+            "nested file must be copied"
+        );
     }
 }
