@@ -9,7 +9,9 @@
 //   2 = system error (I/O, workspace not found)
 
 use crate::cli::file::refs::OutputFormat;
-use crate::core::{acked::AckedPatterns, parser, reference::yaml as yaml_parser, resolver, scanner, suggest};
+use crate::core::{
+    acked::AckedPatterns, parser, reference::yaml as yaml_parser, resolver, scanner, suggest,
+};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
 use std::io::{self, IsTerminal, Write};
@@ -441,7 +443,10 @@ mod tests {
             "broken YAML frontmatter path must be reported as broken ref"
         );
         assert!(
-            result.broken.iter().any(|(_, _, raw)| raw.contains("$(anchor root)/nonexistent-path")),
+            result
+                .broken
+                .iter()
+                .any(|(_, _, raw)| raw.contains("$(anchor root)/nonexistent-path")),
             "broken ref target must include the full YAML path value; got: {:?}",
             result.broken
         );
