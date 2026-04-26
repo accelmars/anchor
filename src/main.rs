@@ -60,6 +60,11 @@ enum PlanCommands {
     },
     /// List available plan templates
     List,
+    /// Validate a plan file without executing
+    Validate {
+        /// Path to the plan file (.toml)
+        plan: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -108,6 +113,7 @@ fn main() {
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output } => process::exit(cli::plan::run_new(output.as_deref())),
             PlanCommands::List => process::exit(cli::plan::run_list()),
+            PlanCommands::Validate { plan } => process::exit(cli::plan::run_validate(&plan)),
         },
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
