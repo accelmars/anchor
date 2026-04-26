@@ -100,7 +100,7 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
                         resolver::ResolveResult::BrokenRef
                         | resolver::ResolveResult::Ambiguous(_) => continue,
                     },
-                    RefForm::Yaml => reference
+                    RefForm::Yaml | RefForm::Toml => reference
                         .target_raw
                         .strip_prefix("$(anchor root)/")
                         .unwrap_or(&reference.target_raw)

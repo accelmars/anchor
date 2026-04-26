@@ -13,6 +13,9 @@ pub enum RefForm {
     /// `target_raw` holds the FULL original value (prefix included).
     /// Callers resolve by stripping the prefix to obtain workspace-root-relative path.
     Yaml,
+    /// TOML config file string value starting with `$(anchor root)/`.
+    /// Same resolution semantics as `Yaml` — strip the prefix to get workspace-root-relative path.
+    Toml,
 }
 
 /// A parsed reference from a Markdown file.
