@@ -36,6 +36,8 @@ enum Commands {
         /// Path to the plan file (.toml)
         plan: String,
     },
+    /// Recover from a crashed operation
+    Recover,
     /// Print the workspace root path
     Root,
     /// File operations
@@ -115,6 +117,7 @@ fn main() {
         },
         Commands::Apply { plan } => process::exit(cli::apply::run(&plan)),
         Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
+        Commands::Recover => process::exit(cli::recover::run()),
         Commands::Root => cli::root::run(),
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output } => process::exit(cli::plan::run_new(output.as_deref())),
