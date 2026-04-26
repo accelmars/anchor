@@ -292,7 +292,10 @@ mod tests {
     fn test_backtick_path_extracted() {
         let content = "See `gateway-foundation/` for details.";
         let refs = parse_references(&src(), content);
-        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        let bt: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::Backtick)
+            .collect();
         assert_eq!(bt.len(), 1, "expected 1 Backtick ref, got: {}", bt.len());
         assert_eq!(bt[0].target_raw, "gateway-foundation");
         assert_eq!(bt[0].anchor, None);
@@ -303,8 +306,15 @@ mod tests {
     fn test_backtick_non_path_skipped() {
         let content = "Use `foo` as the key.";
         let refs = parse_references(&src(), content);
-        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
-        assert_eq!(bt.len(), 0, "backtick with no slash must not produce Backtick ref");
+        let bt: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::Backtick)
+            .collect();
+        assert_eq!(
+            bt.len(),
+            0,
+            "backtick with no slash must not produce Backtick ref"
+        );
     }
 
     // Test 12: Backtick with external URL → no Backtick ref produced
@@ -312,7 +322,10 @@ mod tests {
     fn test_backtick_url_skipped() {
         let content = "See `https://example.com/path/` for more.";
         let refs = parse_references(&src(), content);
-        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        let bt: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::Backtick)
+            .collect();
         assert_eq!(bt.len(), 0, "backtick URL must not produce Backtick ref");
     }
 
@@ -321,7 +334,14 @@ mod tests {
     fn test_backtick_inside_fence_skipped() {
         let content = "```\nSee `gateway-foundation/` for details.\n```";
         let refs = parse_references(&src(), content);
-        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
-        assert_eq!(bt.len(), 0, "backtick path inside fence must not produce Backtick ref");
+        let bt: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::Backtick)
+            .collect();
+        assert_eq!(
+            bt.len(),
+            0,
+            "backtick path inside fence must not produce Backtick ref"
+        );
     }
 }

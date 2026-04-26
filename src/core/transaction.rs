@@ -941,7 +941,12 @@ mod tests {
             .iter()
             .filter(|e| e.old_text.contains("`gateway-foundation/`"))
             .collect();
-        assert_eq!(bt_entries.len(), 1, "expected 1 backtick rewrite entry, got: {:?}", plan.entries);
+        assert_eq!(
+            bt_entries.len(),
+            1,
+            "expected 1 backtick rewrite entry, got: {:?}",
+            plan.entries
+        );
         assert_eq!(bt_entries[0].file, "CONSTELLATION.md");
         assert_eq!(bt_entries[0].old_text, "`gateway-foundation/`");
         assert_eq!(bt_entries[0].new_text, "`foundations/gateway-engine/`");
@@ -973,7 +978,11 @@ mod tests {
             .iter()
             .filter(|e| e.old_text.starts_with('`'))
             .collect();
-        assert!(bt_entries.is_empty(), "Case C backtick: no entry expected, got: {:?}", bt_entries);
+        assert!(
+            bt_entries.is_empty(),
+            "Case C backtick: no entry expected, got: {:?}",
+            bt_entries
+        );
     }
 
     /// Backtick ref: path unrelated to the move → no RewriteEntry generated.
@@ -1005,7 +1014,11 @@ mod tests {
             .iter()
             .filter(|e| e.old_text.starts_with('`'))
             .collect();
-        assert!(bt_entries.is_empty(), "unrelated backtick path: no entry expected, got: {:?}", bt_entries);
+        assert!(
+            bt_entries.is_empty(),
+            "unrelated backtick path: no entry expected, got: {:?}",
+            bt_entries
+        );
     }
 
     /// Test crossfs_fallback_copy for a directory: src tree is removed, dst tree has the files.

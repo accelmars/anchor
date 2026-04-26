@@ -79,27 +79,25 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
-            Op::Move { src, dst } => {
-                match execute_move(workspace_root, src, dst) {
-                    Ok((refs_rewritten, files_touched)) => {
-                        completed += 1;
-                        writeln!(
+            Op::Move { src, dst } => match execute_move(workspace_root, src, dst) {
+                Ok((refs_rewritten, files_touched)) => {
+                    completed += 1;
+                    writeln!(
                             out,
                             "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
                         )
                         .ok();
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        writeln!(
-                            out,
-                            "Stopped after {completed}/{total} operations completed."
-                        )
-                        .ok();
-                        return 1;
-                    }
                 }
-            }
+                Err(e) => {
+                    eprintln!("{e}");
+                    writeln!(
+                        out,
+                        "Stopped after {completed}/{total} operations completed."
+                    )
+                    .ok();
+                    return 1;
+                }
+            },
         }
     }
 
@@ -150,19 +148,15 @@ fn preflight(
 /// IMPORTANT: Does NOT call `cli::file::mv::run` — that function uses `process::exit`
 /// internally, which would terminate the entire apply loop. Transaction functions are
 /// called directly here, following the same orchestration pattern as mv.rs.
-fn execute_move(
-    workspace_root: &Path,
-    src: &str,
-    dst: &str,
-) -> Result<(usize, usize), String> {
+fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, usize), String> {
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
     let lock_guard =
         lock::acquire_lock(workspace_root, &lock_op).map_err(|e| format!("lock error: {e}"))?;
 
     // Scan workspace fresh for this op — captures files moved by prior ops.
-    let workspace_files = scanner::scan_workspace(workspace_root)
-        .map_err(|e| format!("scan error: {e}"))?;
+    let workspace_files =
+        scanner::scan_workspace(workspace_root).map_err(|e| format!("scan error: {e}"))?;
 
     // PLAN — CanonicalPath is String; convert &str to String
     let src_canonical = src.to_string();
@@ -280,7 +274,13 @@ fn execute_move(
 fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut total = 0usize;
-    count_in_dir(workspace_root, workspace_root, needle, &extensions, &mut total);
+    count_in_dir(
+        workspace_root,
+        workspace_root,
+        needle,
+        &extensions,
+        &mut total,
+    );
     total
 }
 
@@ -298,27 +298,19 @@ fn count_in_dir(
         let path = entry.path();
 
         // Skip .accelmars/ system directory
-        if path
-            .components()
-            .any(|c| c.as_os_str() == ".accelmars")
-        {
+        if path.components().any(|c| c.as_os_str() == ".accelmars") {
             continue;
         }
 
         if path.is_dir() {
             count_in_dir(workspace_root, &path, needle, extensions, total);
         } else {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !extensions.contains(&ext) {
                 continue;
             }
             // Exclude Cargo.toml — Rust build manifest
-            if ext == "toml"
-                && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml")
-            {
+            if ext == "toml" && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -734,7 +726,8 @@ dst = "foundations/beta-engine"
         let mut out = Vec::new();
         let code = run_impl(&plan_path, ws.path(), &mut out);
         assert_eq!(
-            code, 0,
+            code,
+            0,
             "plan must succeed; output:\n{}",
             String::from_utf8_lossy(&out)
         );
@@ -777,13 +770,13 @@ dst = "other/b"
         let mut out = Vec::new();
         let code = run_impl(&plan_path, ws.path(), &mut out);
         assert_eq!(
-            code, 0,
+            code,
+            0,
             "plan must succeed; output:\n{}",
             String::from_utf8_lossy(&out)
         );
 
-        let content =
-            fs::read_to_string(ws.path().join("deep/nested/a/README.md")).unwrap();
+        let content = fs::read_to_string(ws.path().join("deep/nested/a/README.md")).unwrap();
         assert!(
             content.contains("../../../other/b/README.md"),
             "ref must point to other/b after multi-level chain; got:\n{content}"
