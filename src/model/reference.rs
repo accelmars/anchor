@@ -9,6 +9,10 @@ pub enum RefForm {
     Standard,
     /// Wiki link: `[[path]]` or `[[path|alias]]`
     Wiki,
+    /// YAML frontmatter path value starting with `$(anchor root)/`.
+    /// `target_raw` holds the FULL original value (prefix included).
+    /// Callers resolve by stripping the prefix to obtain workspace-root-relative path.
+    Yaml,
 }
 
 /// A parsed reference from a Markdown file.

@@ -1,5 +1,6 @@
 pub mod acked;
 pub mod parser;
+pub mod reference;
 pub mod resolver;
 pub mod rewriter;
 pub mod scanner;

@@ -9,7 +9,7 @@
 //   2 = system error (I/O, workspace not found)
 
 use crate::cli::file::refs::OutputFormat;
-use crate::core::{acked::AckedPatterns, parser, resolver, scanner, suggest};
+use crate::core::{acked::AckedPatterns, parser, reference::yaml as yaml_parser, resolver, scanner, suggest};
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
 use std::io::{self, IsTerminal, Write};
@@ -88,7 +88,8 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
         let content = std::fs::read_to_string(&abs_path)
             .map_err(|e| format!("I/O error reading {file_path}: {e}"))?;
 
-        let refs = parser::parse_references(file_path, &content);
+        let mut refs = parser::parse_references(file_path, &content);
+        refs.extend(yaml_parser::extract_yaml_refs(&content, file_path));
 
         for reference in &refs {
             let canonical = match reference.form {
@@ -108,6 +109,11 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
                         continue;
                     }
                 },
+                RefForm::Yaml => reference
+                    .target_raw
+                    .strip_prefix("$(anchor root)/")
+                    .unwrap_or(&reference.target_raw)
+                    .to_string(),
             };
 
             let target_abs = workspace_root.join(&canonical);
@@ -418,6 +424,44 @@ mod tests {
         );
         assert_eq!(parsed["files_scanned"], 2);
         assert_eq!(parsed["acknowledged"], 0);
+    }
+
+    /// YAML frontmatter with a broken `$(anchor root)/` path → reported as broken ref.
+    #[test]
+    fn test_yaml_frontmatter_broken_path_detected() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "contract.md",
+            "---\nstart_dir: \"$(anchor root)/nonexistent-path\"\n---\n# Body\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            !result.broken.is_empty(),
+            "broken YAML frontmatter path must be reported as broken ref"
+        );
+        assert!(
+            result.broken.iter().any(|(_, _, raw)| raw.contains("$(anchor root)/nonexistent-path")),
+            "broken ref target must include the full YAML path value; got: {:?}",
+            result.broken
+        );
+    }
+
+    /// YAML frontmatter with non-path fields (id, title, state) → no broken refs reported.
+    #[test]
+    fn test_yaml_non_path_fields_not_flagged() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "contract.md",
+            "---\nid: \"AP-001\"\ntitle: \"Test contract\"\nstate: READY\n---\n# Body\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            result.broken.is_empty(),
+            "non-path YAML fields must not be reported as broken refs; got: {:?}",
+            result.broken
+        );
     }
 
     /// `--format json` with broken refs outputs populated `broken` array.
