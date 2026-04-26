@@ -97,15 +97,51 @@ pub fn run(
     let workspace_root = workspace::find_workspace_root()?;
 
     // ── Resolve src and dst relative to workspace root ───────────────────────
-    let src_canonical = normalize_path(&workspace_root, src);
-    let dst_canonical = normalize_path(&workspace_root, dst);
+    // dst: CWD-relative when called from a subdirectory (dst doesn't exist yet, so no
+    // existence fallback — always resolve relative to CWD when inside the workspace)
+    let dst_canonical = {
+        let p = std::path::Path::new(dst);
+        if p.is_absolute() {
+            normalize_path(&workspace_root, dst)
+        } else {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(dst))
+                .filter(|abs| abs.starts_with(&workspace_root))
+                .and_then(|abs| {
+                    abs.strip_prefix(&workspace_root)
+                        .ok()
+                        .map(|rel| rel.to_path_buf())
+                })
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| normalize_path(&workspace_root, dst))
+        }
+    };
+
+    // src: workspace-root-relative first; CWD-relative fallback if not found
+    let src_canonical = {
+        let ws_relative = normalize_path(&workspace_root, src);
+        if workspace_root.join(&ws_relative).exists() {
+            ws_relative
+        } else {
+            let fallback = std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(src))
+                .filter(|p| p.exists() && p.starts_with(&workspace_root))
+                .and_then(|p| {
+                    p.strip_prefix(&workspace_root)
+                        .ok()
+                        .map(|rel| rel.to_path_buf())
+                })
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+            match fallback {
+                Some(rel) => rel,
+                None => return Err(MvError::SrcNotFound),
+            }
+        }
+    };
 
     // ── Pre-flight: hard errors before PLAN (03-COMMANDS.md §Rules) ──────────
-    let src_abs = workspace_root.join(src_canonical.as_str());
-    if !src_abs.exists() {
-        return Err(MvError::SrcNotFound);
-    }
-
     let dst_abs = workspace_root.join(dst_canonical.as_str());
     if dst_abs.exists() {
         eprintln!("dst already exists: {dst}");
@@ -270,6 +306,28 @@ fn write_json_output<W: Write>(
     writeln!(w, "{output}")
 }
 
+/// Build the workspace-root hint appended to SrcNotFound error messages.
+pub fn format_src_not_found_hint(src: &str, workspace_root: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().ok();
+    let mut hint = format!(
+        "  Hint: paths are resolved from workspace root ({})",
+        workspace_root.display()
+    );
+    if let Some(cwd_path) = cwd {
+        let cwd_abs = cwd_path.join(src);
+        if cwd_abs.starts_with(workspace_root) {
+            if let Ok(rel) = cwd_abs.strip_prefix(workspace_root) {
+                hint.push_str(&format!(
+                    "\n  If you meant '{}', use the path '{}'",
+                    cwd_abs.display(),
+                    rel.to_string_lossy()
+                ));
+            }
+        }
+    }
+    hint
+}
+
 /// Normalize a user-provided path to a workspace-root-relative canonical path.
 ///
 /// If `path` is absolute, strips the workspace_root prefix.
@@ -326,6 +384,55 @@ mod tests {
         assert!(
             matches!(result, Err(MvError::ConflictingFlags(_))),
             "both flags must return ConflictingFlags error"
+        );
+    }
+
+    /// CWD-relative src path resolves transparently when called from a subdirectory.
+    #[test]
+    fn test_file_mv_cwd_relative_path_from_subdir() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
+        std::fs::write(
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json"),
+            r#"{"schema_version":"1"}"#,
+        )
+        .unwrap();
+        let subdir = root.path().join("src");
+        let old_dir = subdir.join("old-dir");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("f.md"), "# F\n").unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&subdir).unwrap();
+
+        let result = run("old-dir", "new-dir", false, None);
+
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "CWD-relative src should resolve via fallback, got: {:?}",
+            result
+        );
+        assert!(!old_dir.exists(), "src/old-dir should have been moved");
+        assert!(
+            subdir.join("new-dir").exists(),
+            "new-dir should resolve CWD-relative to src/new-dir"
+        );
+    }
+
+    /// SrcNotFound error message contains workspace root hint.
+    #[test]
+    fn test_file_mv_error_message_hints_workspace_root() {
+        let workspace_root = std::path::Path::new("/tmp/fake-workspace");
+        let hint = format_src_not_found_hint("old-dir", workspace_root);
+        assert!(
+            hint.contains("workspace root"),
+            "error hint must mention workspace root, got: {hint}"
         );
     }
 

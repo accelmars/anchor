@@ -141,9 +141,10 @@ fn main() {
                     use accelmars_anchor::core::scanner;
                     use accelmars_anchor::core::suggest::{format_suggestions, suggest_similar};
                     use accelmars_anchor::infra::workspace;
-                    let workspace_files: Vec<String> = workspace::find_workspace_root()
-                        .ok()
-                        .and_then(|root| scanner::scan_workspace(&root).ok())
+                    let root = workspace::find_workspace_root().ok();
+                    let workspace_files: Vec<String> = root
+                        .as_ref()
+                        .and_then(|r| scanner::scan_workspace(r).ok())
                         .unwrap_or_default();
                     let suggestions = suggest_similar(&src, &workspace_files);
                     let corrected_command = suggestions
@@ -153,6 +154,12 @@ fn main() {
                         "{}",
                         format_suggestions(&src, &suggestions, corrected_command.as_deref())
                     );
+                    if let Some(root_path) = &root {
+                        eprintln!(
+                            "{}",
+                            cli::file::mv::format_src_not_found_hint(&src, root_path)
+                        );
+                    }
                     1
                 }
                 Err(e) => {
