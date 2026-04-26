@@ -10,7 +10,8 @@
 
 use crate::cli::file::refs::OutputFormat;
 use crate::core::{
-    acked::AckedPatterns, parser, reference::yaml as yaml_parser, resolver, scanner, suggest,
+    acked::AckedPatterns, parser, reference::toml as toml_parser, reference::yaml as yaml_parser,
+    resolver, scanner, suggest,
 };
 use crate::infra::workspace;
 use crate::model::reference::RefForm;
@@ -90,8 +91,13 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
         let content = std::fs::read_to_string(&abs_path)
             .map_err(|e| format!("I/O error reading {file_path}: {e}"))?;
 
-        let mut refs = parser::parse_references(file_path, &content);
-        refs.extend(yaml_parser::extract_yaml_refs(&content, file_path));
+        let refs = if file_path.ends_with(".toml") {
+            toml_parser::extract_toml_refs(&content, file_path)
+        } else {
+            let mut r = parser::parse_references(file_path, &content);
+            r.extend(yaml_parser::extract_yaml_refs(&content, file_path));
+            r
+        };
 
         for reference in &refs {
             let canonical = match reference.form {
@@ -111,7 +117,7 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
                         continue;
                     }
                 },
-                RefForm::Yaml => reference
+                RefForm::Yaml | RefForm::Toml => reference
                     .target_raw
                     .strip_prefix("$(anchor root)/")
                     .unwrap_or(&reference.target_raw)
@@ -489,5 +495,54 @@ mod tests {
         assert_eq!(entry["file"], "docs/index.md");
         assert!(entry["line"].as_u64().unwrap() >= 1);
         assert!(entry["ref"].as_str().is_some(), "ref field must be present");
+    }
+
+    /// TOML config file with a broken `$(anchor root)/` path → reported as broken ref.
+    #[test]
+    fn test_toml_broken_path_detected() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "config.toml",
+            "start_dir = \"$(anchor root)/nonexistent-toml-path\"\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            !result.broken.is_empty(),
+            "broken TOML path must be reported as broken ref"
+        );
+        assert!(
+            result
+                .broken
+                .iter()
+                .any(|(_, _, raw)| raw.contains("$(anchor root)/nonexistent-toml-path")),
+            "broken ref target must include the full TOML path value; got: {:?}",
+            result.broken
+        );
+    }
+
+    /// TOML plan file with src/dst fields using relative paths → no broken refs reported.
+    #[test]
+    fn test_toml_plan_src_dst_not_flagged() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "ops.toml",
+            concat!(
+                "version = \"1\"\n",
+                "description = \"batch-move\"\n",
+                "\n",
+                "[[ops]]\n",
+                "type = \"move\"\n",
+                "src = \"anchor-foundation\"\n",
+                "dst = \"foundations/anchor-engine\"\n",
+            ),
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            result.broken.is_empty(),
+            "plan file src/dst relative paths must not be flagged as broken refs; got: {:?}",
+            result.broken
+        );
     }
 }

@@ -70,7 +70,14 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
         }
 
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        let ext = path.extension().and_then(|ext| ext.to_str());
+        let is_md = ext == Some("md");
+        let is_toml = ext == Some("toml");
+        if !is_md && !is_toml {
+            continue;
+        }
+        // Exclude Cargo.toml — Rust build manifest, not a workspace reference document.
+        if is_toml && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
             continue;
         }
 
