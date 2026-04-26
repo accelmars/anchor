@@ -274,23 +274,11 @@ fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, u
 fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut total = 0usize;
-    count_in_dir(
-        workspace_root,
-        workspace_root,
-        needle,
-        &extensions,
-        &mut total,
-    );
+    count_in_dir(workspace_root, needle, &extensions, &mut total);
     total
 }
 
-fn count_in_dir(
-    workspace_root: &Path,
-    dir: &Path,
-    needle: &str,
-    extensions: &[&str],
-    total: &mut usize,
-) {
+fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -303,7 +291,7 @@ fn count_in_dir(
         }
 
         if path.is_dir() {
-            count_in_dir(workspace_root, &path, needle, extensions, total);
+            count_in_dir(&path, needle, extensions, total);
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !extensions.contains(&ext) {
