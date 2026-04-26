@@ -70,18 +70,17 @@ fn collect_refs(
     refs: &mut Vec<Reference>,
 ) {
     match value {
-        serde_yaml::Value::String(s) => {
-            if s.starts_with(ANCHOR_ROOT_PREFIX) {
-                let span = find_value_span(full_content, s);
-                refs.push(Reference {
-                    source_file: source_file.clone(),
-                    target_raw: s.clone(),
-                    span,
-                    form: RefForm::Yaml,
-                    anchor: None,
-                });
-            }
+        serde_yaml::Value::String(s) if s.starts_with(ANCHOR_ROOT_PREFIX) => {
+            let span = find_value_span(full_content, s);
+            refs.push(Reference {
+                source_file: source_file.clone(),
+                target_raw: s.clone(),
+                span,
+                form: RefForm::Yaml,
+                anchor: None,
+            });
         }
+        serde_yaml::Value::String(_) => {}
         serde_yaml::Value::Mapping(map) => {
             for (_, v) in map {
                 collect_refs(v, source_file, full_content, refs);
