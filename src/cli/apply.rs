@@ -43,8 +43,8 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
         }
     };
 
-    // Scan workspace once — shared across all ops
-    let workspace_files = match scanner::scan_workspace(workspace_root) {
+    // Scan workspace for pre-flight — validate all Move ops before any execution begins.
+    let preflight_files = match scanner::scan_workspace(workspace_root) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: {e}");
@@ -54,7 +54,7 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
 
     // Pre-flight: validate all Move ops before any execution begins.
     // A bad op at index N must not leave the first N-1 committed.
-    if let Err(e) = preflight(&plan, workspace_root, &workspace_files) {
+    if let Err(e) = preflight(&plan, workspace_root, &preflight_files) {
         eprintln!("{e}");
         return 1;
     }
@@ -79,27 +79,25 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
-            Op::Move { src, dst } => {
-                match execute_move(workspace_root, src, dst, &workspace_files) {
-                    Ok((refs_rewritten, files_touched)) => {
-                        completed += 1;
-                        writeln!(
+            Op::Move { src, dst } => match execute_move(workspace_root, src, dst) {
+                Ok((refs_rewritten, files_touched)) => {
+                    completed += 1;
+                    writeln!(
                             out,
                             "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
                         )
                         .ok();
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        writeln!(
-                            out,
-                            "Stopped after {completed}/{total} operations completed."
-                        )
-                        .ok();
-                        return 1;
-                    }
                 }
-            }
+                Err(e) => {
+                    eprintln!("{e}");
+                    writeln!(
+                        out,
+                        "Stopped after {completed}/{total} operations completed."
+                    )
+                    .ok();
+                    return 1;
+                }
+            },
         }
     }
 
@@ -150,16 +148,15 @@ fn preflight(
 /// IMPORTANT: Does NOT call `cli::file::mv::run` — that function uses `process::exit`
 /// internally, which would terminate the entire apply loop. Transaction functions are
 /// called directly here, following the same orchestration pattern as mv.rs.
-fn execute_move(
-    workspace_root: &Path,
-    src: &str,
-    dst: &str,
-    workspace_files: &[String],
-) -> Result<(usize, usize), String> {
+fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, usize), String> {
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
     let lock_guard =
         lock::acquire_lock(workspace_root, &lock_op).map_err(|e| format!("lock error: {e}"))?;
+
+    // Scan workspace fresh for this op — captures files moved by prior ops.
+    let workspace_files =
+        scanner::scan_workspace(workspace_root).map_err(|e| format!("scan error: {e}"))?;
 
     // PLAN — CanonicalPath is String; convert &str to String
     let src_canonical = src.to_string();
@@ -168,7 +165,7 @@ fn execute_move(
         workspace_root,
         &src_canonical,
         &dst_canonical,
-        workspace_files,
+        &workspace_files,
     ) {
         Ok(p) => p,
         Err(e) => {
@@ -259,7 +256,63 @@ fn execute_move(
     )
     .map_err(|e| format!("commit error: {e}"))?;
 
+    // Post-commit: warn if non-.md files contain text occurrences of old path.
+    let non_md_count = count_text_occurrences(workspace_root, src);
+    if non_md_count > 0 {
+        eprintln!(
+            "{non_md_count} non-markdown file(s) contain text occurrences of '{src}' that were not rewritten. Run 'anchor refs {src}' to inspect."
+        );
+    }
+
     Ok((refs_rewritten, files_touched))
+}
+
+/// Walk `workspace_root` and count text occurrences of `needle` in non-.md files.
+///
+/// Scans files with extensions: json, yaml, yml, toml (excluding Cargo.toml), ts, js, py.
+/// Returns the total count of substring matches across all matching files.
+fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
+    let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
+    let mut total = 0usize;
+    count_in_dir(workspace_root, needle, &extensions, &mut total);
+    total
+}
+
+fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip .accelmars/ system directory
+        if path.components().any(|c| c.as_os_str() == ".accelmars") {
+            continue;
+        }
+
+        if path.is_dir() {
+            count_in_dir(&path, needle, extensions, total);
+        } else {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !extensions.contains(&ext) {
+                continue;
+            }
+            // Exclude Cargo.toml — Rust build manifest
+            if ext == "toml" && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let mut start = 0;
+                while let Some(pos) = content[start..].find(needle) {
+                    *total += 1;
+                    start += pos + needle.len();
+                    if start >= content.len() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Return the top matching path from `candidates` for the given `missing` path.
@@ -595,6 +648,130 @@ dst = "src/renamed.md"
         assert!(
             output.contains("(1 refs in 1 files)"),
             "progress line must contain ref count and file count; got:\n{output}"
+        );
+    }
+
+    // ── Non-.md occurrence warning ─────────────────────────────────────────────
+
+    /// count_text_occurrences finds matches in .json files; returns correct count.
+    #[test]
+    fn test_nonmd_warning_emitted_when_occurrences_exist() {
+        let ws = make_workspace();
+        // Write a .json file that mentions the old path
+        write_file(
+            ws.path(),
+            "config.json",
+            r#"{"path": "gateway-foundation/config.yaml"}"#,
+        );
+
+        let count = count_text_occurrences(ws.path(), "gateway-foundation");
+        assert!(
+            count > 0,
+            "expected >0 occurrences in config.json, got: {count}"
+        );
+    }
+
+    /// count_text_occurrences returns 0 when no non-.md files contain the needle.
+    #[test]
+    fn test_nonmd_no_warning_when_clean() {
+        let ws = make_workspace();
+        // Only .md files — no non-.md files at all
+        write_file(ws.path(), "a.md", "# Hello\n");
+
+        let count = count_text_occurrences(ws.path(), "gateway-foundation");
+        assert_eq!(count, 0, "expected 0 occurrences when only .md files exist");
+    }
+
+    // ── Intra-plan chain: per-op re-scan (REF-003 / SIM-E) ───────────────────
+
+    /// Intra-plan chain: op N moves alpha (adjusting its refs to beta), op N+1 moves beta.
+    /// With per-op re-scan, op N+1 sees the post-op-N filesystem and updates the adjusted refs.
+    #[test]
+    fn test_intra_plan_chain_refs_updated() {
+        let ws = make_workspace();
+        write_file(ws.path(), "alpha/index.md", "[beta](../beta/index.md)\n");
+        write_file(ws.path(), "beta/index.md", "# Beta\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "create_dir"
+path = "foundations"
+
+[[ops]]
+type = "move"
+src = "alpha"
+dst = "foundations/alpha-engine"
+
+[[ops]]
+type = "move"
+src = "beta"
+dst = "foundations/beta-engine"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out);
+        assert_eq!(
+            code,
+            0,
+            "plan must succeed; output:\n{}",
+            String::from_utf8_lossy(&out)
+        );
+
+        let content =
+            fs::read_to_string(ws.path().join("foundations/alpha-engine/index.md")).unwrap();
+        assert!(
+            content.contains("../beta-engine/index.md"),
+            "ref must point to beta-engine after intra-plan chain; got:\n{content}"
+        );
+        assert!(
+            !content.contains("../../beta/index.md"),
+            "stale intermediate ref must be gone; got:\n{content}"
+        );
+    }
+
+    /// Multi-level relative ref: file moved to a deeper location, its ref to another move target
+    /// is updated to the correct final path through two sequential ops.
+    #[test]
+    fn test_multilevel_relative_ref_updated() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a/README.md", "[b](../b/README.md)\n");
+        write_file(ws.path(), "b/README.md", "# B\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "a"
+dst = "deep/nested/a"
+
+[[ops]]
+type = "move"
+src = "b"
+dst = "other/b"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out);
+        assert_eq!(
+            code,
+            0,
+            "plan must succeed; output:\n{}",
+            String::from_utf8_lossy(&out)
+        );
+
+        let content = fs::read_to_string(ws.path().join("deep/nested/a/README.md")).unwrap();
+        assert!(
+            content.contains("../../../other/b/README.md"),
+            "ref must point to other/b after multi-level chain; got:\n{content}"
+        );
+        assert!(
+            !content.contains("../b/README.md"),
+            "original ref must be gone; got:\n{content}"
         );
     }
 

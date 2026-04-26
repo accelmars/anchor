@@ -122,6 +122,9 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
                     .strip_prefix("$(anchor root)/")
                     .unwrap_or(&reference.target_raw)
                     .to_string(),
+                // Backtick path: target_raw is the workspace-root-relative path (trailing slash stripped).
+                // Validate that the referenced directory or file exists on disk.
+                RefForm::Backtick => reference.target_raw.clone(),
             };
 
             let target_abs = workspace_root.join(&canonical);

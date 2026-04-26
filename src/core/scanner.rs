@@ -28,13 +28,17 @@ impl From<ignore::Error> for ScannerError {
     }
 }
 
-/// Walk `root` recursively and return all `.md` files as workspace-root-relative canonical paths.
+/// Walk `root` recursively and return all `.md` and non-Cargo `.toml` files as
+/// workspace-root-relative canonical paths.
 ///
 /// - Returns paths with forward slashes and no `./` prefix.
 /// - Skips `.accelmars/` directory entirely (hardcoded — system directory, not user-configurable).
 /// - Respects `.accelmars/anchor/ignore` at the workspace root (gitignore-compatible pattern syntax).
 ///   If the file does not exist, scanner behavior is unchanged.
-/// - Silently skips non-`.md` files and non-file entries.
+/// - Includes `.toml` files (excluding `Cargo.toml`) for TOML config ref scanning.
+/// - Backtick path extraction from `.md` content is handled by `parser::parse_references`,
+///   not by this function.
+/// - Silently skips all other file types and non-file entries.
 pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
     let mut paths = Vec::new();
 

@@ -257,6 +257,42 @@ pub fn plan(
         let refs = parser::parse_references(file_canonical, &content);
 
         for reference in refs {
+            if reference.form == RefForm::Backtick {
+                // Backtick path refs: direct path match (not relative — no resolve_form1).
+                // target_raw is the workspace-root-relative path (trailing slash stripped).
+                // Only Case A applies: external file with backtick mention of something inside src.
+                // Case B: backtick paths are absolute mentions, not relative — moving source file
+                //   does not change how the target directory is named. Skip.
+                // Case C: both inside src — both move together, path unchanged. Skip.
+                let target_inside = inside_src(&reference.target_raw, src);
+                if !target_inside {
+                    continue;
+                }
+                if inside_src(file_canonical, src) {
+                    continue; // Case C: both inside src — skip
+                }
+
+                // Case A: external file has backtick mention of something inside src
+                let new_target = remap_path(&reference.target_raw, src, dst);
+                let old_text = content[reference.span.0..reference.span.1].to_string();
+                // Preserve trailing slash: if the content inside backticks ended with '/',
+                // the original old_text looks like `path/` — preserve it in new_text.
+                let inner = &old_text[1..old_text.len() - 1]; // strip surrounding backticks
+                let had_slash = inner.ends_with('/');
+                let new_text = if had_slash {
+                    format!("`{new_target}/`")
+                } else {
+                    format!("`{new_target}`")
+                };
+                entries.push(RewriteEntry {
+                    file: file_canonical.clone(),
+                    span: reference.span,
+                    old_text,
+                    new_text,
+                });
+                continue;
+            }
+
             if reference.form == RefForm::Wiki {
                 // Form 2 (wiki links): stem-based. Rewrite only if the target is inside src
                 // and the stem actually changes (i.e., dst has a different filename).
@@ -499,9 +535,9 @@ pub fn validate(
         for line_no in compute_line_numbers(&content, &refs) {
             let (reference, line) = line_no;
             // Only validate Form 1 (relative links) — their new paths must resolve
-            if reference.form == RefForm::Wiki {
-                // Wiki links resolve via stem scan of the workspace; skip in VALIDATE
-                // (the workspace state during VALIDATE is complex to simulate accurately)
+            if reference.form == RefForm::Wiki || reference.form == RefForm::Backtick {
+                // Wiki links resolve via stem scan — skip (workspace state too complex to simulate).
+                // Backtick refs are directory/file name mentions, not relative paths — skip.
                 continue;
             }
 
@@ -872,6 +908,117 @@ mod tests {
         assert!(!src.exists(), "src must be removed after fallback copy");
         assert!(dst.exists(), "dst must exist after fallback copy");
         assert_eq!(fs::read_to_string(&dst).unwrap(), "content");
+    }
+
+    /// Backtick Case A: external .md file with `src-dir/` in backtick span → RewriteEntry generated.
+    #[test]
+    fn test_backtick_case_a_produces_rewrite_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "gateway-foundation".to_string();
+        let dst = "foundations/gateway-engine".to_string();
+
+        // File inside src (being moved)
+        write_file(root, "gateway-foundation/README.md", "# GW\n");
+
+        // External file with backtick mention of the moved directory
+        write_file(
+            root,
+            "CONSTELLATION.md",
+            "The `gateway-foundation/` directory holds all gateway logic.\n",
+        );
+
+        let workspace_files = vec![
+            "gateway-foundation/README.md".to_string(),
+            "CONSTELLATION.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt_entries: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.contains("`gateway-foundation/`"))
+            .collect();
+        assert_eq!(
+            bt_entries.len(),
+            1,
+            "expected 1 backtick rewrite entry, got: {:?}",
+            plan.entries
+        );
+        assert_eq!(bt_entries[0].file, "CONSTELLATION.md");
+        assert_eq!(bt_entries[0].old_text, "`gateway-foundation/`");
+        assert_eq!(bt_entries[0].new_text, "`foundations/gateway-engine/`");
+    }
+
+    /// Backtick ref: file inside src with backtick ref to something inside src → Case C, no entry.
+    #[test]
+    fn test_backtick_inside_src_no_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/foo".to_string();
+        let dst = "archive/foo".to_string();
+
+        // Both files inside src
+        write_file(root, "projects/foo/a.md", "# A\n");
+        write_file(root, "projects/foo/b.md", "See `projects/foo/` for more.\n");
+
+        let workspace_files = vec![
+            "projects/foo/a.md".to_string(),
+            "projects/foo/b.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        // Case C: source and target both inside src → no backtick rewrite entry
+        let bt_entries: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert!(
+            bt_entries.is_empty(),
+            "Case C backtick: no entry expected, got: {:?}",
+            bt_entries
+        );
+    }
+
+    /// Backtick ref: path unrelated to the move → no RewriteEntry generated.
+    #[test]
+    fn test_backtick_non_src_path_no_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/foo".to_string();
+        let dst = "archive/foo".to_string();
+
+        write_file(root, "projects/foo/note.md", "# Note\n");
+        // External file with backtick ref to something UNRELATED to the move
+        write_file(
+            root,
+            "docs/overview.md",
+            "See `other-project/` for details.\n",
+        );
+
+        let workspace_files = vec![
+            "projects/foo/note.md".to_string(),
+            "docs/overview.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt_entries: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert!(
+            bt_entries.is_empty(),
+            "unrelated backtick path: no entry expected, got: {:?}",
+            bt_entries
+        );
     }
 
     /// Test crossfs_fallback_copy for a directory: src tree is removed, dst tree has the files.

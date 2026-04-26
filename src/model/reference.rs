@@ -16,6 +16,10 @@ pub enum RefForm {
     /// TOML config file string value starting with `$(anchor root)/`.
     /// Same resolution semantics as `Yaml` — strip the prefix to get workspace-root-relative path.
     Toml,
+    /// Backtick inline-code path: `` `path/to/dir/` `` or `` `path/to/file.md` ``.
+    /// `target_raw` holds the path content trimmed of any trailing `/`.
+    /// Only produced for backtick spans whose content contains `/` and is not an external URL.
+    Backtick,
 }
 
 /// A parsed reference from a Markdown file.
