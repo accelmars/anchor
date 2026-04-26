@@ -57,10 +57,9 @@ struct ValidateResponse {
 
 async fn handle_file_validate(State(state): State<AnchorState>) -> impl IntoResponse {
     let root = state.workspace_root.as_ref().clone();
-    let result = tokio::task::spawn_blocking(move || {
-        crate::cli::file::validate::validate_workspace(&root)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || crate::cli::file::validate::validate_workspace(&root))
+            .await;
 
     match result {
         Ok(Ok(broken)) => {

@@ -5,4 +5,4 @@ pub mod core;
 pub mod infra;
 pub mod model;
 pub mod server;
-pub use server::{routes, build_state, AnchorState};
+pub use server::{build_state, routes, AnchorState};
