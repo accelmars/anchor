@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-26
+
+### Added
+- `anchor plan validate <plan.toml>` — pre-flight validation (AP-001)
+- `anchor serve [--port N]` — HTTP server with `/health` and `/file/validate` endpoints (AP-004)
+- `pub fn routes()` + `pub fn build_state()` — platform composition interface (AP-005)
+- `anchor recover` — torn-write recovery for stale tmp directories (AP-007)
+- YAML frontmatter reference detection — `anchor file validate` now detects broken Path Anchors (AP-002)
+- TOML config reference detection — `.toml` files scanned for path references (AP-003)
+
+### Fixed
+- Cross-filesystem moves now complete via copy+delete fallback instead of failing with EXDEV (AP-006)
+
 ## [0.2.0] — 2026-04-25
 
 ### Changed
