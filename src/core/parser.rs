@@ -154,6 +154,33 @@ pub fn parse_references(source_file: &CanonicalPath, content: &str) -> Vec<Refer
                     anchor: None,
                 });
             }
+
+            // Backtick path refs: extract path mentions from inline-code spans
+            for (bt_start, bt_end) in &backtick_spans {
+                let content_inside = &line[bt_start + 1..*bt_end - 1];
+
+                // Only process if content contains '/' (path-like) and is not an external URL
+                if !content_inside.contains('/') {
+                    continue;
+                }
+                if content_inside.starts_with("http://")
+                    || content_inside.starts_with("https://")
+                    || content_inside.starts_with("//")
+                {
+                    continue;
+                }
+
+                let target_raw = content_inside.trim_end_matches('/').to_string();
+                let span = (pos + bt_start, pos + bt_end);
+
+                refs.push(Reference {
+                    source_file: source_file.clone(),
+                    target_raw,
+                    span,
+                    form: RefForm::Backtick,
+                    anchor: None,
+                });
+            }
         }
 
         // Advance past line + newline character
@@ -258,5 +285,43 @@ mod tests {
         let refs = parse_references(&src(), content);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].target_raw, "path");
+    }
+
+    // Test 10: Backtick path with trailing slash produces Backtick ref; target_raw has no slash
+    #[test]
+    fn test_backtick_path_extracted() {
+        let content = "See `gateway-foundation/` for details.";
+        let refs = parse_references(&src(), content);
+        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        assert_eq!(bt.len(), 1, "expected 1 Backtick ref, got: {}", bt.len());
+        assert_eq!(bt[0].target_raw, "gateway-foundation");
+        assert_eq!(bt[0].anchor, None);
+    }
+
+    // Test 11: Backtick content with no slash → no Backtick ref produced
+    #[test]
+    fn test_backtick_non_path_skipped() {
+        let content = "Use `foo` as the key.";
+        let refs = parse_references(&src(), content);
+        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        assert_eq!(bt.len(), 0, "backtick with no slash must not produce Backtick ref");
+    }
+
+    // Test 12: Backtick with external URL → no Backtick ref produced
+    #[test]
+    fn test_backtick_url_skipped() {
+        let content = "See `https://example.com/path/` for more.";
+        let refs = parse_references(&src(), content);
+        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        assert_eq!(bt.len(), 0, "backtick URL must not produce Backtick ref");
+    }
+
+    // Test 13: Backtick path inside fenced code block → no Backtick ref produced
+    #[test]
+    fn test_backtick_inside_fence_skipped() {
+        let content = "```\nSee `gateway-foundation/` for details.\n```";
+        let refs = parse_references(&src(), content);
+        let bt: Vec<_> = refs.iter().filter(|r| r.form == RefForm::Backtick).collect();
+        assert_eq!(bt.len(), 0, "backtick path inside fence must not produce Backtick ref");
     }
 }

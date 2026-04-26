@@ -36,8 +36,10 @@ pub fn validate_files(workspace_root: &Path, files: &[(CanonicalPath, String)]) 
         let refs = parser::parse_references(canonical, content);
 
         for reference in refs {
-            // Form 2 wiki links: skip (stem-based, requires workspace scan)
-            if reference.form == crate::model::reference::RefForm::Wiki {
+            // Wiki and Backtick refs: skip (not relative paths, cannot use resolve_form1)
+            if reference.form == crate::model::reference::RefForm::Wiki
+                || reference.form == crate::model::reference::RefForm::Backtick
+            {
                 continue;
             }
 

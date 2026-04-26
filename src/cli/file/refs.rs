@@ -105,6 +105,8 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
                         .strip_prefix("$(anchor root)/")
                         .unwrap_or(&reference.target_raw)
                         .to_string(),
+                    // Backtick path: target_raw is the workspace-root-relative path (trailing slash stripped)
+                    RefForm::Backtick => reference.target_raw.clone(),
                 };
 
                 if canonical == target_canonical {
