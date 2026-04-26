@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::suggest;
 use crate::infra::atomic;
+use crate::infra::workspace;
 use crate::model::config::WorkspaceConfig;
 
 /// Errors returned by the init wizard.
@@ -15,6 +16,7 @@ pub enum InitError {
     NotWritable(PathBuf),
     Aborted,
     NoCandidate,
+    NestedWorkspace(PathBuf),
 }
 
 impl std::fmt::Display for InitError {
@@ -30,6 +32,13 @@ impl std::fmt::Display for InitError {
             InitError::Aborted => write!(f, "Aborted."),
             InitError::NoCandidate => {
                 write!(f, "no workspace candidate detected — use --path to specify")
+            }
+            InitError::NestedWorkspace(p) => {
+                write!(
+                    f,
+                    "Aborted: existing workspace found at {}. Use --path to create a nested workspace explicitly.",
+                    p.display()
+                )
             }
         }
     }
@@ -213,10 +222,18 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
         if yes {
             // --yes: accept detected root, no output, no prompts.
             if !is_workspace_candidate(&candidate) {
-                return Err(InitError::NoCandidate);
+                // WORKSPACE-001: no candidate detected — default to CWD instead of error.
+                writeln!(
+                    writer,
+                    "No workspace candidate detected. Defaulting to current directory: {}.",
+                    start.display()
+                )?;
+                validate_path(start)?;
+                chosen = start.to_path_buf();
+            } else {
+                validate_path(&candidate)?;
+                chosen = candidate;
             }
-            validate_path(&candidate)?;
-            chosen = candidate;
             step_total = 0;
         } else {
             // Interactive wizard: show detection output and prompt.
@@ -335,6 +352,33 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
             )?;
         }
         return do_reinit(&chosen, &mut writer);
+    }
+
+    // WORKSPACE-002: parent workspace detection — warn if an ancestor workspace exists.
+    // This check runs only when chosen does NOT already have .accelmars/ (re-init handled above).
+    if let Some(parent) = chosen.parent() {
+        if let Ok(ancestor) = workspace::find_workspace_root_from(parent) {
+            if yes {
+                writeln!(
+                    writer,
+                    "[!] Aborted: existing workspace found at {}. Use --path to create a nested workspace explicitly.",
+                    ancestor.display()
+                )?;
+                return Err(InitError::NestedWorkspace(ancestor));
+            } else {
+                writeln!(
+                    writer,
+                    "[!] Existing workspace found at {}/. Creating a nested workspace here may cause unexpected behavior.",
+                    ancestor.display()
+                )?;
+                write!(writer, "    Nest anyway? [y/N]: ")?;
+                writer.flush()?;
+                let response = prompt_line(&mut reader)?;
+                if !response.eq_ignore_ascii_case("y") {
+                    return Err(InitError::NestedWorkspace(ancestor));
+                }
+            }
+        }
     }
 
     // Confirm placement.
@@ -819,30 +863,152 @@ mod tests {
         );
     }
 
-    /// --yes with no detectable candidate → actionable error.
-    /// A tempdir with no git repos is not a valid workspace candidate.
+    /// --yes with no detectable candidate — WORKSPACE-001 fix: defaults to CWD, no longer errors.
     #[test]
     fn test_yes_no_candidate_errors() {
-        // Tempdir with no git repo subdirs — detect_candidate falls back to start.
-        // is_workspace_candidate(start) = !is_git_repo && count_git_repos > 0 = false.
         let root = tempfile::tempdir().unwrap();
         // Do NOT create any git repos under root.
 
         let mut output = Vec::new();
         let result = run_with_io(root.path(), "".as_bytes(), &mut output, true, None);
 
+        // WORKSPACE-001 fix: no longer errors; defaults to CWD and inits there.
         assert!(
-            matches!(result, Err(InitError::NoCandidate)),
-            "expected NoCandidate, got: {:?}",
+            result.is_ok(),
+            "expected Ok after WORKSPACE-001 fix, got: {:?}",
             result
         );
-
-        // Error message must be actionable
-        let msg = format!("{}", InitError::NoCandidate);
         assert!(
-            msg.contains("--path"),
-            "NoCandidate message must mention --path, got: {}",
-            msg
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist at CWD"
+        );
+    }
+
+    /// WORKSPACE-001: --yes with no candidate defaults to CWD and prints informational message.
+    #[test]
+    fn test_yes_no_candidate_defaults_to_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        // No git repo subdirs — no workspace candidate.
+
+        let mut output = Vec::new();
+        let result = run_with_io(root.path(), "".as_bytes(), &mut output, true, None);
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+
+        assert!(
+            root.path()
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json")
+                .exists(),
+            ".accelmars/anchor/config.json must exist at CWD"
+        );
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("No workspace candidate detected"),
+            "output must mention no candidate, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("Defaulting to current directory"),
+            "output must mention defaulting to CWD, got:\n{}",
+            out
+        );
+    }
+
+    /// WORKSPACE-002: parent workspace exists; interactive mode warns and user types N → aborts.
+    #[test]
+    fn test_init_detects_parent_workspace_interactive() {
+        let parent = tempfile::tempdir().unwrap();
+        // Parent directory is an existing workspace.
+        fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
+
+        // Child dir (no .accelmars of its own) with a git repo subdir.
+        let child = parent.path().join("workspace-child");
+        fs::create_dir_all(&child).unwrap();
+        make_git_repo(&child.join("repo-a"));
+
+        // Input: accept default root (Enter), then decline nesting with "N".
+        let input = "\nN\n";
+        let mut output = Vec::new();
+
+        let result = run_with_io(&child, input.as_bytes(), &mut output, false, None);
+
+        match result {
+            Err(InitError::NestedWorkspace(_)) => {}
+            other => panic!("expected NestedWorkspace, got: {:?}", other),
+        }
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("Existing workspace found at"),
+            "output must warn about parent workspace, got:\n{}",
+            out
+        );
+
+        // .accelmars/ must NOT be created at child.
+        assert!(
+            !child.join(".accelmars").exists(),
+            ".accelmars/ must not be created after declining"
+        );
+    }
+
+    /// WORKSPACE-002: parent workspace exists; --yes → NestedWorkspace error, no nested .accelmars/.
+    #[test]
+    fn test_init_detects_parent_workspace_yes_aborts() {
+        let parent = tempfile::tempdir().unwrap();
+        fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
+
+        let child = parent.path().join("workspace-child");
+        fs::create_dir_all(&child).unwrap();
+        make_git_repo(&child.join("repo-a"));
+
+        let mut output = Vec::new();
+        let result = run_with_io(&child, "".as_bytes(), &mut output, true, None);
+
+        match result {
+            Err(InitError::NestedWorkspace(_)) => {}
+            other => panic!("expected NestedWorkspace, got: {:?}", other),
+        }
+
+        assert!(
+            !child.join(".accelmars").exists(),
+            ".accelmars/ must not be created when --yes detects parent workspace"
+        );
+    }
+
+    /// WORKSPACE-002: re-init (chosen already has .accelmars/anchor/) is not blocked by parent detection.
+    #[test]
+    fn test_reinit_is_not_blocked_by_parent_check() {
+        let parent = tempfile::tempdir().unwrap();
+        // Parent is also a workspace — would trigger nested check if not for re-init short-circuit.
+        fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
+
+        let child = parent.path().join("workspace-child");
+        fs::create_dir_all(&child).unwrap();
+        make_git_repo(&child.join("repo-a"));
+
+        // Child is already initialized.
+        let anchor_dir = child.join(".accelmars").join("anchor");
+        fs::create_dir_all(&anchor_dir).unwrap();
+        fs::write(anchor_dir.join("config.json"), r#"{"schema_version":"1"}"#).unwrap();
+
+        // Input: accept default root (Enter), confirm re-init with "y".
+        let input = "\ny\n";
+        let mut output = Vec::new();
+
+        let result = run_with_io(&child, input.as_bytes(), &mut output, false, None);
+
+        // Re-init must succeed — parent workspace check must not block it.
+        assert!(
+            result.is_ok(),
+            "re-init must not be blocked by parent workspace check, got: {:?}",
+            result
         );
     }
 
