@@ -551,6 +551,38 @@ pub fn rollback(op_dir: &TempOpDir, _lock: crate::infra::lock::LockGuard) {
     // _lock is dropped here, triggering LockGuard::drop → deletes .accelmars/anchor/lock
 }
 
+/// Move `src` to `dst`. On EXDEV (cross-filesystem), falls back to copy+delete.
+///
+/// The fallback is non-atomic — a crash between copy and delete leaves a partial state.
+/// The caller (COMMIT) logs a warning to stderr before entering the fallback path.
+fn move_with_crossfs_fallback(src: &Path, dst: &Path) -> Result<(), CommitError> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            eprintln!("warning: cross-filesystem move: using copy+delete (non-atomic)");
+            crossfs_fallback_copy(src, dst)
+        }
+        Err(e) => Err(CommitError::Io(e)),
+    }
+}
+
+/// Copy `src` to `dst` then delete `src`. Handles both files and directories.
+///
+/// Used by move_with_crossfs_fallback when rename(2) returns EXDEV.
+fn crossfs_fallback_copy(src: &Path, dst: &Path) -> Result<(), CommitError> {
+    if src.is_dir() {
+        copy_dir_recursive(src, dst).map_err(|e| match e {
+            TransactionError::Io(io) => CommitError::Io(io),
+            _ => unreachable!(),
+        })?;
+        std::fs::remove_dir_all(src)?;
+    } else {
+        std::fs::copy(src, dst).map(|_| ())?;
+        std::fs::remove_file(src)?;
+    }
+    Ok(())
+}
+
 /// COMMIT phase: rename rewrites over originals, then rename moved/src → dst.
 ///
 /// CRITICAL ORDER (HANDOVER.md anti-pattern): rename rewrite files FIRST, then src→dst.
@@ -589,7 +621,7 @@ pub fn commit(
     if let Some(parent) = final_dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::rename(&original_src, &final_dst)?;
+    move_with_crossfs_fallback(&original_src, &final_dst)?;
 
     // Step 4: remove op_dir
     let _ = temp::cleanup_op_dir(op_dir);
@@ -819,5 +851,50 @@ mod tests {
         // file.md must be copied; symlink must be skipped (no self_link/ in dst)
         assert!(dst.join("file.md").exists(), "regular file must be copied");
         assert!(!dst.join("self_link").exists(), "symlink must be skipped");
+    }
+
+    /// Test crossfs_fallback_copy for a single file: src is removed, dst has the content.
+    ///
+    /// This tests the copy+delete fallback logic directly. The EXDEV trigger itself
+    /// (errno 18 from rename(2)) requires two distinct filesystems mounted at different
+    /// paths — not reproducible in CI without system-level setup. The detection branch
+    /// in move_with_crossfs_fallback is exercised by this path when EXDEV is raised;
+    /// the logical correctness of the fallback is verified here on a same-FS basis.
+    #[test]
+    fn test_crossfs_fallback_copy_file() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("source.md");
+        let dst = tmp.path().join("dest.md");
+        fs::write(&src, b"content").unwrap();
+
+        crossfs_fallback_copy(&src, &dst).unwrap();
+
+        assert!(!src.exists(), "src must be removed after fallback copy");
+        assert!(dst.exists(), "dst must exist after fallback copy");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "content");
+    }
+
+    /// Test crossfs_fallback_copy for a directory: src tree is removed, dst tree has the files.
+    #[test]
+    fn test_crossfs_fallback_copy_dir() {
+        let tmp = TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src_dir");
+        let dst_dir = tmp.path().join("dst_dir");
+        fs::create_dir(&src_dir).unwrap();
+        fs::write(src_dir.join("a.md"), b"hello").unwrap();
+        fs::create_dir(src_dir.join("sub")).unwrap();
+        fs::write(src_dir.join("sub").join("b.md"), b"world").unwrap();
+
+        crossfs_fallback_copy(&src_dir, &dst_dir).unwrap();
+
+        assert!(!src_dir.exists(), "src dir must be removed after fallback");
+        assert!(
+            dst_dir.join("a.md").exists(),
+            "top-level file must be copied"
+        );
+        assert!(
+            dst_dir.join("sub").join("b.md").exists(),
+            "nested file must be copied"
+        );
     }
 }
