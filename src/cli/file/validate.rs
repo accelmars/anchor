@@ -150,6 +150,11 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
     })
 }
 
+/// Return broken refs as structured data for HTTP server handler (server::handle_file_validate).
+pub fn validate_workspace(workspace_root: &Path) -> Result<Vec<(String, usize, String)>, String> {
+    do_validate(workspace_root).map(|r| r.broken)
+}
+
 /// Write human-readable output to `w`.
 fn write_human_output<W: Write>(
     w: &mut W,
