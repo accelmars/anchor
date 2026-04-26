@@ -3,5 +3,6 @@ pub mod diff;
 pub mod file;
 pub mod init;
 pub mod plan;
+pub mod recover;
 pub mod root;
 pub mod serve;
