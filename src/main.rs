@@ -48,6 +48,12 @@ enum Commands {
         #[command(subcommand)]
         subcommand: PlanCommands,
     },
+    /// Start HTTP server
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +121,7 @@ fn main() {
             PlanCommands::List => process::exit(cli::plan::run_list()),
             PlanCommands::Validate { plan } => process::exit(cli::plan::run_validate(&plan)),
         },
+        Commands::Serve { port } => cli::serve::run(port),
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
                 src,
