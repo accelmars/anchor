@@ -335,7 +335,7 @@ fn test_wizard_scaffold_produces_valid_plan() {
     let mut reader = Cursor::new(input.as_bytes().to_vec());
     let mut writer = Vec::<u8>::new();
 
-    let code = run_wizard(&mut reader, &mut writer, Some(&out_str));
+    let code = run_wizard(&mut reader, &mut writer, Some(&out_str), None);
     assert_eq!(code, 0, "run_wizard must exit 0");
 
     // Output file must be valid plan TOML
