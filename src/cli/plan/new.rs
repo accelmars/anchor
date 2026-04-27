@@ -28,6 +28,9 @@ pub fn run_wizard<R: BufRead, W: Write>(
     out_path: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> i32 {
+    let _ = writeln!(output, "The wizard generates a starting plan file. For complex plans,");
+    let _ = writeln!(output, "edit the file directly — then run 'anchor plan validate' to check your edits.");
+    let _ = writeln!(output);
     let _ = writeln!(output, "Available templates:");
     for (i, t) in TEMPLATES.iter().enumerate() {
         let _ = writeln!(output, "  {}. {} — {}", i + 1, t.name, t.description);
@@ -90,6 +93,8 @@ pub fn run_wizard<R: BufRead, W: Write>(
     }
 
     let _ = writeln!(output, "Written:  {}", path_str);
+    let _ = writeln!(output, "Tip:      edit {} directly for complex plans", path_str);
+    let _ = writeln!(output, "Validate: anchor plan validate {}", path_str);
     let _ = writeln!(output, "Preview:  anchor diff {}", path_str);
     let _ = writeln!(output, "Execute:  anchor apply {}", path_str);
 
@@ -562,6 +567,42 @@ mod tests {
                 src: "old.md".to_string(),
                 dst: "new.md".to_string()
             }
+        );
+    }
+
+    // ── intro blurb + post-write hints (AR-007a) ─────────────────────────────
+
+    /// Wizard output includes scaffold-first intro blurb before template list.
+    #[test]
+    fn test_wizard_output_includes_intro_blurb() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("plan.toml");
+        let out_str = out.to_str().unwrap().to_string();
+
+        let (code, output) = wizard("5\ntest-dir\n\n\n", Some(&out_str));
+        assert_eq!(code, 0);
+        assert!(
+            output.contains("edit the file directly"),
+            "intro blurb must appear before template list; got:\n{output}"
+        );
+    }
+
+    /// Wizard output includes Tip: and Validate: lines in post-write hint block.
+    #[test]
+    fn test_wizard_output_includes_tip_and_validate() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("plan.toml");
+        let out_str = out.to_str().unwrap().to_string();
+
+        let (code, output) = wizard("5\ntest-dir\n\n\n", Some(&out_str));
+        assert_eq!(code, 0);
+        assert!(
+            output.contains("Tip:"),
+            "post-write block must include Tip: line; got:\n{output}"
+        );
+        assert!(
+            output.contains("Validate: anchor plan validate"),
+            "post-write block must include Validate: anchor plan validate line; got:\n{output}"
         );
     }
 
