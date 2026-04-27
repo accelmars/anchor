@@ -318,7 +318,7 @@ fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
 ///
 /// Uses scanner::scan_workspace to enumerate files, then filters for .md.
 /// Returns the total count of substring matches across all .md files.
-fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str) -> usize {
+pub(crate) fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let files = match scanner::scan_workspace(workspace_root) {
         Ok(f) => f,
         Err(_) => return 0,
@@ -372,7 +372,7 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
 /// Walk `workspace_root` and replace text occurrences of `src` with `dst`
 /// in non-.md files (json, yaml, yml, toml, ts, js, py; excluding Cargo.toml).
 /// Returns the number of files updated.
-fn rewrite_non_md_occurrences(workspace_root: &Path, src: &str, dst: &str) -> usize {
+pub(crate) fn rewrite_non_md_occurrences(workspace_root: &Path, src: &str, dst: &str) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut updated = 0usize;
     rewrite_in_dir(workspace_root, src, dst, &extensions, &mut updated);
