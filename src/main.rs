@@ -35,6 +35,9 @@ enum Commands {
     Diff {
         /// Path to the plan file (.toml)
         plan: String,
+        /// Print per-ref details for each move operation
+        #[arg(long)]
+        verbose: bool,
     },
     /// Recover from a crashed operation
     Recover,
@@ -122,7 +125,7 @@ fn main() {
             }
         },
         Commands::Apply { plan } => process::exit(cli::apply::run(&plan)),
-        Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
+        Commands::Diff { plan, verbose } => process::exit(cli::diff::run(&plan, verbose)),
         Commands::Recover => process::exit(cli::recover::run()),
         Commands::Root => cli::root::run(),
         Commands::Validate { format } => cli::file::validate::run(format),
