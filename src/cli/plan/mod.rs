@@ -5,9 +5,9 @@ pub mod new;
 pub mod templates;
 pub mod validate;
 
-/// Entry point for `anchor plan new` — delegates to the wizard.
-pub fn run_new(output: Option<&str>) -> i32 {
-    new::run(output)
+/// Entry point for `anchor plan new` — delegates to the wizard or template path.
+pub fn run_new(output: Option<&str>, template: Option<&str>) -> i32 {
+    new::run(output, template)
 }
 
 /// Entry point for `anchor plan list` — lists available templates.
