@@ -268,7 +268,10 @@ mod tests {
         write_file(tmp.path(), "a.md", "[b](b.md)\n");
         write_file(tmp.path(), "b.md", "# B\n");
         let code = run_on_root(tmp.path(), None);
-        assert_eq!(code, 0, "clean workspace must exit 0 via validate alias dispatch");
+        assert_eq!(
+            code, 0,
+            "clean workspace must exit 0 via validate alias dispatch"
+        );
     }
 
     /// .accelmars/anchor/acked absent → broken refs still reported (unresolved non-empty).

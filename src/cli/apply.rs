@@ -726,11 +726,14 @@ dst = "src/renamed.md"
     #[test]
     fn test_zero_ref_no_warning_when_no_plaintext() {
         let ws = make_workspace();
-        write_file(ws.path(), "docs/clean.md", "# Clean document with no mentions\n");
+        write_file(
+            ws.path(),
+            "docs/clean.md",
+            "# Clean document with no mentions\n",
+        );
         let count = count_plaintext_md_occurrences(ws.path(), "gateway-foundation");
         assert_eq!(
-            count,
-            0,
+            count, 0,
             "expected 0 plain-text occurrences when needle absent from all .md files"
         );
     }
