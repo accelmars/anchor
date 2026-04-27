@@ -282,12 +282,10 @@ fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, u
     )
     .map_err(|e| format!("commit error: {e}"))?;
 
-    // Post-commit: warn if non-.md files contain text occurrences of old path.
-    let non_md_count = count_text_occurrences(workspace_root, src);
-    if non_md_count > 0 {
-        eprintln!(
-            "{non_md_count} non-markdown file(s) contain text occurrences of '{src}' that were not rewritten. Run 'anchor refs {src}' to inspect."
-        );
+    // Post-commit: rewrite non-.md files containing text occurrences of old path.
+    let non_md_updated = rewrite_non_md_occurrences(workspace_root, src, dst);
+    if non_md_updated > 0 {
+        eprintln!("{non_md_updated} non-markdown file(s) updated.");
     }
 
     // Post-commit: warn if 0 refs rewritten but .md files contain plain-text occurrences.
@@ -307,6 +305,8 @@ fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, u
 ///
 /// Scans files with extensions: json, yaml, yml, toml (excluding Cargo.toml), ts, js, py.
 /// Returns the total count of substring matches across all matching files.
+/// Kept for test use — production path now calls rewrite_non_md_occurrences.
+#[cfg(test)]
 fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut total = 0usize;
@@ -331,6 +331,7 @@ fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str) -> usize 
         .sum()
 }
 
+#[cfg(test)]
 fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -364,6 +365,52 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
                     }
                 }
             }
+        }
+    }
+}
+
+/// Walk `workspace_root` and replace text occurrences of `src` with `dst`
+/// in non-.md files (json, yaml, yml, toml, ts, js, py; excluding Cargo.toml).
+/// Returns the number of files updated.
+fn rewrite_non_md_occurrences(workspace_root: &Path, src: &str, dst: &str) -> usize {
+    let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
+    let mut updated = 0usize;
+    rewrite_in_dir(workspace_root, src, dst, &extensions, &mut updated);
+    updated
+}
+
+fn rewrite_in_dir(dir: &Path, src: &str, dst: &str, extensions: &[&str], updated: &mut usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.components().any(|c| c.as_os_str() == ".accelmars") {
+            continue;
+        }
+        // Use entry.file_type() to avoid following symlinks (Rule 12)
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            rewrite_in_dir(&path, src, dst, extensions, updated);
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !extensions.contains(&ext) {
+            continue;
+        }
+        if ext == "toml" && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !content.contains(src) {
+            continue;
+        }
+        let new_content = content.replace(src, dst);
+        if let Err(e) = std::fs::write(&path, new_content.as_bytes()) {
+            eprintln!("warning: could not rewrite {}: {e}", path.display());
+        } else {
+            *updated += 1;
         }
     }
 }
@@ -793,6 +840,46 @@ dst = "src/renamed.md"
 
         let count = count_text_occurrences(ws.path(), "gateway-foundation");
         assert_eq!(count, 0, "expected 0 occurrences when only .md files exist");
+    }
+
+    // ── rewrite_non_md_occurrences (AR-010 / REF-005) ────────────────────────
+
+    /// rewrite_non_md_occurrences rewrites a .json file containing the old path and returns 1.
+    #[test]
+    fn test_rewrite_non_md_occurrences_updates_json() {
+        let ws = make_workspace();
+        write_file(
+            ws.path(),
+            "config.json",
+            r#"{"path": "old-engine/config.yaml", "ref": "old-engine/index.md"}"#,
+        );
+
+        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine");
+        assert_eq!(updated, 1, "expected 1 file updated");
+
+        let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
+        assert!(
+            content.contains("new-engine"),
+            "file must contain new path; got:\n{content}"
+        );
+        assert!(
+            !content.contains("old-engine"),
+            "old path must be gone from file; got:\n{content}"
+        );
+    }
+
+    /// rewrite_non_md_occurrences returns 0 and leaves the file unchanged when no match.
+    #[test]
+    fn test_rewrite_non_md_occurrences_no_match_returns_zero() {
+        let ws = make_workspace();
+        let original = r#"{"path": "unrelated/path"}"#;
+        write_file(ws.path(), "config.json", original);
+
+        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine");
+        assert_eq!(updated, 0, "expected 0 files updated when no match");
+
+        let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
+        assert_eq!(content, original, "file must be unchanged when no match");
     }
 
     // ── Intra-plan chain: per-op re-scan (REF-003 / SIM-E) ───────────────────

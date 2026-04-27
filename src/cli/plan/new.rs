@@ -10,12 +10,40 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 /// CLI entry point — wraps run_wizard with real stdin/stdout.
-pub fn run(output: Option<&str>) -> i32 {
+pub fn run(output: Option<&str>, template: Option<&str>) -> i32 {
+    if let Some(tmpl_id) = template {
+        return run_with_template(tmpl_id, output);
+    }
     let stdin = std::io::stdin();
     let mut stdin_lock = stdin.lock();
     let mut stdout = std::io::stdout();
     let ws_root = workspace::find_workspace_root().ok();
     run_wizard(&mut stdin_lock, &mut stdout, output, ws_root.as_deref())
+}
+
+pub(crate) fn run_with_template(template_id: &str, out_path: Option<&str>) -> i32 {
+    let template = TEMPLATES.iter().find(|t| t.id == template_id);
+    let template = match template {
+        Some(t) => t,
+        None => {
+            eprintln!(
+                "error: unknown template '{}'. Run 'anchor plan list' to see available templates.",
+                template_id
+            );
+            return 1;
+        }
+    };
+    let path_str = out_path.unwrap_or("anchor-plan.toml");
+    if let Err(e) = std::fs::write(path_str, template.content.as_bytes()) {
+        eprintln!("error: could not write {path_str}: {e}");
+        return 1;
+    }
+    println!("Written:  {path_str}");
+    println!("Tip:      edit {path_str} directly for complex plans");
+    println!("Validate: anchor plan validate {path_str}");
+    println!("Preview:  anchor diff {path_str}");
+    println!("Execute:  anchor apply {path_str}");
+    0
 }
 
 /// Wizard logic — parameterized on I/O for testability.
@@ -578,6 +606,31 @@ mod tests {
                 dst: "new.md".to_string()
             }
         );
+    }
+
+    // ── run_with_template (AR-012) ────────────────────────────────────────────
+
+    /// --template batch-move: writes file with batch-move TOML content, returns 0.
+    #[test]
+    fn test_run_with_template_batch_move_writes_file() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("out.toml");
+        let out_str = out.to_str().unwrap();
+        let code = run_with_template("batch-move", Some(out_str));
+        assert_eq!(code, 0);
+        assert!(out.exists(), "file should exist at out.toml");
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            content.contains("[meta]"),
+            "content should contain [meta] TOML marker; got:\n{content}"
+        );
+    }
+
+    /// --template unknown-id: returns 1.
+    #[test]
+    fn test_run_with_template_unknown_id_returns_error() {
+        let code = run_with_template("no-such-template", None);
+        assert_eq!(code, 1);
     }
 
     // ── intro blurb + post-write hints (AR-007a) ─────────────────────────────

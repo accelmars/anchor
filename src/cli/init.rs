@@ -358,7 +358,13 @@ pub(crate) fn run_with_io<R: BufRead, W: Write>(
     // This check runs only when chosen does NOT already have .accelmars/ (re-init handled above).
     if let Some(parent) = chosen.parent() {
         if let Ok(ancestor) = workspace::find_workspace_root_from(parent) {
-            if yes {
+            if explicit_path.is_some() {
+                writeln!(
+                    writer,
+                    "[!] Note: existing workspace found at {}. Proceeding because --path was explicit.",
+                    ancestor.display()
+                )?;
+            } else if yes {
                 writeln!(
                     writer,
                     "[!] Aborted: existing workspace found at {}. Use --path to create a nested workspace explicitly.",
@@ -1009,6 +1015,50 @@ mod tests {
             result.is_ok(),
             "re-init must not be blocked by parent workspace check, got: {:?}",
             result
+        );
+    }
+
+    /// WORKSPACE-002: --path with parent workspace → warning emitted, init proceeds, .accelmars/ created.
+    #[test]
+    fn test_init_path_with_parent_workspace_warns_and_proceeds() {
+        let parent = tempfile::tempdir().unwrap();
+        // Parent directory is an existing workspace.
+        fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
+
+        // Child dir (no .accelmars of its own) with a git repo subdir.
+        let child = parent.path().join("workspace-child");
+        fs::create_dir_all(&child).unwrap();
+        make_git_repo(&child.join("repo-a"));
+
+        // Input: accept place confirmation (Enter).
+        let input = "\n";
+        let mut output = Vec::new();
+
+        let result = run_with_io(
+            &child,
+            input.as_bytes(),
+            &mut output,
+            false,
+            Some(child.to_str().unwrap()),
+        );
+
+        assert!(
+            result.is_ok(),
+            "--path with parent workspace must not abort, got: {:?}",
+            result
+        );
+
+        let out = String::from_utf8(output).unwrap();
+        assert!(
+            out.contains("Note: existing workspace found"),
+            "output must contain warning about parent workspace, got:\n{}",
+            out
+        );
+
+        // .accelmars/ must be created at child dir (init succeeded).
+        assert!(
+            child.join(".accelmars").exists(),
+            ".accelmars/ must be created when --path is explicit"
         );
     }
 
