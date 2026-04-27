@@ -125,6 +125,8 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
                 // Backtick path: target_raw is the workspace-root-relative path (trailing slash stripped).
                 // Validate that the referenced directory or file exists on disk.
                 RefForm::Backtick => reference.target_raw.clone(),
+                // HtmlHref: resolve relative to source file (same semantics as Form 1)
+                RefForm::HtmlHref => resolver::resolve_form1(file_path, &reference.target_raw),
             };
 
             let target_abs = workspace_root.join(&canonical);

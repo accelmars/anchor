@@ -190,23 +190,37 @@ fn compute_relative_path(from_file: &CanonicalPath, to_file: &CanonicalPath) -> 
 
 /// Reconstruct a Form 1 Markdown reference with an updated path.
 ///
-/// Preserves the original link text and anchor (if any); replaces only the path.
+/// When link text is an exact byte match of `old_target_raw` (the path the author copied
+/// as display text), updates the text to `new_rel_path` so the display stays in sync.
+/// Any other link text is preserved unchanged.
 ///
-/// Input:  `old_text` = `"[link text](old/path.md#anchor)"`, new_rel_path = `"new/path.md"`
-/// Output: `"[link text](new/path.md#anchor)"`
-fn rebuild_form1_ref(old_text: &str, new_rel_path: &str, anchor: &Option<String>) -> String {
+/// Input:  `old_text` = `"[old/path.md](old/path.md)"`, new_rel_path = `"new/path.md"`, old_target_raw = `"old/path.md"`
+/// Output: `"[new/path.md](new/path.md)"`
+fn rebuild_form1_ref(
+    old_text: &str,
+    new_rel_path: &str,
+    anchor: &Option<String>,
+    old_target_raw: &str,
+) -> String {
     // Find the ]( boundary separating link text from path
     let bracket_paren = old_text
         .find("](")
         .expect("Form 1 reference must contain ](");
     let link_text = &old_text[1..bracket_paren]; // between [ and ](
 
+    // REF-001: if link text is an exact copy of the raw path, keep it in sync with the new path
+    let updated_link_text = if link_text == old_target_raw {
+        new_rel_path.to_string()
+    } else {
+        link_text.to_string()
+    };
+
     let path_with_anchor = match anchor {
         Some(a) => format!("{new_rel_path}#{a}"),
         None => new_rel_path.to_string(),
     };
 
-    format!("[{link_text}]({path_with_anchor})")
+    format!("[{updated_link_text}]({path_with_anchor})")
 }
 
 /// Compute the stem (filename without `.md` extension) of a canonical path.
@@ -339,6 +353,45 @@ pub fn plan(
                 continue;
             }
 
+            if reference.form == RefForm::HtmlHref {
+                // HtmlHref: href paths are relative to the containing file — same resolution as Form 1.
+                // resolve_form1 strips any #fragment from target_raw automatically.
+                let target_canonical =
+                    resolver::resolve_form1(file_canonical, &reference.target_raw);
+
+                let source_inside = inside_src(file_canonical, src);
+                let target_inside = inside_src(&target_canonical, src);
+
+                match (source_inside, target_inside) {
+                    (true, true) | (false, false) => {
+                        continue; // Case C or unrelated — skip
+                    }
+                    (false, true) | (true, false) => {
+                        let (new_rel, old_text) = if !source_inside {
+                            // Case A: external file has href pointing into src
+                            let new_target = remap_path(&target_canonical, src, dst);
+                            let rel = compute_relative_path(file_canonical, &new_target);
+                            (rel, content[reference.span.0..reference.span.1].to_string())
+                        } else {
+                            // Case B: file inside src has href pointing to external target
+                            let new_source = remap_path(file_canonical, src, dst);
+                            let rel = compute_relative_path(&new_source, &target_canonical);
+                            (rel, content[reference.span.0..reference.span.1].to_string())
+                        };
+                        // Preserve original quote style (old_text = `href="path"` or `href='path'`)
+                        let quote = old_text.as_bytes().get(5).copied().unwrap_or(b'"') as char;
+                        let new_text = format!("href={quote}{new_rel}{quote}");
+                        entries.push(RewriteEntry {
+                            file: file_canonical.clone(),
+                            span: reference.span,
+                            old_text,
+                            new_text,
+                        });
+                    }
+                }
+                continue;
+            }
+
             // Form 1: resolve to canonical target
             let target_canonical = resolver::resolve_form1(file_canonical, &reference.target_raw);
 
@@ -358,7 +411,12 @@ pub fn plan(
                     let new_target = remap_path(&target_canonical, src, dst);
                     let new_rel = compute_relative_path(file_canonical, &new_target);
                     let old_text = content[reference.span.0..reference.span.1].to_string();
-                    let new_text = rebuild_form1_ref(&old_text, &new_rel, &reference.anchor);
+                    let new_text = rebuild_form1_ref(
+                        &old_text,
+                        &new_rel,
+                        &reference.anchor,
+                        reference.target_raw.as_str(),
+                    );
                     entries.push(RewriteEntry {
                         file: file_canonical.clone(),
                         span: reference.span,
@@ -373,7 +431,12 @@ pub fn plan(
                     let new_source = remap_path(file_canonical, src, dst);
                     let new_rel = compute_relative_path(&new_source, &target_canonical);
                     let old_text = content[reference.span.0..reference.span.1].to_string();
-                    let new_text = rebuild_form1_ref(&old_text, &new_rel, &reference.anchor);
+                    let new_text = rebuild_form1_ref(
+                        &old_text,
+                        &new_rel,
+                        &reference.anchor,
+                        reference.target_raw.as_str(),
+                    );
                     entries.push(RewriteEntry {
                         file: file_canonical.clone(),
                         span: reference.span,
@@ -535,9 +598,13 @@ pub fn validate(
         for line_no in compute_line_numbers(&content, &refs) {
             let (reference, line) = line_no;
             // Only validate Form 1 (relative links) — their new paths must resolve
-            if reference.form == RefForm::Wiki || reference.form == RefForm::Backtick {
+            if reference.form == RefForm::Wiki
+                || reference.form == RefForm::Backtick
+                || reference.form == RefForm::HtmlHref
+            {
                 // Wiki links resolve via stem scan — skip (workspace state too complex to simulate).
                 // Backtick refs are directory/file name mentions, not relative paths — skip.
+                // HtmlHref paths are rewritten by plan() but not validated post-move (same as Backtick).
                 continue;
             }
 
@@ -1042,6 +1109,130 @@ mod tests {
         assert!(
             dst_dir.join("sub").join("b.md").exists(),
             "nested file must be copied"
+        );
+    }
+
+    /// REF-001: link text that is an exact copy of target_raw is updated to new_rel_path.
+    /// Before: `[gateway-foundation/README.md](gateway-foundation/README.md)`
+    /// After:  `[foundations/gateway-engine/README.md](foundations/gateway-engine/README.md)`
+    #[test]
+    fn test_link_text_sync_when_text_equals_path() {
+        let old_text = "[gateway-foundation/README.md](gateway-foundation/README.md)";
+        let new_rel = "foundations/gateway-engine/README.md";
+        let old_target_raw = "gateway-foundation/README.md";
+        let result = rebuild_form1_ref(old_text, new_rel, &None, old_target_raw);
+        assert_eq!(
+            result, "[foundations/gateway-engine/README.md](foundations/gateway-engine/README.md)",
+            "link text matching target_raw must be updated"
+        );
+    }
+
+    /// REF-001: link text that differs from target_raw is preserved unchanged.
+    /// Before: `[Gateway Foundation](gateway-foundation/README.md)`
+    /// After:  `[Gateway Foundation](foundations/gateway-engine/README.md)`
+    #[test]
+    fn test_link_text_preserved_when_text_differs() {
+        let old_text = "[Gateway Foundation](gateway-foundation/README.md)";
+        let new_rel = "foundations/gateway-engine/README.md";
+        let old_target_raw = "gateway-foundation/README.md";
+        let result = rebuild_form1_ref(old_text, new_rel, &None, old_target_raw);
+        assert_eq!(
+            result, "[Gateway Foundation](foundations/gateway-engine/README.md)",
+            "link text that differs from target_raw must be preserved"
+        );
+    }
+
+    /// SIM-F: external .md file with `<a href="...">` pointing into src → RewriteEntry generated (Case A).
+    #[test]
+    fn test_href_case_a_produces_rewrite_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "docs-foundation".to_string();
+        let dst = "foundations/docs-engine".to_string();
+
+        // File inside src being moved
+        write_file(root, "docs-foundation/guide.md", "# Guide\n");
+
+        // External file with html href pointing into src
+        write_file(
+            root,
+            "README.md",
+            r#"See <a href="docs-foundation/guide.md">Guide</a>."#,
+        );
+
+        let workspace_files = vec![
+            "docs-foundation/guide.md".to_string(),
+            "README.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let href_entries: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with("href="))
+            .collect();
+        assert_eq!(href_entries.len(), 1, "expected 1 HtmlHref rewrite entry");
+        assert_eq!(href_entries[0].file, "README.md");
+        assert!(
+            href_entries[0]
+                .old_text
+                .contains("docs-foundation/guide.md"),
+            "old_text must contain old path, got: {}",
+            href_entries[0].old_text
+        );
+        assert!(
+            href_entries[0]
+                .new_text
+                .contains("foundations/docs-engine/guide.md"),
+            "new_text must contain new path, got: {}",
+            href_entries[0].new_text
+        );
+    }
+
+    /// SIM-F: validate() skips HtmlHref refs — they are handled by plan() and not validated post-move.
+    #[test]
+    fn test_href_validate_skip() {
+        use crate::infra::temp::TempOpDir;
+        use crate::model::rewrite::RewritePlan;
+
+        // Build a minimal RewritePlan and op_dir with a rewritten file containing an HtmlHref.
+        // The HtmlHref target does not exist — but validate() must not report it as broken.
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "old-dir".to_string();
+        let dst = "new-dir".to_string();
+
+        // Write a rewritten file that contains an HTML href (already rewritten, correct path)
+        write_file(root, "README.md", r#"<a href="new-dir/guide.md">Guide</a>"#);
+
+        // Create op_dir structure manually
+        let op_path = tmp.path().join(".accelmars").join("anchor").join("op");
+        std::fs::create_dir_all(op_path.join("rewrites")).unwrap();
+
+        // Write the "rewritten" file into op_dir/rewrites/ using encoded path
+        let encoded = "README.md"; // no slashes — simple encoding
+        std::fs::write(
+            op_path.join("rewrites").join(encoded),
+            r#"<a href="new-dir/guide.md">Guide</a>"#,
+        )
+        .unwrap();
+
+        let op_dir = TempOpDir { path: op_path };
+        let plan = RewritePlan {
+            src,
+            dst,
+            entries: vec![],
+        };
+
+        // validate() must not return an error despite the href target not existing on disk
+        let result = validate(root, &plan, &op_dir);
+        assert!(
+            result.is_ok(),
+            "validate must skip HtmlHref refs, got: {:?}",
+            result.err()
         );
     }
 }
