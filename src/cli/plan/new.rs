@@ -674,10 +674,11 @@ mod tests {
     /// Default output path is "anchor-plan.toml" when out_path is None.
     #[test]
     fn test_default_output_path() {
+        let tmp = TempDir::new().unwrap();
+        let out_path = tmp.path().join("anchor-plan.toml");
+        let out_str = out_path.to_str().unwrap();
         // scaffold template, 1 dir, blank to finish, blank description
-        let (code, msgs) = wizard("5\ntest-dir\n\n\n", None);
-        // Clean up regardless of outcome
-        let _ = std::fs::remove_file("anchor-plan.toml");
+        let (code, msgs) = wizard("5\ntest-dir\n\n\n", Some(out_str));
         assert_eq!(code, 0);
         assert!(
             msgs.contains("anchor-plan.toml"),

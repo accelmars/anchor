@@ -378,6 +378,8 @@ fn normalize_path(workspace_root: &std::path::Path, path: &str) -> String {
 mod tests {
     use super::*;
 
+    static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// `--verbose` output contains the confirmation summary with correct counts.
     #[test]
     fn test_mv_verbose_emits_confirmation() {
@@ -417,6 +419,7 @@ mod tests {
     /// CWD-relative src path resolves transparently when called from a subdirectory.
     #[test]
     fn test_file_mv_cwd_relative_path_from_subdir() {
+        let _cwd_lock = CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         use tempfile::tempdir;
         let root = tempdir().unwrap();
         std::fs::create_dir_all(root.path().join(".accelmars").join("anchor")).unwrap();
