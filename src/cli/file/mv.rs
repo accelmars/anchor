@@ -93,43 +93,50 @@ pub fn run(
         ));
     }
 
-    // ── Workspace discovery ──────────────────────────────────────────────────
     let workspace_root = workspace::find_workspace_root()?;
+    let cwd = std::env::current_dir().ok();
+    run_impl(src, dst, verbose, format, &workspace_root, cwd.as_deref())
+}
 
+pub(crate) fn run_impl(
+    src: &str,
+    dst: &str,
+    verbose: bool,
+    format: Option<OutputFormat>,
+    workspace_root: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> Result<(), MvError> {
     // ── Resolve src and dst relative to workspace root ───────────────────────
     // dst: CWD-relative when called from a subdirectory (dst doesn't exist yet, so no
     // existence fallback — always resolve relative to CWD when inside the workspace)
     let dst_canonical = {
         let p = std::path::Path::new(dst);
         if p.is_absolute() {
-            normalize_path(&workspace_root, dst)
+            normalize_path(workspace_root, dst)
         } else {
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join(dst))
-                .filter(|abs| abs.starts_with(&workspace_root))
+            cwd.map(|c| c.join(dst))
+                .filter(|abs| abs.starts_with(workspace_root))
                 .and_then(|abs| {
-                    abs.strip_prefix(&workspace_root)
+                    abs.strip_prefix(workspace_root)
                         .ok()
                         .map(|rel| rel.to_path_buf())
                 })
                 .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|| normalize_path(&workspace_root, dst))
+                .unwrap_or_else(|| normalize_path(workspace_root, dst))
         }
     };
 
     // src: workspace-root-relative first; CWD-relative fallback if not found
     let src_canonical = {
-        let ws_relative = normalize_path(&workspace_root, src);
+        let ws_relative = normalize_path(workspace_root, src);
         if workspace_root.join(&ws_relative).exists() {
             ws_relative
         } else {
-            let fallback = std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join(src))
-                .filter(|p| p.exists() && p.starts_with(&workspace_root))
+            let fallback = cwd
+                .map(|c| c.join(src))
+                .filter(|p| p.exists() && p.starts_with(workspace_root))
                 .and_then(|p| {
-                    p.strip_prefix(&workspace_root)
+                    p.strip_prefix(workspace_root)
                         .ok()
                         .map(|rel| rel.to_path_buf())
                 })
@@ -150,14 +157,14 @@ pub fn run(
 
     // ── Acquire lock ─────────────────────────────────────────────────────────
     let lock_op = format!("file mv {src_canonical} {dst_canonical}");
-    let lock_guard = lock::acquire_lock(&workspace_root, &lock_op)?;
+    let lock_guard = lock::acquire_lock(workspace_root, &lock_op)?;
 
     // ── Scan workspace ────────────────────────────────────────────────────────
-    let workspace_files = scanner::scan_workspace(&workspace_root)?;
+    let workspace_files = scanner::scan_workspace(workspace_root)?;
 
     // ── PLAN ──────────────────────────────────────────────────────────────────
     let rewrite_plan = transaction::plan(
-        &workspace_root,
+        workspace_root,
         &src_canonical,
         &dst_canonical,
         &workspace_files,
@@ -182,7 +189,7 @@ pub fn run(
         process::exit(2);
     }
 
-    let op_dir = temp::create_op_dir(&workspace_root)?;
+    let op_dir = temp::create_op_dir(workspace_root)?;
 
     let rewrite_file_list: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
@@ -206,14 +213,14 @@ pub fn run(
         .map_err(|e| MvError::Transaction(transaction::TransactionError::Manifest(e)))?;
 
     // ── APPLY ─────────────────────────────────────────────────────────────────
-    if let Err(e) = transaction::apply(&workspace_root, &rewrite_plan, &op_dir, &mut manifest) {
+    if let Err(e) = transaction::apply(workspace_root, &rewrite_plan, &op_dir, &mut manifest) {
         transaction::rollback(&op_dir, lock_guard);
         eprintln!("error during apply: {e}");
         process::exit(2);
     }
 
     // ── VALIDATE ──────────────────────────────────────────────────────────────
-    match transaction::validate(&workspace_root, &rewrite_plan, &op_dir) {
+    match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
         Ok(()) => {}
         Err(transaction::ValidationError::BrokenRefs(broken)) => {
             eprintln!();
@@ -235,7 +242,7 @@ pub fn run(
 
     // ── COMMIT ────────────────────────────────────────────────────────────────
     if let Err(e) = transaction::commit(
-        &workspace_root,
+        workspace_root,
         &rewrite_plan,
         &op_dir,
         &mut manifest,
@@ -247,7 +254,7 @@ pub fn run(
 
     // ── Post-commit: non-.md file rewriting + plain-text prose warning ────────
     let non_md_updated = crate::cli::apply::rewrite_non_md_occurrences(
-        &workspace_root,
+        workspace_root,
         &src_canonical,
         &dst_canonical,
     );
@@ -256,7 +263,7 @@ pub fn run(
     }
     if ref_count == 0 {
         let plaintext_count =
-            crate::cli::apply::count_plaintext_md_occurrences(&workspace_root, &src_canonical);
+            crate::cli::apply::count_plaintext_md_occurrences(workspace_root, &src_canonical);
         if plaintext_count > 0 {
             eprintln!(
                 "note: 0 markdown refs rewritten. {plaintext_count} plain-text occurrence(s) of '{src_canonical}' in .md files were not rewritten."
@@ -425,12 +432,14 @@ mod tests {
         std::fs::create_dir_all(&old_dir).unwrap();
         std::fs::write(old_dir.join("f.md"), "# F\n").unwrap();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&subdir).unwrap();
-
-        let result = run("old-dir", "new-dir", false, None);
-
-        std::env::set_current_dir(&original_dir).unwrap();
+        let result = run_impl(
+            "old-dir",
+            "new-dir",
+            false,
+            None,
+            root.path(),
+            Some(&subdir),
+        );
 
         assert!(
             result.is_ok(),
@@ -455,7 +464,7 @@ mod tests {
         );
     }
 
-    /// When src does not exist, run() returns Err(SrcNotFound) — not process::exit.
+    /// When src does not exist, run_impl() returns Err(SrcNotFound) — not process::exit.
     ///
     /// This is the key contract change from AN-025: the inline exit was replaced with
     /// a typed Err return so the caller (main.rs) can show "Did you mean?" suggestions.
@@ -474,18 +483,15 @@ mod tests {
             r#"{"schema_version":"1"}"#,
         )
         .unwrap();
-        // Set cwd to the tempdir workspace so find_workspace_root() resolves here.
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(root.path()).unwrap();
 
-        let result = run(
+        let result = run_impl(
             "this-file-does-not-exist-9f3k2j.md",
             "some-dst.md",
             false,
             None,
+            root.path(),
+            Some(root.path()),
         );
-
-        std::env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             matches!(result, Err(MvError::SrcNotFound)),
