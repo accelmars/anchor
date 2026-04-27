@@ -55,7 +55,11 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
     // Pre-flight: validate all Move ops before any execution begins.
     // A bad op at index N must not leave the first N-1 committed.
     if let Err(e) = preflight(&plan, workspace_root, &preflight_files) {
-        eprintln!("{e}");
+        if is_already_applied(&plan, workspace_root) {
+            eprintln!("note: all sources are missing and destinations already exist — this plan may have already been applied. Nothing was changed.");
+        } else {
+            eprintln!("{e}");
+        }
         return 1;
     }
 
@@ -139,6 +143,28 @@ fn preflight(
         }
     }
     Ok(())
+}
+
+/// Returns true iff all Move ops in the plan have src absent and dst present on disk.
+///
+/// Used to detect re-apply: when the plan was already successfully applied, every src
+/// will have been moved to dst. A non-Move op (CreateDir) is ignored.
+fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
+    let move_ops: Vec<(&str, &str)> = plan
+        .ops
+        .iter()
+        .filter_map(|op| {
+            if let Op::Move { src, dst } = op {
+                Some((src.as_str(), dst.as_str()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    !move_ops.is_empty()
+        && move_ops.iter().all(|(src, dst)| {
+            !workspace_root.join(src).exists() && workspace_root.join(dst).exists()
+        })
 }
 
 /// Execute a single Move operation via full PLAN → APPLY → VALIDATE → COMMIT transaction.
@@ -909,6 +935,61 @@ dst = "projects/renamed.md"
         assert!(
             !referrer_content.contains("source.md"),
             "old reference must be gone from referrer; got:\n{referrer_content}"
+        );
+    }
+
+    // ── Re-apply detection tests (AR-007) ─────────────────────────────────────
+
+    /// Re-apply: all srcs absent and all dsts present → hint message on stderr, exit 1.
+    #[test]
+    fn test_apply_reapply_hint_emitted() {
+        let ws = make_workspace();
+        // dst already exists (simulates a completed apply); src is absent
+        write_file(ws.path(), "docs/destination.md", "# Already moved\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "docs/source.md"
+dst = "docs/destination.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out);
+        assert_eq!(code, 1, "re-apply must return exit 1");
+
+        // stderr capture: use a buffer-based approach via is_already_applied helper directly
+        // (stderr goes to real stderr in run_impl; test the helper logic here)
+        let plan = plan::load_plan(std::path::Path::new(&plan_path)).unwrap();
+        assert!(
+            is_already_applied(&plan, ws.path()),
+            "is_already_applied must return true when all srcs absent and dsts present"
+        );
+    }
+
+    /// No re-apply hint when src is absent but dst is also absent — genuine missing src.
+    #[test]
+    fn test_apply_no_reapply_hint_when_src_missing_but_dst_also_absent() {
+        let ws = make_workspace();
+        // Neither src nor dst exist — genuine missing src scenario
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "docs/source.md"
+dst = "docs/destination.md"
+"#,
+        );
+
+        let plan = plan::load_plan(std::path::Path::new(&plan_path)).unwrap();
+        assert!(
+            !is_already_applied(&plan, ws.path()),
+            "is_already_applied must return false when dst is also absent"
         );
     }
 }

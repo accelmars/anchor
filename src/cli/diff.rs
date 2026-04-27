@@ -13,23 +13,29 @@ use std::path::Path;
 /// Execute `anchor diff <plan.toml>`.
 ///
 /// Discovers workspace root from the current working directory, then delegates
-/// to `run_impl`. Returns exit code: 0 = success, 1 = plan error, 2 = workspace error.
-pub fn run(plan_path: &str) -> i32 {
+/// to `run_impl`. Returns exit code: 0 = success, 1 = plan parse error or no workspace
+/// found, 2 = scan/I/O error.
+pub fn run(plan_path: &str, verbose: bool) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
-            return 2;
+            return 1;
         }
     };
-    run_impl(plan_path, &workspace_root, &mut std::io::stdout())
+    run_impl(plan_path, &workspace_root, &mut std::io::stdout(), verbose)
 }
 
 /// Core implementation — takes an explicit workspace root and writer for testability.
 ///
 /// Read-only: scans workspace once, runs PLAN phase per Move op, prints preview.
 /// Does not acquire a lock; does not call apply, validate, or commit.
-pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &mut W) -> i32 {
+pub(crate) fn run_impl<W: Write>(
+    plan_path: &str,
+    workspace_root: &Path,
+    out: &mut W,
+    verbose: bool,
+) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
     let plan = match plan::load_plan(path) {
@@ -109,6 +115,17 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                     "  move     {src} \u{2192} {dst}  ({ref_count} refs in {file_count} files)"
                 )
                 .ok();
+
+                if verbose && ref_count > 0 {
+                    for entry in &rewrite_plan.entries {
+                        writeln!(
+                            out,
+                            "    {}  {} \u{2192} {}",
+                            entry.file, entry.old_text, entry.new_text
+                        )
+                        .ok();
+                    }
+                }
             }
         }
     }
@@ -220,7 +237,7 @@ mod tests {
     fn test_missing_plan_file_exits_1() {
         let ws = make_workspace();
         let mut out = Vec::new();
-        let code = run_impl("/nonexistent/path/plan.toml", ws.path(), &mut out);
+        let code = run_impl("/nonexistent/path/plan.toml", ws.path(), &mut out, false);
         assert_eq!(code, 1, "missing plan file must return exit code 1");
     }
 
@@ -243,7 +260,7 @@ dst = "docs/moved.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         assert_eq!(code, 0, "valid plan must return exit code 0");
 
         // Core invariant: workspace is read-only
@@ -278,7 +295,7 @@ dst = "src/renamed.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         assert_eq!(code, 0);
         let output = String::from_utf8(out).unwrap();
 
@@ -324,7 +341,7 @@ path = "existing-dir"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         assert_eq!(code, 0);
         let output = String::from_utf8(out).unwrap();
 
@@ -349,7 +366,7 @@ path = "new-dir"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         assert_eq!(code, 0);
         let output = String::from_utf8(out).unwrap();
 
@@ -383,7 +400,7 @@ dst = "foundations/moved.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         // Diff continues to next op after error — still exits 0
         assert_eq!(code, 0, "diff must continue past missing-src error");
         let output = String::from_utf8(out).unwrap();
@@ -415,7 +432,7 @@ dst = "other.md"
         );
 
         let mut out = Vec::new();
-        run_impl(&plan_path, ws.path(), &mut out);
+        run_impl(&plan_path, ws.path(), &mut out, false);
         let output = String::from_utf8(out).unwrap();
 
         assert!(
@@ -451,7 +468,7 @@ dst = "moved-b.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
         assert_eq!(code, 0);
         let output = String::from_utf8(out).unwrap();
 
@@ -484,7 +501,7 @@ path = "new-dir"
         );
 
         let mut out = Vec::new();
-        run_impl(&plan_path, ws.path(), &mut out);
+        run_impl(&plan_path, ws.path(), &mut out, false);
         let output = String::from_utf8(out).unwrap();
 
         assert!(
@@ -549,5 +566,93 @@ path = "new-dir"
     fn test_suggest_similar_empty_candidates() {
         let result = suggest_similar("anything", &[]);
         assert!(result.is_empty());
+    }
+
+    // ── --verbose flag tests (AR-007) ─────────────────────────────────────────
+
+    /// --verbose prints an indented per-ref line for each rewrite entry on a move op.
+    #[test]
+    fn test_diff_verbose_prints_per_ref_lines() {
+        let ws = make_workspace();
+        write_file(ws.path(), "src/target.md", "# Target\n");
+        write_file(ws.path(), "src/referrer.md", "See [target](target.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/target.md"
+dst = "src/renamed.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, true);
+        assert_eq!(code, 0);
+        let output = String::from_utf8(out).unwrap();
+
+        assert!(
+            output.contains("src/referrer.md"),
+            "--verbose must print the referring file; got:\n{output}"
+        );
+        assert!(
+            output.contains("target.md"),
+            "--verbose must print old_text in entry line; got:\n{output}"
+        );
+        assert!(
+            output.contains("renamed.md"),
+            "--verbose must print new_text in entry line; got:\n{output}"
+        );
+        let indented = output.lines().any(|l| l.starts_with("    "));
+        assert!(
+            indented,
+            "--verbose entry lines must be indented with 4 spaces; got:\n{output}"
+        );
+    }
+
+    /// Without --verbose, no indented per-ref lines are printed — compact output only.
+    #[test]
+    fn test_diff_non_verbose_no_per_ref_lines() {
+        let ws = make_workspace();
+        write_file(ws.path(), "src/target.md", "# Target\n");
+        write_file(ws.path(), "src/referrer.md", "See [target](target.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/target.md"
+dst = "src/renamed.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
+        assert_eq!(code, 0);
+        let output = String::from_utf8(out).unwrap();
+
+        let indented = output.lines().any(|l| l.starts_with("    "));
+        assert!(
+            !indented,
+            "non-verbose must not print indented entry lines; got:\n{output}"
+        );
+        assert!(
+            output.contains("(1 refs in 1 files)"),
+            "non-verbose must still print count summary; got:\n{output}"
+        );
+    }
+
+    /// Missing plan file still exits 1 after signature change — regression guard.
+    #[test]
+    fn test_diff_missing_plan_file_exits_1_unchanged() {
+        let ws = make_workspace();
+        let mut out = Vec::new();
+        let code = run_impl("/nonexistent/ar007/plan.toml", ws.path(), &mut out, true);
+        assert_eq!(
+            code, 1,
+            "missing plan file must still return exit code 1 with verbose=true"
+        );
     }
 }
