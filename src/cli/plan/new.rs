@@ -28,8 +28,14 @@ pub fn run_wizard<R: BufRead, W: Write>(
     out_path: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> i32 {
-    let _ = writeln!(output, "The wizard generates a starting plan file. For complex plans,");
-    let _ = writeln!(output, "edit the file directly — then run 'anchor plan validate' to check your edits.");
+    let _ = writeln!(
+        output,
+        "The wizard generates a starting plan file. For complex plans,"
+    );
+    let _ = writeln!(
+        output,
+        "edit the file directly — then run 'anchor plan validate' to check your edits."
+    );
     let _ = writeln!(output);
     let _ = writeln!(output, "Available templates:");
     for (i, t) in TEMPLATES.iter().enumerate() {
@@ -93,7 +99,11 @@ pub fn run_wizard<R: BufRead, W: Write>(
     }
 
     let _ = writeln!(output, "Written:  {}", path_str);
-    let _ = writeln!(output, "Tip:      edit {} directly for complex plans", path_str);
+    let _ = writeln!(
+        output,
+        "Tip:      edit {} directly for complex plans",
+        path_str
+    );
     let _ = writeln!(output, "Validate: anchor plan validate {}", path_str);
     let _ = writeln!(output, "Preview:  anchor diff {}", path_str);
     let _ = writeln!(output, "Execute:  anchor apply {}", path_str);
