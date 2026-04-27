@@ -245,6 +245,25 @@ pub fn run(
         process::exit(2);
     }
 
+    // ── Post-commit: non-.md file rewriting + plain-text prose warning ────────
+    let non_md_updated = crate::cli::apply::rewrite_non_md_occurrences(
+        &workspace_root,
+        &src_canonical,
+        &dst_canonical,
+    );
+    if non_md_updated > 0 {
+        eprintln!("{non_md_updated} non-markdown file(s) updated.");
+    }
+    if ref_count == 0 {
+        let plaintext_count =
+            crate::cli::apply::count_plaintext_md_occurrences(&workspace_root, &src_canonical);
+        if plaintext_count > 0 {
+            eprintln!(
+                "note: 0 markdown refs rewritten. {plaintext_count} plain-text occurrence(s) of '{src_canonical}' in .md files were not rewritten."
+            );
+        }
+    }
+
     // ── Output ────────────────────────────────────────────────────────────────
     if verbose {
         write_verbose_output(
@@ -472,6 +491,36 @@ mod tests {
             matches!(result, Err(MvError::SrcNotFound)),
             "expected SrcNotFound for nonexistent src, got: {:?}",
             result
+        );
+    }
+
+    /// AR-010 parity: non-.md rewriting is wired into the mv post-commit path.
+    ///
+    /// Tests rewrite_non_md_occurrences directly (pub(crate)) to avoid set_current_dir
+    /// contamination between parallel tests.
+    #[test]
+    fn test_file_mv_rewrites_non_md_files_post_commit() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+
+        std::fs::write(
+            root.path().join("config.json"),
+            r#"{"path": "old-engine/config.yaml"}"#,
+        )
+        .unwrap();
+
+        let updated =
+            crate::cli::apply::rewrite_non_md_occurrences(root.path(), "old-engine", "new-engine");
+
+        assert_eq!(updated, 1, "expected 1 file updated");
+        let content = std::fs::read_to_string(root.path().join("config.json")).unwrap();
+        assert!(
+            content.contains("new-engine"),
+            "config.json must contain new-engine; got: {content}"
+        );
+        assert!(
+            !content.contains("old-engine"),
+            "old-engine must be gone from config.json; got: {content}"
         );
     }
 }

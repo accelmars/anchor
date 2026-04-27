@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-27
+
+### Added
+- **Backtick path rewriting** — `` `path/to/file` `` inline-code spans in `.md` files are tracked and rewritten on move (AR-001)
+- **HTML href rewriting** — `<a href="path">` links tracked and rewritten on move; link text that mirrors the path string updates in sync (AR-004)
+- **`anchor validate` alias** — top-level `anchor validate` runs the same check as `anchor file validate` (AR-005)
+- **`anchor diff --verbose`** — new flag prints per-file, per-ref lines showing exactly what will be rewritten (AR-007)
+- **EXIT-CODES.md** — new reference doc covering exit codes for all 5 commands (AR-007)
+- **Wizard scaffold guidance** — `anchor plan new` prints an intro explaining the wizard is a scaffold, with `Tip:` and `Validate:` in the post-write hint block (AR-007a)
+- **`anchor plan new --template`** — selects a plan template directly without launching the wizard (AR-012)
+
+### Fixed
+- **Multi-level relative refs** — `../../deep/path` style references now resolve correctly across sequential directory moves (AR-002)
+- **Workspace init parent detection** — `anchor init` in a directory inside an existing workspace warns and aborts by default; `--path` flag proceeds with explicit warning (AR-003)
+- **`anchor init --yes` CWD default** — defaults to current directory when no workspace candidate is detected, rather than failing (AR-003)
+- **Non-.md file rewriting** — JSON/YAML/TOML/TS/JS/PY files containing the old path are rewritten in-place on `anchor file mv` and `anchor apply`; stderr reports count of files updated (AR-010)
+- **Zero-ref plain-text warning** — moving a file with 0 detected refs warns when plain-text `.md` mentions of the old path exist (AR-005)
+- **batch-move `create_dir` prompt** — the batch-move wizard asks to add `create_dir` ops for missing destination parents (AR-006)
+- **`anchor plan validate` dst-parent note** — validates report a `note:` when a destination parent directory does not exist (exit 0) (AR-006)
+- **Re-apply detection** — applying an already-applied plan emits a "may have already been applied" hint instead of silently doing nothing (AR-007)
+- **Exit code corrections** — `anchor diff` without a workspace now exits 1 (user config error) instead of 2 (AR-007)
+- **`anchor init --path` parent note** — `anchor init --path <child>` warns about an existing parent workspace but proceeds (exit 0) (AR-011)
+
 ## [0.3.0] — 2026-04-26
 
 ### Added
