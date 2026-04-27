@@ -264,6 +264,16 @@ fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, u
         );
     }
 
+    // Post-commit: warn if 0 refs rewritten but .md files contain plain-text occurrences.
+    if refs_rewritten == 0 {
+        let plaintext_count = count_plaintext_md_occurrences(workspace_root, src);
+        if plaintext_count > 0 {
+            eprintln!(
+                "note: 0 markdown refs rewritten. {plaintext_count} plain-text occurrence(s) of '{src}' in .md files were not rewritten."
+            );
+        }
+    }
+
     Ok((refs_rewritten, files_touched))
 }
 
@@ -276,6 +286,23 @@ fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let mut total = 0usize;
     count_in_dir(workspace_root, needle, &extensions, &mut total);
     total
+}
+
+/// Walk `workspace_root` and count plain-text occurrences of `needle` in .md files.
+///
+/// Uses scanner::scan_workspace to enumerate files, then filters for .md.
+/// Returns the total count of substring matches across all .md files.
+fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str) -> usize {
+    let files = match scanner::scan_workspace(workspace_root) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    files
+        .iter()
+        .filter(|f| f.ends_with(".md"))
+        .filter_map(|f| std::fs::read_to_string(workspace_root.join(f)).ok())
+        .map(|content| content.matches(needle).count())
+        .sum()
 }
 
 fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize) {
@@ -648,6 +675,63 @@ dst = "src/renamed.md"
         assert!(
             output.contains("(1 refs in 1 files)"),
             "progress line must contain ref count and file count; got:\n{output}"
+        );
+    }
+
+    // ── Zero-ref plain-text .md warning (UX-001) ─────────────────────────────
+
+    /// count_plaintext_md_occurrences finds matches in .md files; returns correct count.
+    #[test]
+    fn test_zero_ref_plaintext_warning_emitted() {
+        let ws = make_workspace();
+        write_file(
+            ws.path(),
+            "docs/notes.md",
+            "See also gateway-foundation for more details.\n",
+        );
+        let count = count_plaintext_md_occurrences(ws.path(), "gateway-foundation");
+        assert!(
+            count > 0,
+            "expected >0 plain-text occurrences in notes.md, got: {count}"
+        );
+    }
+
+    /// When refs_rewritten > 0, the plain-text warning condition is false — move succeeds normally.
+    #[test]
+    fn test_zero_ref_no_warning_when_refs_found() {
+        let ws = make_workspace();
+        write_file(ws.path(), "src/target.md", "# Target\n");
+        write_file(ws.path(), "src/referrer.md", "See [target](target.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/target.md"
+dst = "src/renamed.md"
+"#,
+        );
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out);
+        assert_eq!(code, 0, "move with refs must succeed");
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("(1 refs in 1 files)"),
+            "refs were rewritten — plaintext warning condition does not apply; got:\n{output}"
+        );
+    }
+
+    /// count_plaintext_md_occurrences returns 0 when no .md files contain the needle.
+    #[test]
+    fn test_zero_ref_no_warning_when_no_plaintext() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/clean.md", "# Clean document with no mentions\n");
+        let count = count_plaintext_md_occurrences(ws.path(), "gateway-foundation");
+        assert_eq!(
+            count,
+            0,
+            "expected 0 plain-text occurrences when needle absent from all .md files"
         );
     }
 

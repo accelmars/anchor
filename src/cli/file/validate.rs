@@ -261,6 +261,16 @@ mod tests {
         fs::write(full, content).unwrap();
     }
 
+    /// `anchor validate` alias (Commands::Validate) dispatches to run_on_root — exits 0 on clean workspace.
+    #[test]
+    fn test_validate_alias_exits_0_on_clean_workspace() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "a.md", "[b](b.md)\n");
+        write_file(tmp.path(), "b.md", "# B\n");
+        let code = run_on_root(tmp.path(), None);
+        assert_eq!(code, 0, "clean workspace must exit 0 via validate alias dispatch");
+    }
+
     /// .accelmars/anchor/acked absent → broken refs still reported (unresolved non-empty).
     #[test]
     fn test_no_anchor_acked_broken_refs_reported() {
