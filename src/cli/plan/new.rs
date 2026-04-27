@@ -496,10 +496,7 @@ mod tests {
         let out_str = out.to_str().unwrap().to_string();
 
         // template 1, N=1, src=file.md, dst=foundations/file.md, answer Y, blank description
-        let (code, _) = wizard(
-            "1\n1\nfile.md\nfoundations/file.md\nY\n\n",
-            Some(&out_str),
-        );
+        let (code, _) = wizard("1\n1\nfile.md\nfoundations/file.md\nY\n\n", Some(&out_str));
         assert_eq!(code, 0);
 
         let plan = load_plan(&out).unwrap();
@@ -527,10 +524,7 @@ mod tests {
         let out_str = out.to_str().unwrap().to_string();
 
         // template 1, N=1, src=file.md, dst=foundations/file.md, answer N, blank description
-        let (code, _) = wizard(
-            "1\n1\nfile.md\nfoundations/file.md\nN\n\n",
-            Some(&out_str),
-        );
+        let (code, _) = wizard("1\n1\nfile.md\nfoundations/file.md\nN\n\n", Some(&out_str));
         assert_eq!(code, 0);
 
         let plan = load_plan(&out).unwrap();
