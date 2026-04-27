@@ -411,7 +411,12 @@ pub fn plan(
                     let new_target = remap_path(&target_canonical, src, dst);
                     let new_rel = compute_relative_path(file_canonical, &new_target);
                     let old_text = content[reference.span.0..reference.span.1].to_string();
-                    let new_text = rebuild_form1_ref(&old_text, &new_rel, &reference.anchor, reference.target_raw.as_str());
+                    let new_text = rebuild_form1_ref(
+                        &old_text,
+                        &new_rel,
+                        &reference.anchor,
+                        reference.target_raw.as_str(),
+                    );
                     entries.push(RewriteEntry {
                         file: file_canonical.clone(),
                         span: reference.span,
@@ -426,7 +431,12 @@ pub fn plan(
                     let new_source = remap_path(file_canonical, src, dst);
                     let new_rel = compute_relative_path(&new_source, &target_canonical);
                     let old_text = content[reference.span.0..reference.span.1].to_string();
-                    let new_text = rebuild_form1_ref(&old_text, &new_rel, &reference.anchor, reference.target_raw.as_str());
+                    let new_text = rebuild_form1_ref(
+                        &old_text,
+                        &new_rel,
+                        &reference.anchor,
+                        reference.target_raw.as_str(),
+                    );
                     entries.push(RewriteEntry {
                         file: file_canonical.clone(),
                         span: reference.span,
@@ -1112,8 +1122,7 @@ mod tests {
         let old_target_raw = "gateway-foundation/README.md";
         let result = rebuild_form1_ref(old_text, new_rel, &None, old_target_raw);
         assert_eq!(
-            result,
-            "[foundations/gateway-engine/README.md](foundations/gateway-engine/README.md)",
+            result, "[foundations/gateway-engine/README.md](foundations/gateway-engine/README.md)",
             "link text matching target_raw must be updated"
         );
     }
@@ -1128,8 +1137,7 @@ mod tests {
         let old_target_raw = "gateway-foundation/README.md";
         let result = rebuild_form1_ref(old_text, new_rel, &None, old_target_raw);
         assert_eq!(
-            result,
-            "[Gateway Foundation](foundations/gateway-engine/README.md)",
+            result, "[Gateway Foundation](foundations/gateway-engine/README.md)",
             "link text that differs from target_raw must be preserved"
         );
     }
@@ -1168,12 +1176,16 @@ mod tests {
         assert_eq!(href_entries.len(), 1, "expected 1 HtmlHref rewrite entry");
         assert_eq!(href_entries[0].file, "README.md");
         assert!(
-            href_entries[0].old_text.contains("docs-foundation/guide.md"),
+            href_entries[0]
+                .old_text
+                .contains("docs-foundation/guide.md"),
             "old_text must contain old path, got: {}",
             href_entries[0].old_text
         );
         assert!(
-            href_entries[0].new_text.contains("foundations/docs-engine/guide.md"),
+            href_entries[0]
+                .new_text
+                .contains("foundations/docs-engine/guide.md"),
             "new_text must contain new path, got: {}",
             href_entries[0].new_text
         );
@@ -1182,8 +1194,8 @@ mod tests {
     /// SIM-F: validate() skips HtmlHref refs — they are handled by plan() and not validated post-move.
     #[test]
     fn test_href_validate_skip() {
-        use crate::model::rewrite::RewritePlan;
         use crate::infra::temp::TempOpDir;
+        use crate::model::rewrite::RewritePlan;
 
         // Build a minimal RewritePlan and op_dir with a rewritten file containing an HtmlHref.
         // The HtmlHref target does not exist — but validate() must not report it as broken.
@@ -1194,11 +1206,7 @@ mod tests {
         let dst = "new-dir".to_string();
 
         // Write a rewritten file that contains an HTML href (already rewritten, correct path)
-        write_file(
-            root,
-            "README.md",
-            r#"<a href="new-dir/guide.md">Guide</a>"#,
-        );
+        write_file(root, "README.md", r#"<a href="new-dir/guide.md">Guide</a>"#);
 
         // Create op_dir structure manually
         let op_path = tmp.path().join(".accelmars").join("anchor").join("op");

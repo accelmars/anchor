@@ -398,17 +398,26 @@ mod tests {
     // Test 15: href with double quotes and href with single quotes — both extracted
     #[test]
     fn test_html_href_double_and_single_quotes() {
-        let content =
-            "<a href=\"path/a.md\">A</a> and <a href='path/b.md'>B</a>";
+        let content = "<a href=\"path/a.md\">A</a> and <a href='path/b.md'>B</a>";
         let refs = parse_references(&src(), content);
         let href_refs: Vec<_> = refs
             .iter()
             .filter(|r| r.form == RefForm::HtmlHref)
             .collect();
-        assert_eq!(href_refs.len(), 2, "expected 2 HtmlHref refs (double + single quote)");
+        assert_eq!(
+            href_refs.len(),
+            2,
+            "expected 2 HtmlHref refs (double + single quote)"
+        );
         let targets: Vec<&str> = href_refs.iter().map(|r| r.target_raw.as_str()).collect();
-        assert!(targets.contains(&"path/a.md"), "double-quote href must be extracted");
-        assert!(targets.contains(&"path/b.md"), "single-quote href must be extracted");
+        assert!(
+            targets.contains(&"path/a.md"),
+            "double-quote href must be extracted"
+        );
+        assert!(
+            targets.contains(&"path/b.md"),
+            "single-quote href must be extracted"
+        );
     }
 
     // Test 16: External URL in href → not extracted
@@ -420,6 +429,10 @@ mod tests {
             .iter()
             .filter(|r| r.form == RefForm::HtmlHref)
             .collect();
-        assert_eq!(href_refs.len(), 0, "external URL href must not be extracted");
+        assert_eq!(
+            href_refs.len(),
+            0,
+            "external URL href must not be extracted"
+        );
     }
 }
