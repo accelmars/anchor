@@ -379,13 +379,7 @@ fn rewrite_non_md_occurrences(workspace_root: &Path, src: &str, dst: &str) -> us
     updated
 }
 
-fn rewrite_in_dir(
-    dir: &Path,
-    src: &str,
-    dst: &str,
-    extensions: &[&str],
-    updated: &mut usize,
-) {
+fn rewrite_in_dir(dir: &Path, src: &str, dst: &str, extensions: &[&str], updated: &mut usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

@@ -133,8 +133,9 @@ fn main() {
         Commands::Root => cli::root::run(),
         Commands::Validate { format } => cli::file::validate::run(format),
         Commands::Plan { subcommand } => match subcommand {
-            PlanCommands::New { output, template } =>
-                process::exit(cli::plan::run_new(output.as_deref(), template.as_deref())),
+            PlanCommands::New { output, template } => {
+                process::exit(cli::plan::run_new(output.as_deref(), template.as_deref()))
+            }
             PlanCommands::List => process::exit(cli::plan::run_list()),
             PlanCommands::Validate { plan } => process::exit(cli::plan::run_validate(&plan)),
         },
