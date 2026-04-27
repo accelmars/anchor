@@ -516,8 +516,12 @@ mod tests {
         )
         .unwrap();
 
-        let updated =
-            crate::cli::apply::rewrite_non_md_occurrences(root.path(), "old-engine", "new-engine", None);
+        let updated = crate::cli::apply::rewrite_non_md_occurrences(
+            root.path(),
+            "old-engine",
+            "new-engine",
+            None,
+        );
 
         assert_eq!(updated, 1, "expected 1 file updated");
         let content = std::fs::read_to_string(root.path().join("config.json")).unwrap();

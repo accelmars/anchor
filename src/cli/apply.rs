@@ -86,25 +86,27 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
-            Op::Move { src, dst } => match execute_move(workspace_root, src, dst, plan_file_abs.as_deref()) {
-                Ok((refs_rewritten, files_touched)) => {
-                    completed += 1;
-                    writeln!(
+            Op::Move { src, dst } => {
+                match execute_move(workspace_root, src, dst, plan_file_abs.as_deref()) {
+                    Ok((refs_rewritten, files_touched)) => {
+                        completed += 1;
+                        writeln!(
                             out,
                             "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
                         )
                         .ok();
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        writeln!(
+                            out,
+                            "Stopped after {completed}/{total} operations completed."
+                        )
+                        .ok();
+                        return 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("{e}");
-                    writeln!(
-                        out,
-                        "Stopped after {completed}/{total} operations completed."
-                    )
-                    .ok();
-                    return 1;
-                }
-            },
+            }
         }
     }
 
@@ -390,7 +392,14 @@ pub(crate) fn rewrite_non_md_occurrences(
 ) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut updated = 0usize;
-    rewrite_in_dir(workspace_root, src, dst, &extensions, &mut updated, plan_file_abs);
+    rewrite_in_dir(
+        workspace_root,
+        src,
+        dst,
+        &extensions,
+        &mut updated,
+        plan_file_abs,
+    );
     updated
 }
 
@@ -1118,7 +1127,8 @@ dst = "docs/destination.md"
         let ws = make_workspace();
         write_file(ws.path(), "a.md", "# A\n");
 
-        let plan_content = "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
+        let plan_content =
+            "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
         let plan_path = ws.path().join("plan.toml");
         fs::write(&plan_path, plan_content).unwrap();
 
@@ -1140,7 +1150,8 @@ dst = "docs/destination.md"
         write_file(ws.path(), "a.md", "# A\n");
         write_file(ws.path(), "config.toml", "ref = \"a.md\"\n");
 
-        let plan_content = "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
+        let plan_content =
+            "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
         let plan_path = ws.path().join("plan.toml");
         fs::write(&plan_path, plan_content).unwrap();
 
