@@ -40,6 +40,12 @@ enum Commands {
     Recover,
     /// Print the workspace root path
     Root,
+    /// Detect all broken references in the workspace (alias for 'anchor file validate')
+    Validate {
+        /// Output format (default: human-readable)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
     /// File operations
     File {
         #[command(subcommand)]
@@ -119,6 +125,7 @@ fn main() {
         Commands::Diff { plan } => process::exit(cli::diff::run(&plan)),
         Commands::Recover => process::exit(cli::recover::run()),
         Commands::Root => cli::root::run(),
+        Commands::Validate { format } => cli::file::validate::run(format),
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output } => process::exit(cli::plan::run_new(output.as_deref())),
             PlanCommands::List => process::exit(cli::plan::run_list()),
