@@ -30,7 +30,12 @@ pub fn run(plan_path: &str, verbose: bool) -> i32 {
 ///
 /// Read-only: scans workspace once, runs PLAN phase per Move op, prints preview.
 /// Does not acquire a lock; does not call apply, validate, or commit.
-pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &mut W, verbose: bool) -> i32 {
+pub(crate) fn run_impl<W: Write>(
+    plan_path: &str,
+    workspace_root: &Path,
+    out: &mut W,
+    verbose: bool,
+) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
     let plan = match plan::load_plan(path) {
@@ -600,7 +605,10 @@ dst = "src/renamed.md"
             "--verbose must print new_text in entry line; got:\n{output}"
         );
         let indented = output.lines().any(|l| l.starts_with("    "));
-        assert!(indented, "--verbose entry lines must be indented with 4 spaces; got:\n{output}");
+        assert!(
+            indented,
+            "--verbose entry lines must be indented with 4 spaces; got:\n{output}"
+        );
     }
 
     /// Without --verbose, no indented per-ref lines are printed — compact output only.
@@ -626,7 +634,10 @@ dst = "src/renamed.md"
         let output = String::from_utf8(out).unwrap();
 
         let indented = output.lines().any(|l| l.starts_with("    "));
-        assert!(!indented, "non-verbose must not print indented entry lines; got:\n{output}");
+        assert!(
+            !indented,
+            "non-verbose must not print indented entry lines; got:\n{output}"
+        );
         assert!(
             output.contains("(1 refs in 1 files)"),
             "non-verbose must still print count summary; got:\n{output}"
@@ -639,6 +650,9 @@ dst = "src/renamed.md"
         let ws = make_workspace();
         let mut out = Vec::new();
         let code = run_impl("/nonexistent/ar007/plan.toml", ws.path(), &mut out, true);
-        assert_eq!(code, 1, "missing plan file must still return exit code 1 with verbose=true");
+        assert_eq!(
+            code, 1,
+            "missing plan file must still return exit code 1 with verbose=true"
+        );
     }
 }
