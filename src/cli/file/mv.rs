@@ -432,7 +432,14 @@ mod tests {
         std::fs::create_dir_all(&old_dir).unwrap();
         std::fs::write(old_dir.join("f.md"), "# F\n").unwrap();
 
-        let result = run_impl("old-dir", "new-dir", false, None, root.path(), Some(&subdir));
+        let result = run_impl(
+            "old-dir",
+            "new-dir",
+            false,
+            None,
+            root.path(),
+            Some(&subdir),
+        );
 
         assert!(
             result.is_ok(),
