@@ -257,6 +257,7 @@ pub(crate) fn run_impl(
         workspace_root,
         &src_canonical,
         &dst_canonical,
+        None, // no plan file context for `anchor file mv`
     );
     if non_md_updated > 0 {
         eprintln!("{non_md_updated} non-markdown file(s) updated.");
@@ -515,8 +516,12 @@ mod tests {
         )
         .unwrap();
 
-        let updated =
-            crate::cli::apply::rewrite_non_md_occurrences(root.path(), "old-engine", "new-engine");
+        let updated = crate::cli::apply::rewrite_non_md_occurrences(
+            root.path(),
+            "old-engine",
+            "new-engine",
+            None,
+        );
 
         assert_eq!(updated, 1, "expected 1 file updated");
         let content = std::fs::read_to_string(root.path().join("config.json")).unwrap();

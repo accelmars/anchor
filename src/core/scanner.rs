@@ -34,6 +34,9 @@ impl From<ignore::Error> for ScannerError {
 /// - Returns paths with forward slashes and no `./` prefix.
 /// - Skips `.accelmars/` directory entirely (hardcoded — system directory, not user-configurable).
 /// - Respects `.accelmars/anchor/ignore` at the workspace root (gitignore-compatible pattern syntax).
+///   Patterns are anchored to the workspace root via `GitignoreBuilder::new(root)` so that
+///   entries like `node_modules/` match the workspace-root `node_modules/`, not a path
+///   relative to the ignore file's own directory.
 ///   If the file does not exist, scanner behavior is unchanged.
 /// - Includes `.toml` files (excluding `Cargo.toml`) for TOML config ref scanning.
 /// - Backtick path extraction from `.md` content is handled by `parser::parse_references`,
@@ -42,17 +45,27 @@ impl From<ignore::Error> for ScannerError {
 pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
     let mut paths = Vec::new();
 
+    // Build a gitignore matcher rooted at the workspace root so patterns like
+    // `node_modules/` are anchored to the workspace root, not to the ignore file's
+    // directory (.accelmars/anchor/). Absent ignore file → Gitignore::empty().
+    let ignore_file_path = root.join(".accelmars").join("anchor").join("ignore");
+    let gitignore = if ignore_file_path.exists() {
+        let mut gib = ignore::gitignore::GitignoreBuilder::new(root);
+        gib.add(&ignore_file_path);
+        gib.build()
+            .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
+    } else {
+        ignore::gitignore::Gitignore::empty()
+    };
+
     let mut builder = WalkBuilder::new(root);
-    // Disable all automatic ignore file loading — use absolute path loading only.
+    // Disable all automatic ignore file loading — use GitignoreBuilder above only.
     // anchor should not silently exclude files due to unrelated git configuration.
     builder
         .ignore(false)
         .git_ignore(false)
         .git_global(false)
         .git_exclude(false);
-    // Load .accelmars/anchor/ignore (gitignore-compatible) by absolute path.
-    // add_ignore returns Option<Error>; None means success or file absent (silently skipped).
-    builder.add_ignore(root.join(".accelmars").join("anchor").join("ignore"));
     let walker = builder.build();
 
     for result in walker {
@@ -67,6 +80,17 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
             .any(|c| c.as_os_str() == ".accelmars")
         {
             continue;
+        }
+
+        // Check user-configured ignore patterns (rooted at workspace root).
+        if let Ok(rel) = entry.path().strip_prefix(root) {
+            let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+            if gitignore
+                .matched_path_or_any_parents(rel, is_dir)
+                .is_ignore()
+            {
+                continue;
+            }
         }
 
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -216,13 +240,12 @@ mod tests {
 
     /// .accelmars/anchor/ignore with file-pattern exclusion.
     ///
-    /// Note: negation patterns (e.g. `!docs/keep.bak.md`) in a file loaded via
-    /// `add_ignore(absolute_path)` are interpreted relative to the ignore file's parent
-    /// directory (.accelmars/anchor/), not the workspace root. Negation for workspace-root-
-    /// relative paths is therefore not supported with this loading strategy.
+    /// Patterns are rooted at the workspace root via `GitignoreBuilder::new(root)`.
+    /// Both exclusion and negation patterns (e.g. `!docs/keep.bak.md`) are
+    /// anchored to the workspace root and behave as expected.
     ///
-    /// This test verifies that exclusion patterns work, and that negation does NOT
-    /// unexpectedly re-include files (to avoid false safety assumptions).
+    /// This test verifies that exclusion patterns work and both draft and keep variants
+    /// of `*.bak.md` are excluded.
     #[test]
     fn test_ignore_file_pattern_exclusion() {
         let dir = TempDir::new().unwrap();

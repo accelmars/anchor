@@ -43,6 +43,9 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
         }
     };
 
+    // Canonical plan file path — used to exclude the plan file itself from non-.md rewriting.
+    let plan_file_abs = std::fs::canonicalize(path).ok();
+
     // Scan workspace for pre-flight — validate all Move ops before any execution begins.
     let preflight_files = match scanner::scan_workspace(workspace_root) {
         Ok(f) => f,
@@ -83,25 +86,27 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
-            Op::Move { src, dst } => match execute_move(workspace_root, src, dst) {
-                Ok((refs_rewritten, files_touched)) => {
-                    completed += 1;
-                    writeln!(
+            Op::Move { src, dst } => {
+                match execute_move(workspace_root, src, dst, plan_file_abs.as_deref()) {
+                    Ok((refs_rewritten, files_touched)) => {
+                        completed += 1;
+                        writeln!(
                             out,
                             "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
                         )
                         .ok();
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        writeln!(
+                            out,
+                            "Stopped after {completed}/{total} operations completed."
+                        )
+                        .ok();
+                        return 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("{e}");
-                    writeln!(
-                        out,
-                        "Stopped after {completed}/{total} operations completed."
-                    )
-                    .ok();
-                    return 1;
-                }
-            },
+            }
         }
     }
 
@@ -174,7 +179,12 @@ fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
 /// IMPORTANT: Does NOT call `cli::file::mv::run` — that function uses `process::exit`
 /// internally, which would terminate the entire apply loop. Transaction functions are
 /// called directly here, following the same orchestration pattern as mv.rs.
-fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, usize), String> {
+fn execute_move(
+    workspace_root: &Path,
+    src: &str,
+    dst: &str,
+    plan_file_abs: Option<&std::path::Path>,
+) -> Result<(usize, usize), String> {
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
     let lock_guard =
@@ -283,7 +293,7 @@ fn execute_move(workspace_root: &Path, src: &str, dst: &str) -> Result<(usize, u
     .map_err(|e| format!("commit error: {e}"))?;
 
     // Post-commit: rewrite non-.md files containing text occurrences of old path.
-    let non_md_updated = rewrite_non_md_occurrences(workspace_root, src, dst);
+    let non_md_updated = rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs);
     if non_md_updated > 0 {
         eprintln!("{non_md_updated} non-markdown file(s) updated.");
     }
@@ -371,15 +381,36 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
 
 /// Walk `workspace_root` and replace text occurrences of `src` with `dst`
 /// in non-.md files (json, yaml, yml, toml, ts, js, py; excluding Cargo.toml).
+/// `plan_file_abs` is the canonical path of the active plan file; it is skipped to
+/// prevent self-modification during apply.
 /// Returns the number of files updated.
-pub(crate) fn rewrite_non_md_occurrences(workspace_root: &Path, src: &str, dst: &str) -> usize {
+pub(crate) fn rewrite_non_md_occurrences(
+    workspace_root: &Path,
+    src: &str,
+    dst: &str,
+    plan_file_abs: Option<&std::path::Path>,
+) -> usize {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut updated = 0usize;
-    rewrite_in_dir(workspace_root, src, dst, &extensions, &mut updated);
+    rewrite_in_dir(
+        workspace_root,
+        src,
+        dst,
+        &extensions,
+        &mut updated,
+        plan_file_abs,
+    );
     updated
 }
 
-fn rewrite_in_dir(dir: &Path, src: &str, dst: &str, extensions: &[&str], updated: &mut usize) {
+fn rewrite_in_dir(
+    dir: &Path,
+    src: &str,
+    dst: &str,
+    extensions: &[&str],
+    updated: &mut usize,
+    plan_file_abs: Option<&std::path::Path>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -390,8 +421,16 @@ fn rewrite_in_dir(dir: &Path, src: &str, dst: &str, extensions: &[&str], updated
         }
         // Use entry.file_type() to avoid following symlinks (Rule 12)
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            rewrite_in_dir(&path, src, dst, extensions, updated);
+            rewrite_in_dir(&path, src, dst, extensions, updated, plan_file_abs);
             continue;
+        }
+        // Skip the active plan file — prevent self-modification during apply.
+        if let Some(plan_path) = plan_file_abs {
+            if let Ok(canonical) = std::fs::canonicalize(&path) {
+                if canonical == plan_path {
+                    continue;
+                }
+            }
         }
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !extensions.contains(&ext) {
@@ -854,7 +893,7 @@ dst = "src/renamed.md"
             r#"{"path": "old-engine/config.yaml", "ref": "old-engine/index.md"}"#,
         );
 
-        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine");
+        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
         assert_eq!(updated, 1, "expected 1 file updated");
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
@@ -875,7 +914,7 @@ dst = "src/renamed.md"
         let original = r#"{"path": "unrelated/path"}"#;
         write_file(ws.path(), "config.json", original);
 
-        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine");
+        let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
         assert_eq!(updated, 0, "expected 0 files updated when no match");
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
@@ -1077,6 +1116,62 @@ dst = "docs/destination.md"
         assert!(
             !is_already_applied(&plan, ws.path()),
             "is_already_applied must return false when dst is also absent"
+        );
+    }
+
+    // ── Plan file self-modification exclusion (AR-015) ────────────────────────
+
+    /// apply does not rewrite the plan file itself — src value must remain unchanged.
+    #[test]
+    fn test_apply_does_not_rewrite_plan_file() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a.md", "# A\n");
+
+        let plan_content =
+            "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
+        let plan_path = ws.path().join("plan.toml");
+        fs::write(&plan_path, plan_content).unwrap();
+
+        let mut out = Vec::new();
+        let code = run_impl(plan_path.to_str().unwrap(), ws.path(), &mut out);
+        assert_eq!(code, 0, "plan must succeed");
+
+        let plan_after = fs::read_to_string(&plan_path).unwrap();
+        assert_eq!(
+            plan_after, plan_content,
+            "plan file must not be rewritten during apply; got:\n{plan_after}"
+        );
+    }
+
+    /// apply rewrites adjacent non-.md files but not the plan file — exclusion is targeted.
+    #[test]
+    fn test_apply_rewrites_adjacent_toml_but_not_plan_file() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a.md", "# A\n");
+        write_file(ws.path(), "config.toml", "ref = \"a.md\"\n");
+
+        let plan_content =
+            "version = \"1\"\n[[ops]]\ntype = \"move\"\nsrc = \"a.md\"\ndst = \"b.md\"\n";
+        let plan_path = ws.path().join("plan.toml");
+        fs::write(&plan_path, plan_content).unwrap();
+
+        let mut out = Vec::new();
+        let code = run_impl(plan_path.to_str().unwrap(), ws.path(), &mut out);
+        assert_eq!(code, 0, "plan must succeed");
+
+        // plan file is unchanged
+        let plan_after = fs::read_to_string(&plan_path).unwrap();
+        assert_eq!(plan_after, plan_content, "plan file must not be rewritten");
+
+        // config.toml IS rewritten — exclusion targets only the plan file
+        let config_after = fs::read_to_string(ws.path().join("config.toml")).unwrap();
+        assert!(
+            config_after.contains("b.md"),
+            "config.toml must be rewritten; got:\n{config_after}"
+        );
+        assert!(
+            !config_after.contains("a.md"),
+            "old path must be gone from config.toml; got:\n{config_after}"
         );
     }
 }
