@@ -36,9 +36,10 @@ pub fn validate_files(workspace_root: &Path, files: &[(CanonicalPath, String)]) 
         let refs = parser::parse_references(canonical, content);
 
         for reference in refs {
-            // Wiki and Backtick refs: skip (not relative paths, cannot use resolve_form1)
+            // Wiki, Backtick, and HtmlHref refs: skip (not resolvable via resolve_form1 alone)
             if reference.form == crate::model::reference::RefForm::Wiki
                 || reference.form == crate::model::reference::RefForm::Backtick
+                || reference.form == crate::model::reference::RefForm::HtmlHref
             {
                 continue;
             }

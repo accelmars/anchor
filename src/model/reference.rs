@@ -20,6 +20,10 @@ pub enum RefForm {
     /// `target_raw` holds the path content trimmed of any trailing `/`.
     /// Only produced for backtick spans whose content contains `/` and is not an external URL.
     Backtick,
+    /// HTML anchor href attribute: `href="path/to/file"` or `href='path/to/file'`.
+    /// `target_raw` holds the path value (unquoted, no anchor fragment separation).
+    /// Anchor fragments in href (`#section`) are not separated — included in target_raw.
+    HtmlHref,
 }
 
 /// A parsed reference from a Markdown file.

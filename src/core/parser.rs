@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 // Patterns are compile-time-known-valid constants; unwrap in initialization is accepted.
 static FORM1_RE: OnceLock<Regex> = OnceLock::new();
 static FORM2_RE: OnceLock<Regex> = OnceLock::new();
+static HREF_RE: OnceLock<Regex> = OnceLock::new();
 
 fn form1_re() -> &'static Regex {
     FORM1_RE.get_or_init(|| Regex::new(r"\[([^\]]*)\]\(([^)]+\.md[^)]*)\)").unwrap())
@@ -18,6 +19,10 @@ fn form1_re() -> &'static Regex {
 
 fn form2_re() -> &'static Regex {
     FORM2_RE.get_or_init(|| Regex::new(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]").unwrap())
+}
+
+fn href_re() -> &'static Regex {
+    HREF_RE.get_or_init(|| Regex::new(r#"href=["']([^"'#][^"']*)["']"#).unwrap())
 }
 
 /// Returns the byte-range spans of backtick-delimited inline code on `line`.
@@ -178,6 +183,37 @@ pub fn parse_references(source_file: &CanonicalPath, content: &str) -> Vec<Refer
                     target_raw,
                     span,
                     form: RefForm::Backtick,
+                    anchor: None,
+                });
+            }
+
+            // HtmlHref: <a href="path/to/file"> or <a href='path/to/file'>
+            // span covers href="path" (the attribute only, not the outer <a> tag)
+            for caps in href_re().captures_iter(line) {
+                let full_match = caps.get(0).unwrap();
+                let path_value = caps.get(1).unwrap().as_str();
+
+                // Skip external URLs and protocol-relative URLs
+                if path_value.starts_with("http://")
+                    || path_value.starts_with("https://")
+                    || path_value.starts_with("//")
+                    || path_value.starts_with("mailto:")
+                {
+                    continue;
+                }
+
+                // Skip if inside inline code
+                if in_backtick_span(&backtick_spans, full_match.start(), full_match.end()) {
+                    continue;
+                }
+
+                let span = (pos + full_match.start(), pos + full_match.end());
+
+                refs.push(Reference {
+                    source_file: source_file.clone(),
+                    target_raw: path_value.to_string(),
+                    span,
+                    form: RefForm::HtmlHref,
                     anchor: None,
                 });
             }
@@ -343,5 +379,47 @@ mod tests {
             0,
             "backtick path inside fence must not produce Backtick ref"
         );
+    }
+
+    // Test 14: HTML href with double quotes → 1 HtmlHref ref with correct target_raw
+    #[test]
+    fn test_html_href_extracted() {
+        let content = r#"<a href="docs-foundation/guide.md">Guide</a>"#;
+        let refs = parse_references(&src(), content);
+        let href_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::HtmlHref)
+            .collect();
+        assert_eq!(href_refs.len(), 1, "expected 1 HtmlHref ref");
+        assert_eq!(href_refs[0].target_raw, "docs-foundation/guide.md");
+        assert_eq!(href_refs[0].anchor, None);
+    }
+
+    // Test 15: href with double quotes and href with single quotes — both extracted
+    #[test]
+    fn test_html_href_double_and_single_quotes() {
+        let content =
+            "<a href=\"path/a.md\">A</a> and <a href='path/b.md'>B</a>";
+        let refs = parse_references(&src(), content);
+        let href_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::HtmlHref)
+            .collect();
+        assert_eq!(href_refs.len(), 2, "expected 2 HtmlHref refs (double + single quote)");
+        let targets: Vec<&str> = href_refs.iter().map(|r| r.target_raw.as_str()).collect();
+        assert!(targets.contains(&"path/a.md"), "double-quote href must be extracted");
+        assert!(targets.contains(&"path/b.md"), "single-quote href must be extracted");
+    }
+
+    // Test 16: External URL in href → not extracted
+    #[test]
+    fn test_html_href_external_url_skipped() {
+        let content = r#"<a href="https://example.com">External</a>"#;
+        let refs = parse_references(&src(), content);
+        let href_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| r.form == RefForm::HtmlHref)
+            .collect();
+        assert_eq!(href_refs.len(), 0, "external URL href must not be extracted");
     }
 }

@@ -107,6 +107,8 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
                         .to_string(),
                     // Backtick path: target_raw is the workspace-root-relative path (trailing slash stripped)
                     RefForm::Backtick => reference.target_raw.clone(),
+                    // HtmlHref: resolve relative to source file (same semantics as Form 1)
+                    RefForm::HtmlHref => resolver::resolve_form1(file_path, &reference.target_raw),
                 };
 
                 if canonical == target_canonical {
