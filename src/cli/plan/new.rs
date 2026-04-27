@@ -4,6 +4,7 @@
 // with mock stdin. pub fn run() wraps it with real stdin/stdout for the CLI entry point.
 
 use crate::cli::plan::templates::TEMPLATES;
+use crate::infra::workspace;
 use crate::model::plan::{write_plan, Op, Plan};
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -13,7 +14,8 @@ pub fn run(output: Option<&str>) -> i32 {
     let stdin = std::io::stdin();
     let mut stdin_lock = stdin.lock();
     let mut stdout = std::io::stdout();
-    run_wizard(&mut stdin_lock, &mut stdout, output)
+    let ws_root = workspace::find_workspace_root().ok();
+    run_wizard(&mut stdin_lock, &mut stdout, output, ws_root.as_deref())
 }
 
 /// Wizard logic — parameterized on I/O for testability.
@@ -24,6 +26,7 @@ pub fn run_wizard<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
     out_path: Option<&str>,
+    workspace_root: Option<&Path>,
 ) -> i32 {
     let _ = writeln!(output, "Available templates:");
     for (i, t) in TEMPLATES.iter().enumerate() {
@@ -50,7 +53,7 @@ pub fn run_wizard<R: BufRead, W: Write>(
 
     let template = &TEMPLATES[idx];
     let ops = match template.id {
-        "batch-move" => wizard_batch_move(input, output),
+        "batch-move" => wizard_batch_move(input, output, workspace_root),
         "categorize" => wizard_categorize(input, output),
         "archive" => wizard_archive(input, output),
         "rename" => wizard_rename(input, output),
@@ -93,7 +96,11 @@ pub fn run_wizard<R: BufRead, W: Write>(
     0
 }
 
-fn wizard_batch_move<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec<Op> {
+fn wizard_batch_move<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    workspace_root: Option<&Path>,
+) -> Vec<Op> {
     let _ = write!(output, "How many moves? ");
     let _ = output.flush();
     let n: usize = read_line(input)
@@ -116,7 +123,47 @@ fn wizard_batch_move<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec
             ops.push(Op::Move { src, dst });
         }
     }
-    ops
+
+    // Collect unique parent dirs that need creation. Sort for deterministic prompt order.
+    let parents_to_create: Vec<String> = {
+        let mut seen = std::collections::BTreeSet::new();
+        for op in &ops {
+            if let Op::Move { dst, .. } = op {
+                if let Some(parent) = Path::new(dst.as_str()).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let p = parent.to_str().unwrap_or("").to_string();
+                        let needs_create = workspace_root
+                            .map(|root| !root.join(&p).exists())
+                            .unwrap_or(true);
+                        if needs_create {
+                            seen.insert(p);
+                        }
+                    }
+                }
+            }
+        }
+        seen.into_iter().collect()
+    };
+
+    let mut create_ops: Vec<Op> = Vec::new();
+    for parent in &parents_to_create {
+        let _ = write!(
+            output,
+            "Destination '{parent}/' does not exist. Add a create_dir op? [Y/n] "
+        );
+        let _ = output.flush();
+        let answer = read_line(input).unwrap_or_default();
+        let answer = answer.trim().to_lowercase();
+        if answer.is_empty() || answer == "y" || answer == "yes" {
+            create_ops.push(Op::CreateDir {
+                path: parent.clone(),
+            });
+        }
+    }
+
+    let mut result = create_ops;
+    result.extend(ops);
+    result
 }
 
 fn wizard_categorize<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> Vec<Op> {
@@ -268,7 +315,7 @@ mod tests {
     fn wizard(input: &str, out_path: Option<&str>) -> (i32, String) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
         let mut writer = Vec::<u8>::new();
-        let code = run_wizard(&mut reader, &mut writer, out_path);
+        let code = run_wizard(&mut reader, &mut writer, out_path, None);
         (code, String::from_utf8_lossy(&writer).into_owned())
     }
 
@@ -435,6 +482,91 @@ mod tests {
             Op::Move {
                 src: "old-a.md".to_string(),
                 dst: "new-a.md".to_string()
+            }
+        );
+    }
+
+    // ── batch-move create_dir prompt (PLAN-002) ───────────────────────────────
+
+    /// batch-move: dst with parent, user answers Y → plan has create_dir op before move op
+    #[test]
+    fn test_batch_move_dst_parent_prompt_yes() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("plan.toml");
+        let out_str = out.to_str().unwrap().to_string();
+
+        // template 1, N=1, src=file.md, dst=foundations/file.md, answer Y, blank description
+        let (code, _) = wizard(
+            "1\n1\nfile.md\nfoundations/file.md\nY\n\n",
+            Some(&out_str),
+        );
+        assert_eq!(code, 0);
+
+        let plan = load_plan(&out).unwrap();
+        assert_eq!(plan.ops.len(), 2);
+        assert_eq!(
+            plan.ops[0],
+            Op::CreateDir {
+                path: "foundations".to_string()
+            }
+        );
+        assert_eq!(
+            plan.ops[1],
+            Op::Move {
+                src: "file.md".to_string(),
+                dst: "foundations/file.md".to_string()
+            }
+        );
+    }
+
+    /// batch-move: dst with parent, user answers N → no create_dir op in plan
+    #[test]
+    fn test_batch_move_dst_parent_prompt_no() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("plan.toml");
+        let out_str = out.to_str().unwrap().to_string();
+
+        // template 1, N=1, src=file.md, dst=foundations/file.md, answer N, blank description
+        let (code, _) = wizard(
+            "1\n1\nfile.md\nfoundations/file.md\nN\n\n",
+            Some(&out_str),
+        );
+        assert_eq!(code, 0);
+
+        let plan = load_plan(&out).unwrap();
+        assert_eq!(plan.ops.len(), 1);
+        assert_eq!(
+            plan.ops[0],
+            Op::Move {
+                src: "file.md".to_string(),
+                dst: "foundations/file.md".to_string()
+            }
+        );
+    }
+
+    /// batch-move: flat rename (dst has no parent component) → no create_dir prompt
+    #[test]
+    fn test_batch_move_flat_rename_no_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("plan.toml");
+        let out_str = out.to_str().unwrap().to_string();
+
+        // template 1, N=1, src=old.md, dst=new.md (flat, no parent), blank description
+        // No prompt for create_dir — input has no extra answer line
+        let (code, output) = wizard("1\n1\nold.md\nnew.md\n\n", Some(&out_str));
+        assert_eq!(code, 0);
+        assert!(
+            !output.contains("does not exist"),
+            "flat rename must not trigger a create_dir prompt; got output:\n{output}"
+        );
+
+        let plan = load_plan(&out).unwrap();
+        assert_eq!(plan.ops.len(), 1);
+        assert_eq!(
+            plan.ops[0],
+            Op::Move {
+                src: "old.md".to_string(),
+                dst: "new.md".to_string()
             }
         );
     }

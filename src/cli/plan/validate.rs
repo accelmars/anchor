@@ -41,6 +41,16 @@ pub(crate) fn run_impl(plan_path: &str, workspace_root: &Path) -> i32 {
                 if workspace_root.join(dst).exists() {
                     errors.push(format!("operation {n}: dst already exists: {dst}"));
                 }
+                let dst_path = workspace_root.join(dst);
+                if let Some(parent) = dst_path.parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        let parent_rel = Path::new(dst.as_str())
+                            .parent()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or("");
+                        eprintln!("note: operation {n}: destination parent '{parent_rel}' does not exist and will be created automatically");
+                    }
+                }
             }
             Op::CreateDir { .. } => {}
         }
@@ -142,5 +152,48 @@ dst = "dst/file.md"
 
         let code = run_impl(&plan, ws.path());
         assert_eq!(code, 2);
+    }
+
+    /// validate: dst parent does not exist → exit 0 (note emitted to stderr, not a failure)
+    #[test]
+    fn test_validate_dst_parent_missing_exits_0() {
+        let ws = TempDir::new().unwrap();
+        write_file(ws.path(), "src/guide.md");
+
+        let plan = plan_file(
+            ws.path(),
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/guide.md"
+dst = "new-parent/guide.md"
+"#,
+        );
+
+        // new-parent/ does not exist — validate emits a note but exits 0
+        let code = run_impl(&plan, ws.path());
+        assert_eq!(code, 0);
+    }
+
+    /// validate: dst parent exists on disk → exit 0, no note emitted (no stderr contamination)
+    #[test]
+    fn test_validate_dst_parent_exists_no_note() {
+        let ws = TempDir::new().unwrap();
+        write_file(ws.path(), "src/guide.md");
+        // pre-create the parent so it exists
+        fs::create_dir_all(ws.path().join("existing-parent")).unwrap();
+
+        let plan = plan_file(
+            ws.path(),
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/guide.md"
+dst = "existing-parent/guide.md"
+"#,
+        );
+
+        let code = run_impl(&plan, ws.path());
+        assert_eq!(code, 0);
     }
 }
