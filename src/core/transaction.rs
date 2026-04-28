@@ -327,8 +327,8 @@ pub fn plan(
                 // workspace-relative canonical before matching — same normalization as Form 1.
                 // When a relative ref matches, new_text is recomputed as a relative path from
                 // the source file to the new target location (source stays put; target moves).
-                let was_relative = target_normalized.starts_with("./")
-                    || target_normalized.starts_with("../");
+                let was_relative =
+                    target_normalized.starts_with("./") || target_normalized.starts_with("../");
                 let target_to_match: CanonicalPath = if was_relative {
                     resolver::resolve_form1(&reference.source_file, &target_normalized)
                 } else {
@@ -1314,7 +1314,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS Council\n",
+        );
         write_file(
             root,
             "accelmars-guild/projects/accelmars-gtm/proposals/MKT-039.md",
@@ -1328,8 +1332,17 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 partial-path backtick entry, got: {:?}", plan.entries);
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 partial-path backtick entry, got: {:?}",
+            plan.entries
+        );
         assert_eq!(bt[0].old_text, "`projects/os-council/`");
         assert_eq!(bt[0].new_text, "`councils/os-council/`");
     }
@@ -1362,8 +1375,17 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 partial-path file ref entry, got: {:?}", plan.entries);
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 partial-path file ref entry, got: {:?}",
+            plan.entries
+        );
         assert_eq!(bt[0].old_text, "`projects/os-council/decisions/foo.md`");
         assert_eq!(bt[0].new_text, "`councils/os-council/decisions/foo.md`");
     }
@@ -1378,7 +1400,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS Council\n",
+        );
         write_file(
             root,
             "docs/overview.md",
@@ -1392,7 +1418,11 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
         assert!(
             bt.is_empty(),
             "unrelated partial path must not produce entry, got: {:?}",
@@ -1409,7 +1439,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS Council\n",
+        );
         write_file(
             root,
             "accelmars-guild/projects/accelmars-gtm/proposals/MKT-144.md",
@@ -1423,8 +1457,17 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 $(anchor root)/ dir ref entry, got: {:?}", plan.entries);
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 $(anchor root)/ dir ref entry, got: {:?}",
+            plan.entries
+        );
         assert_eq!(
             bt[0].old_text,
             "`$(anchor root)/accelmars-guild/projects/os-council/`"
@@ -1462,8 +1505,17 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 $(anchor root)/ file ref entry, got: {:?}", plan.entries);
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 $(anchor root)/ file ref entry, got: {:?}",
+            plan.entries
+        );
         assert_eq!(
             bt[0].old_text,
             "`$(anchor root)/accelmars-guild/projects/os-council/decisions/foo.md`"
@@ -1489,13 +1541,16 @@ mod tests {
             "start_dir: `$(anchor root)/accelmars-guild/projects/skill-council/proposals`\n",
         );
 
-        let workspace_files = vec![
-            "accelmars-guild/projects/skill-council/contracts/SKW-002.md".to_string(),
-        ];
+        let workspace_files =
+            vec!["accelmars-guild/projects/skill-council/contracts/SKW-002.md".to_string()];
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
         assert_eq!(
             bt.len(),
             1,
@@ -1543,14 +1598,29 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 relative backtick entry (Gap 3), got: {:?}", plan.entries);
-        assert_eq!(bt[0].file, "accelmars-guild/projects/accelmars-gtm/CLAUDE.md");
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 relative backtick entry (Gap 3), got: {:?}",
+            plan.entries
+        );
+        assert_eq!(
+            bt[0].file,
+            "accelmars-guild/projects/accelmars-gtm/CLAUDE.md"
+        );
         assert_eq!(bt[0].old_text, "`../os-council/decisions/foo.md`");
         // After move: source stays at accelmars-guild/projects/accelmars-gtm/CLAUDE.md,
         // target moves to accelmars-guild/councils/os-council/decisions/foo.md.
         // New relative: ../../councils/os-council/decisions/foo.md
-        assert_eq!(bt[0].new_text, "`../../councils/os-council/decisions/foo.md`");
+        assert_eq!(
+            bt[0].new_text,
+            "`../../councils/os-council/decisions/foo.md`"
+        );
     }
 
     /// Gap 3: relative backtick dir ref `../os-council/` → matched and rewritten with trailing slash preserved.
@@ -1562,7 +1632,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS Council\n",
+        );
         write_file(
             root,
             "accelmars-guild/projects/accelmars-gtm/STATUS.md",
@@ -1576,8 +1650,17 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
-        assert_eq!(bt.len(), 1, "expected 1 relative dir ref entry (Gap 3), got: {:?}", plan.entries);
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 relative dir ref entry (Gap 3), got: {:?}",
+            plan.entries
+        );
         assert_eq!(bt[0].old_text, "`../os-council/`");
         assert_eq!(bt[0].new_text, "`../../councils/os-council/`");
     }
@@ -1591,7 +1674,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS\n",
+        );
         write_file(
             root,
             "accelmars-guild/projects/accelmars-gtm/CLAUDE.md",
@@ -1605,7 +1692,11 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
         assert!(
             bt.is_empty(),
             "relative backtick resolving outside src must not produce entry, got: {:?}",
@@ -1622,7 +1713,11 @@ mod tests {
         let src = "accelmars-guild/projects/os-council".to_string();
         let dst = "accelmars-guild/councils/os-council".to_string();
 
-        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/README.md",
+            "# OS Council\n",
+        );
         write_file(
             root,
             "docs/overview.md",
@@ -1636,7 +1731,11 @@ mod tests {
 
         let plan = plan(root, &src, &dst, &workspace_files).unwrap();
 
-        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        let bt: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|e| e.old_text.starts_with('`'))
+            .collect();
         assert!(
             bt.is_empty(),
             "unrelated $(anchor root)/ path must not produce entry, got: {:?}",

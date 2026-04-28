@@ -648,11 +648,7 @@ mod tests {
         std::fs::create_dir_all(&src_dir).unwrap();
         std::fs::create_dir_all(root.path().join("sibling")).unwrap();
         std::fs::write(root.path().join("sibling").join("target.md"), "# T\n").unwrap();
-        std::fs::write(
-            src_dir.join("README.md"),
-            "[valid](../sibling/target.md)\n",
-        )
-        .unwrap();
+        std::fs::write(src_dir.join("README.md"), "[valid](../sibling/target.md)\n").unwrap();
 
         let broken = validate_source_refs(root.path(), "src-proj").unwrap();
 
@@ -670,7 +666,10 @@ mod tests {
     fn test_validate_source_refs_gate_triggers_for_cortex_scenario() {
         use tempfile::tempdir;
         let root = tempdir().unwrap();
-        let src_dir = root.path().join("projects").join("cortex-intelligence-foundation");
+        let src_dir = root
+            .path()
+            .join("projects")
+            .join("cortex-intelligence-foundation");
         std::fs::create_dir_all(&src_dir).unwrap();
         // This is the broken ref from the intake doc: 4 levels up from projects/CIF/ only
         // reaches the workspace parent — cortex-engine is not there.
