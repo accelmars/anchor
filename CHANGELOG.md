@@ -16,7 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 - Gap 1: Partial-path backtick refs (e.g. `` `projects/os-council/...` ``) now matched and rewritten
   during moves, not just full workspace-relative paths.
 - Gap 2: Backtick refs prefixed with `` `$(anchor root)/` `` now matched and rewritten.
-- Gap 3: Relative backtick paths (e.g. `` `../os-council/...` ``) now resolved relative to the
+- Gap 3: Relative backtick paths (e.g. `` `../os/...` ``) now resolved relative to the
   containing file before matching — consistent with Form 1 markdown link behavior.
 - Gap 4: `anchor file validate` no longer reports false positives on valid relative backtick paths.
 - Gap 5: Files inside a moved directory that contain `` `$(anchor root)/...old-path...` ``
