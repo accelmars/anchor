@@ -229,6 +229,42 @@ fn stem_of(canonical: &CanonicalPath) -> &str {
     filename.strip_suffix(".md").unwrap_or(filename)
 }
 
+/// Returns `Some(new_target_raw)` if `target_raw` is a partial-path backtick match for `src`.
+///
+/// A partial-path match occurs when `target_raw` equals a valid suffix of `src`, or is a
+/// path under such a suffix — where a valid suffix must begin after a `/` in `src` (prevents
+/// `bar` from matching `foobar`). Returns `None` if no match or if the rewrite is a no-op.
+///
+/// Example: src="a/b/c", dst="x/y/c", target_raw="b/c/d.md" → Some("y/c/d.md")
+fn rewrite_partial_backtick(target_raw: &str, src: &str, dst: &str) -> Option<String> {
+    let src_parts: Vec<&str> = src.split('/').collect();
+    let dst_parts: Vec<&str> = dst.split('/').collect();
+
+    for n in 1..src_parts.len() {
+        let src_suffix = src_parts[n..].join("/");
+
+        let tail: &str = if target_raw == src_suffix {
+            ""
+        } else if target_raw.starts_with(&format!("{src_suffix}/")) {
+            &target_raw[src_suffix.len()..]
+        } else {
+            continue;
+        };
+
+        if n >= dst_parts.len() {
+            continue;
+        }
+        let dst_suffix = dst_parts[n..].join("/");
+        let new_target_raw = format!("{dst_suffix}{tail}");
+        if new_target_raw == target_raw {
+            continue;
+        }
+        return Some(new_target_raw);
+    }
+
+    None
+}
+
 /// PLAN phase: scan workspace, classify all references (A/B/C), build the rewrite plan.
 ///
 /// Algorithm from 04-TRANSACTIONS.md §PLAN Phase Detail:
@@ -272,31 +308,70 @@ pub fn plan(
 
         for reference in refs {
             if reference.form == RefForm::Backtick {
-                // Backtick path refs: direct path match (not relative — no resolve_form1).
-                // target_raw is the workspace-root-relative path (trailing slash stripped).
-                // Only Case A applies: external file with backtick mention of something inside src.
-                // Case B: backtick paths are absolute mentions, not relative — moving source file
-                //   does not change how the target directory is named. Skip.
-                // Case C: both inside src — both move together, path unchanged. Skip.
-                let target_inside = inside_src(&reference.target_raw, src);
-                if !target_inside {
+                // Backtick path refs: match target_raw against src using exact or partial-path
+                // suffix matching. target_raw is the backtick content with trailing slash
+                // stripped (parser invariant).
+                //
+                // Gap 2 + Gap 5: strip $(anchor root)/ prefix before matching so that
+                // `$(anchor root)/accelmars-guild/projects/os-council/...` matches src
+                // `accelmars-guild/projects/os-council`. Prefix is preserved in new_text.
+                let anchor_root_prefix = "$(anchor root)/";
+                let has_anchor_prefix = reference.target_raw.starts_with(anchor_root_prefix);
+                let target_normalized: CanonicalPath = if has_anchor_prefix {
+                    reference.target_raw[anchor_root_prefix.len()..].to_string()
+                } else {
+                    reference.target_raw.clone()
+                };
+
+                // Gap 3: resolve relative backtick paths (starts with ./ or ../) to
+                // workspace-relative canonical before matching — same normalization as Form 1.
+                // When a relative ref matches, new_text is recomputed as a relative path from
+                // the source file to the new target location (source stays put; target moves).
+                let was_relative = target_normalized.starts_with("./")
+                    || target_normalized.starts_with("../");
+                let target_to_match: CanonicalPath = if was_relative {
+                    resolver::resolve_form1(&reference.source_file, &target_normalized)
+                } else {
+                    target_normalized.clone()
+                };
+
+                let new_normalized = if inside_src(&target_to_match, src) {
+                    remap_path(&target_to_match, src, dst)
+                } else {
+                    match rewrite_partial_backtick(&target_to_match, src, dst) {
+                        Some(t) => t,
+                        None => continue, // no match — not related to this move
+                    }
+                };
+
+                // Case C: source file also inside src.
+                // For non-prefixed refs: relative path is stable — skip.
+                // For $(anchor root)/-prefixed refs: absolute path must still be rewritten — do not skip.
+                if !has_anchor_prefix && inside_src(file_canonical, src) {
                     continue;
                 }
-                if inside_src(file_canonical, src) {
-                    continue; // Case C: both inside src — skip
-                }
 
-                // Case A: external file has backtick mention of something inside src
-                let new_target = remap_path(&reference.target_raw, src, dst);
                 let old_text = content[reference.span.0..reference.span.1].to_string();
-                // Preserve trailing slash: if the content inside backticks ended with '/',
-                // the original old_text looks like `path/` — preserve it in new_text.
                 let inner = &old_text[1..old_text.len() - 1]; // strip surrounding backticks
                 let had_slash = inner.ends_with('/');
-                let new_text = if had_slash {
-                    format!("`{new_target}/`")
+                let new_text = if has_anchor_prefix {
+                    if had_slash {
+                        format!("`$(anchor root)/{new_normalized}/`")
+                    } else {
+                        format!("`$(anchor root)/{new_normalized}`")
+                    }
+                } else if was_relative {
+                    // Source file does not move; target did — recompute relative path from source to new target.
+                    let new_rel = compute_relative_path(file_canonical, &new_normalized);
+                    if had_slash {
+                        format!("`{new_rel}/`")
+                    } else {
+                        format!("`{new_rel}`")
+                    }
+                } else if had_slash {
+                    format!("`{new_normalized}/`")
                 } else {
-                    format!("`{new_target}`")
+                    format!("`{new_normalized}`")
                 };
                 entries.push(RewriteEntry {
                     file: file_canonical.clone(),
@@ -1188,6 +1263,384 @@ mod tests {
                 .contains("foundations/docs-engine/guide.md"),
             "new_text must contain new path, got: {}",
             href_entries[0].new_text
+        );
+    }
+
+    /// Gap 1: rewrite_partial_backtick unit test — verifies matching and no-op filtering.
+    #[test]
+    fn test_rewrite_partial_backtick_unit() {
+        let src = "accelmars-guild/projects/os-council";
+        let dst = "accelmars-guild/councils/os-council";
+
+        // Directory partial match (n=1: omit "accelmars-guild/")
+        assert_eq!(
+            rewrite_partial_backtick("projects/os-council", src, dst),
+            Some("councils/os-council".to_string()),
+            "directory partial match must rewrite suffix"
+        );
+
+        // File under directory partial match
+        assert_eq!(
+            rewrite_partial_backtick("projects/os-council/decisions/foo.md", src, dst),
+            Some("councils/os-council/decisions/foo.md".to_string()),
+            "file-under-dir partial match must rewrite suffix"
+        );
+
+        // Unrelated path — no match
+        assert_eq!(
+            rewrite_partial_backtick("projects/other-dir/foo.md", src, dst),
+            None,
+            "unrelated path must not match"
+        );
+
+        // No-op (stem unchanged across move) — filtered out
+        let src2 = "a/b/same";
+        let dst2 = "x/y/same";
+        assert_eq!(
+            rewrite_partial_backtick("same", src2, dst2),
+            None,
+            "no-op rewrite (new == old) must return None"
+        );
+    }
+
+    /// Gap 1 — partial-path directory ref: external file with `projects/os-council/`
+    /// (guild-relative partial path) is matched and rewritten during the move of
+    /// `accelmars-guild/projects/os-council` → `accelmars-guild/councils/os-council`.
+    #[test]
+    fn test_partial_backtick_directory_ref_matched() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/proposals/MKT-039.md",
+            "See `projects/os-council/` for decisions.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/proposals/MKT-039.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 partial-path backtick entry, got: {:?}", plan.entries);
+        assert_eq!(bt[0].old_text, "`projects/os-council/`");
+        assert_eq!(bt[0].new_text, "`councils/os-council/`");
+    }
+
+    /// Gap 1 — partial-path file ref: `projects/os-council/decisions/foo.md` is matched and
+    /// rewritten to `councils/os-council/decisions/foo.md`.
+    #[test]
+    fn test_partial_backtick_file_ref_matched() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/decisions/foo.md",
+            "# Decision\n",
+        );
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md",
+            "See `projects/os-council/decisions/foo.md` for context.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/decisions/foo.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 partial-path file ref entry, got: {:?}", plan.entries);
+        assert_eq!(bt[0].old_text, "`projects/os-council/decisions/foo.md`");
+        assert_eq!(bt[0].new_text, "`councils/os-council/decisions/foo.md`");
+    }
+
+    /// Gap 1 — unrelated partial path: `projects/other-dir/foo.md` must NOT be matched when
+    /// moving `accelmars-guild/projects/os-council`.
+    #[test]
+    fn test_partial_backtick_unrelated_path_not_matched() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "docs/overview.md",
+            "See `projects/other-dir/foo.md` for more.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "docs/overview.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert!(
+            bt.is_empty(),
+            "unrelated partial path must not produce entry, got: {:?}",
+            bt
+        );
+    }
+
+    /// Gap 2: external file with `$(anchor root)/src-dir/` backtick ref → matched and rewritten with prefix preserved.
+    #[test]
+    fn test_anchor_root_prefix_external_dir_ref() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/proposals/MKT-144.md",
+            "See `$(anchor root)/accelmars-guild/projects/os-council/` for decisions.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/proposals/MKT-144.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 $(anchor root)/ dir ref entry, got: {:?}", plan.entries);
+        assert_eq!(
+            bt[0].old_text,
+            "`$(anchor root)/accelmars-guild/projects/os-council/`"
+        );
+        assert_eq!(
+            bt[0].new_text,
+            "`$(anchor root)/accelmars-guild/councils/os-council/`"
+        );
+    }
+
+    /// Gap 2: external file with `$(anchor root)/src-dir/sub/file.md` backtick ref → rewritten, prefix preserved.
+    #[test]
+    fn test_anchor_root_prefix_external_file_ref() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/decisions/foo.md",
+            "# Decision\n",
+        );
+        write_file(
+            root,
+            "accelmars-guild/contracts/SKW-002.md",
+            "start_dir: `$(anchor root)/accelmars-guild/projects/os-council/decisions/foo.md`\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/decisions/foo.md".to_string(),
+            "accelmars-guild/contracts/SKW-002.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 $(anchor root)/ file ref entry, got: {:?}", plan.entries);
+        assert_eq!(
+            bt[0].old_text,
+            "`$(anchor root)/accelmars-guild/projects/os-council/decisions/foo.md`"
+        );
+        assert_eq!(
+            bt[0].new_text,
+            "`$(anchor root)/accelmars-guild/councils/os-council/decisions/foo.md`"
+        );
+    }
+
+    /// Gap 5: file INSIDE moved dir with `$(anchor root)/` self-ref → rewritten (Case C inverted for absolute refs).
+    #[test]
+    fn test_anchor_root_prefix_internal_self_ref() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/skill-council".to_string();
+        let dst = "accelmars-guild/councils/skill-council".to_string();
+
+        write_file(
+            root,
+            "accelmars-guild/projects/skill-council/contracts/SKW-002.md",
+            "start_dir: `$(anchor root)/accelmars-guild/projects/skill-council/proposals`\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/skill-council/contracts/SKW-002.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(
+            bt.len(),
+            1,
+            "expected 1 internal self-ref entry (Gap 5), got: {:?}",
+            plan.entries
+        );
+        assert_eq!(
+            bt[0].old_text,
+            "`$(anchor root)/accelmars-guild/projects/skill-council/proposals`"
+        );
+        assert_eq!(
+            bt[0].new_text,
+            "`$(anchor root)/accelmars-guild/councils/skill-council/proposals`"
+        );
+    }
+
+    /// Gap 3: external file with `../os-council/decisions/foo.md` in backtick → matched and
+    /// rewritten to a depth-adjusted relative path after the os-council dir moves.
+    #[test]
+    fn test_relative_backtick_external_file_matched_and_rewritten() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(
+            root,
+            "accelmars-guild/projects/os-council/decisions/foo.md",
+            "# Decision\n",
+        );
+        // External file (sibling of os-council under projects/) with relative backtick ref.
+        // From accelmars-guild/projects/accelmars-gtm/CLAUDE.md, `../os-council/decisions/foo.md`
+        // resolves to accelmars-guild/projects/os-council/decisions/foo.md (inside src).
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/CLAUDE.md",
+            "Path: `../os-council/decisions/foo.md`\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/decisions/foo.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/CLAUDE.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 relative backtick entry (Gap 3), got: {:?}", plan.entries);
+        assert_eq!(bt[0].file, "accelmars-guild/projects/accelmars-gtm/CLAUDE.md");
+        assert_eq!(bt[0].old_text, "`../os-council/decisions/foo.md`");
+        // After move: source stays at accelmars-guild/projects/accelmars-gtm/CLAUDE.md,
+        // target moves to accelmars-guild/councils/os-council/decisions/foo.md.
+        // New relative: ../../councils/os-council/decisions/foo.md
+        assert_eq!(bt[0].new_text, "`../../councils/os-council/decisions/foo.md`");
+    }
+
+    /// Gap 3: relative backtick dir ref `../os-council/` → matched and rewritten with trailing slash preserved.
+    #[test]
+    fn test_relative_backtick_dir_ref_trailing_slash_preserved() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md",
+            "Council dir: `../os-council/`\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert_eq!(bt.len(), 1, "expected 1 relative dir ref entry (Gap 3), got: {:?}", plan.entries);
+        assert_eq!(bt[0].old_text, "`../os-council/`");
+        assert_eq!(bt[0].new_text, "`../../councils/os-council/`");
+    }
+
+    /// Gap 3 negative: relative backtick ref that resolves to a path NOT inside src → no entry.
+    #[test]
+    fn test_relative_backtick_resolves_outside_src_no_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS\n");
+        write_file(
+            root,
+            "accelmars-guild/projects/accelmars-gtm/CLAUDE.md",
+            "Other: `../other-project/docs.md`\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "accelmars-guild/projects/accelmars-gtm/CLAUDE.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert!(
+            bt.is_empty(),
+            "relative backtick resolving outside src must not produce entry, got: {:?}",
+            bt
+        );
+    }
+
+    /// Gap 2 negative: unrelated `$(anchor root)/` path must not match when moving a different src.
+    #[test]
+    fn test_anchor_root_prefix_unrelated_path_not_matched() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-guild/projects/os-council".to_string();
+        let dst = "accelmars-guild/councils/os-council".to_string();
+
+        write_file(root, "accelmars-guild/projects/os-council/README.md", "# OS Council\n");
+        write_file(
+            root,
+            "docs/overview.md",
+            "See `$(anchor root)/accelmars-guild/projects/other-project/` for details.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars-guild/projects/os-council/README.md".to_string(),
+            "docs/overview.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+        let bt: Vec<_> = plan.entries.iter().filter(|e| e.old_text.starts_with('`')).collect();
+        assert!(
+            bt.is_empty(),
+            "unrelated $(anchor root)/ path must not produce entry, got: {:?}",
+            bt
         );
     }
 

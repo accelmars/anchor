@@ -5,9 +5,10 @@
 // not atomic. Cross-filesystem atomicity is a Phase 2 concern.
 
 use crate::cli::file::refs::OutputFormat;
-use crate::core::{scanner, transaction};
+use crate::core::{parser, resolver, scanner, transaction};
 use crate::infra::{lock, temp, workspace};
 use crate::model::manifest::Manifest;
+use crate::model::reference::RefForm;
 use std::io::{self, Write};
 use std::process;
 
@@ -161,6 +162,20 @@ pub(crate) fn run_impl(
 
     // ── Scan workspace ────────────────────────────────────────────────────────
     let workspace_files = scanner::scan_workspace(workspace_root)?;
+
+    // ── Pre-move source validation ────────────────────────────────────────────
+    let broken_source = validate_source_refs(workspace_root, &src_canonical)?;
+    if !broken_source.is_empty() {
+        eprintln!("BROKEN REFERENCES IN SOURCE ({}):", broken_source.len());
+        for (file, line, target) in &broken_source {
+            eprintln!("  {file}:{line}");
+            eprintln!("    → {target}  (not found)");
+        }
+        eprintln!();
+        eprintln!("Fix the broken reference before moving. No changes applied.");
+        drop(lock_guard);
+        process::exit(1);
+    }
 
     // ── PLAN ──────────────────────────────────────────────────────────────────
     let rewrite_plan = transaction::plan(
@@ -355,6 +370,102 @@ pub fn format_src_not_found_hint(src: &str, workspace_root: &std::path::Path) ->
     hint
 }
 
+/// Pre-move gate: scan all .md files inside `src_canonical` for relative references
+/// that cannot be resolved. Returns `(canonical_file_path, 1-based_line, target_raw)` for
+/// each broken ref. Empty return means the source is clean and the move may proceed.
+fn validate_source_refs(
+    workspace_root: &std::path::Path,
+    src_canonical: &str,
+) -> Result<Vec<(String, usize, String)>, MvError> {
+    let src_abs = workspace_root.join(src_canonical);
+    let mut broken: Vec<(String, usize, String)> = Vec::new();
+
+    let mut md_files: Vec<std::path::PathBuf> = Vec::new();
+    if src_abs.is_file() {
+        if src_abs.extension().and_then(|e| e.to_str()) == Some("md") {
+            md_files.push(src_abs);
+        }
+    } else if src_abs.is_dir() {
+        collect_md_files_recursive(&src_abs, &mut md_files)?;
+    }
+
+    for abs_path in &md_files {
+        let canonical = abs_path
+            .strip_prefix(workspace_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+
+        if canonical.is_empty() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(abs_path)
+            .map_err(|e| MvError::Transaction(transaction::TransactionError::Io(e)))?;
+
+        let refs = parser::parse_references(&canonical, &content);
+
+        for reference in &refs {
+            let should_check = match reference.form {
+                RefForm::Standard => true,
+                RefForm::Backtick => {
+                    reference.target_raw.starts_with("./")
+                        || reference.target_raw.starts_with("../")
+                }
+                RefForm::HtmlHref => {
+                    !reference.target_raw.is_empty()
+                        && !reference.target_raw.starts_with("http://")
+                        && !reference.target_raw.starts_with("https://")
+                        && !reference.target_raw.starts_with("//")
+                        && !reference.target_raw.starts_with('/')
+                }
+                _ => false,
+            };
+
+            if !should_check {
+                continue;
+            }
+
+            let resolved = resolver::resolve_form1(&canonical, &reference.target_raw);
+            if !workspace_root.join(&resolved).exists() {
+                let line = content[..reference.span.0]
+                    .chars()
+                    .filter(|&c| c == '\n')
+                    .count()
+                    + 1;
+                broken.push((canonical.clone(), line, reference.target_raw.clone()));
+            }
+        }
+    }
+
+    Ok(broken)
+}
+
+/// Recursively collect .md files under `dir`. Skips symlinks per Rule 12.
+fn collect_md_files_recursive(
+    dir: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> Result<(), MvError> {
+    let read_dir = std::fs::read_dir(dir)
+        .map_err(|e| MvError::Transaction(transaction::TransactionError::Io(e)))?;
+    for entry in read_dir {
+        let entry =
+            entry.map_err(|e| MvError::Transaction(transaction::TransactionError::Io(e)))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| MvError::Transaction(transaction::TransactionError::Io(e)))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_md_files_recursive(&path, files)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
 /// Normalize a user-provided path to a workspace-root-relative canonical path.
 ///
 /// If `path` is absolute, strips the workspace_root prefix.
@@ -502,6 +613,86 @@ mod tests {
             "expected SrcNotFound for nonexistent src, got: {:?}",
             result
         );
+    }
+
+    /// validate_source_refs returns a non-empty vec with correct (file, line, target_raw)
+    /// when the source directory contains a file with a broken relative Form 1 ref.
+    #[test]
+    fn test_validate_source_refs_detects_broken_form1_ref() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        let src_dir = root.path().join("src-proj");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("README.md"),
+            "[broken](../../../nonexistent/target.md)\n",
+        )
+        .unwrap();
+
+        let broken = validate_source_refs(root.path(), "src-proj").unwrap();
+
+        assert_eq!(broken.len(), 1, "expected 1 broken ref; got: {broken:?}");
+        let (file, line, target) = &broken[0];
+        assert_eq!(file, "src-proj/README.md");
+        assert_eq!(*line, 1usize);
+        assert_eq!(target, "../../../nonexistent/target.md");
+    }
+
+    /// validate_source_refs returns an empty vec when all relative refs in the source
+    /// directory resolve to existing files on disk.
+    #[test]
+    fn test_validate_source_refs_empty_when_all_refs_resolve() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        let src_dir = root.path().join("src-proj");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(root.path().join("sibling")).unwrap();
+        std::fs::write(root.path().join("sibling").join("target.md"), "# T\n").unwrap();
+        std::fs::write(
+            src_dir.join("README.md"),
+            "[valid](../sibling/target.md)\n",
+        )
+        .unwrap();
+
+        let broken = validate_source_refs(root.path(), "src-proj").unwrap();
+
+        assert!(
+            broken.is_empty(),
+            "expected no broken refs for valid ref; got: {broken:?}"
+        );
+    }
+
+    /// Gate condition test: validate_source_refs returns non-empty for a source directory
+    /// matching the cortex-move scenario from the intake doc (already-broken relative ref
+    /// that anchor would misreport post-rewrite). This non-empty result is what run_impl()
+    /// checks before transaction::plan() — when non-empty, process::exit(1) is called.
+    #[test]
+    fn test_validate_source_refs_gate_triggers_for_cortex_scenario() {
+        use tempfile::tempdir;
+        let root = tempdir().unwrap();
+        let src_dir = root.path().join("projects").join("cortex-intelligence-foundation");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        // This is the broken ref from the intake doc: 4 levels up from projects/CIF/ only
+        // reaches the workspace parent — cortex-engine is not there.
+        std::fs::write(
+            src_dir.join("HANDOVER.md"),
+            "# Handover\n[changelog](../../../../cortex-engine/CHANGELOG.md)\n",
+        )
+        .unwrap();
+
+        let broken =
+            validate_source_refs(root.path(), "projects/cortex-intelligence-foundation").unwrap();
+
+        assert!(
+            !broken.is_empty(),
+            "gate must trigger: validate_source_refs must detect the broken cortex-engine ref"
+        );
+        assert_eq!(
+            broken[0].0,
+            "projects/cortex-intelligence-foundation/HANDOVER.md"
+        );
+        assert_eq!(broken[0].1, 2usize);
+        assert_eq!(broken[0].2, "../../../../cortex-engine/CHANGELOG.md");
     }
 
     /// AR-010 parity: non-.md rewriting is wired into the mv post-commit path.

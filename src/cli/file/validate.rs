@@ -122,9 +122,19 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
                     .strip_prefix("$(anchor root)/")
                     .unwrap_or(&reference.target_raw)
                     .to_string(),
-                // Backtick path: target_raw is the workspace-root-relative path (trailing slash stripped).
-                // Validate that the referenced directory or file exists on disk.
-                RefForm::Backtick => reference.target_raw.clone(),
+                // Backtick path: resolve relative paths (starts with ./ or ../) before existence
+                // check — consistent with Form 1 and Yaml/Toml handling. Also strip
+                // $(anchor root)/ prefix (Gap 4).
+                RefForm::Backtick => {
+                    let raw = &reference.target_raw;
+                    if raw.starts_with("./") || raw.starts_with("../") {
+                        resolver::resolve_form1(file_path, raw)
+                    } else if let Some(stripped) = raw.strip_prefix("$(anchor root)/") {
+                        stripped.to_string()
+                    } else {
+                        raw.clone()
+                    }
+                }
                 // HtmlHref: resolve relative to source file (same semantics as Form 1)
                 RefForm::HtmlHref => resolver::resolve_form1(file_path, &reference.target_raw),
             };
@@ -540,6 +550,71 @@ mod tests {
                 .iter()
                 .any(|(_, _, raw)| raw.contains("$(anchor root)/nonexistent-toml-path")),
             "broken ref target must include the full TOML path value; got: {:?}",
+            result.broken
+        );
+    }
+
+    /// Gap 4: relative backtick path (../../) that resolves to an existing file → NOT reported as broken.
+    #[test]
+    fn test_relative_backtick_valid_target_not_reported_broken() {
+        let tmp = TempDir::new().unwrap();
+        // Target file: accelmars-guild/councils/os-council/decisions/foo.md
+        write_file(
+            tmp.path(),
+            "accelmars-guild/councils/os-council/decisions/foo.md",
+            "# Decision\n",
+        );
+        // Source file: accelmars-guild/projects/accelmars-gtm/STATUS.md
+        // Relative backtick: ../../councils/os-council/decisions/foo.md
+        // Resolves from accelmars-guild/projects/accelmars-gtm/ → accelmars-guild/councils/os-council/decisions/foo.md ✓
+        write_file(
+            tmp.path(),
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md",
+            "See `../../councils/os-council/decisions/foo.md` for context.\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            result.broken.is_empty(),
+            "relative backtick resolving to existing file must not be reported as broken; got: {:?}",
+            result.broken
+        );
+    }
+
+    /// Gap 4 regression: relative backtick path that resolves to a NON-EXISTING file IS reported as broken.
+    #[test]
+    fn test_relative_backtick_broken_target_still_reported() {
+        let tmp = TempDir::new().unwrap();
+        // Source file with relative backtick ref to a file that does not exist.
+        write_file(
+            tmp.path(),
+            "accelmars-guild/projects/accelmars-gtm/STATUS.md",
+            "See `../../councils/os-council/decisions/missing.md` for context.\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            !result.broken.is_empty(),
+            "relative backtick resolving to missing file must be reported as broken"
+        );
+    }
+
+    /// Gap 4 regression: `$(anchor root)/` backtick path where target EXISTS → NOT reported as broken.
+    #[test]
+    fn test_anchor_root_backtick_valid_target_not_reported_broken() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "accelmars-guild/councils/os-council/decisions/foo.md",
+            "# Decision\n",
+        );
+        write_file(
+            tmp.path(),
+            "proposals/MKT-144.md",
+            "Path: `$(anchor root)/accelmars-guild/councils/os-council/decisions/foo.md`\n",
+        );
+        let result = do_validate(tmp.path()).unwrap();
+        assert!(
+            result.broken.is_empty(),
+            "$(anchor root)/ backtick resolving to existing file must not be reported as broken; got: {:?}",
             result.broken
         );
     }
