@@ -1,4 +1,5 @@
 pub mod acked;
+pub mod diagnostics;
 pub mod parser;
 pub mod reference;
 pub mod resolver;

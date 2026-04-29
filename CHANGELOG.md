@@ -5,6 +5,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Added — AENG-006 — `anchor frontmatter` subcommand family: `audit`, `migrate`, `normalize`, `add-required`, `check-schema`. `FRONTMATTER.schema.json` at workspace root (JSON Schema 2020-12). CI diff guard (`anchor frontmatter check-schema`) detects drift between FRONTMATTER.md and the schema.
+
+### Added — AENG-002 — rollback now prints per-ref diagnostics matching anchor file validate format.
+
 ## [0.5.0] — 2026-04-28
 
 ### Added

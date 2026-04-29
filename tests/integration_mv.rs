@@ -238,7 +238,7 @@ fn test_case_c_references_byte_identical() {
 
     match run_mv(root, "project", "archive/project") {
         MvOutcome::Success => {}
-        other => panic!("expected success"),
+        _other => panic!("expected success"),
     }
 
     let a_after = read_file(root, "archive/project/a.md");

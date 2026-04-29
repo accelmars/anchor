@@ -238,12 +238,17 @@ pub(crate) fn run_impl(
     match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
         Ok(()) => {}
         Err(transaction::ValidationError::BrokenRefs(broken)) => {
-            eprintln!();
+            let capped = &workspace_files[..200.min(workspace_files.len())];
             eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", broken.len());
-            for b in &broken {
-                eprintln!("  {}:{} → {}  (not found)", b.file, b.line, b.target);
-            }
             eprintln!();
+            for b in &broken {
+                eprint!(
+                    "{}",
+                    crate::core::diagnostics::format_broken_ref(
+                        &b.file, b.line, &b.target, capped,
+                    )
+                );
+            }
             eprintln!("Rolled back. No changes applied.");
             transaction::rollback(&op_dir, lock_guard);
             process::exit(1);
