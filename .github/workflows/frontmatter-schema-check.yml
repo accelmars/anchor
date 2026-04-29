@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: accelmars/accelmars-workspace
-          path: ../accelmars-workspace
+          path: accelmars-workspace
           # Uses GITHUB_TOKEN; requires accelmars-workspace to be accessible
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -42,14 +42,14 @@ jobs:
         run: cargo build
 
       - name: Validate schema JSON syntax
-        run: jq -e . ../accelmars-workspace/FRONTMATTER.schema.json > /dev/null
+        run: jq -e . accelmars-workspace/FRONTMATTER.schema.json > /dev/null
 
       - name: Run anchor frontmatter check-schema
-        # Spec and schema are in the checked-out accelmars-workspace sibling directory
+        # Spec and schema are in the checked-out accelmars-workspace subdirectory
         run: |
           cargo run -- frontmatter check-schema \
-            ../accelmars-workspace/FRONTMATTER.md \
-            ../accelmars-workspace/FRONTMATTER.schema.json
+            accelmars-workspace/FRONTMATTER.md \
+            accelmars-workspace/FRONTMATTER.schema.json
 
       - name: Run frontmatter scenario tests
         run: cargo test --test frontmatter_fm_scenarios

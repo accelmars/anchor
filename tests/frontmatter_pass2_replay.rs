@@ -38,8 +38,16 @@ fn read_md(root: &Path, rel: &str) -> String {
 }
 
 fn write_schema(root: &Path) {
-    let schema_content = include_str!("../../accelmars-workspace/FRONTMATTER.schema.json");
-    fs::write(root.join("FRONTMATTER.schema.json"), schema_content).unwrap();
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sibling = manifest.join("../accelmars-workspace/FRONTMATTER.schema.json");
+    let nested = manifest.join("accelmars-workspace/FRONTMATTER.schema.json");
+    let content = if sibling.exists() {
+        std::fs::read_to_string(&sibling).expect("schema read failed (sibling path)")
+    } else {
+        std::fs::read_to_string(&nested)
+            .expect("FRONTMATTER.schema.json not found (tried sibling and nested paths)")
+    };
+    fs::write(root.join("FRONTMATTER.schema.json"), content).unwrap();
 }
 
 fn schema_path(root: &Path) -> PathBuf {
