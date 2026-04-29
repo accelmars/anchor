@@ -149,7 +149,10 @@ mod tests {
         s.observe_line("```");
         assert!(s.in_code_block());
         s.observe_line("~~~"); // tilde must NOT close a backtick fence
-        assert!(s.in_code_block(), "tilde line must not close a backtick fence");
+        assert!(
+            s.in_code_block(),
+            "tilde line must not close a backtick fence"
+        );
         s.observe_line("```"); // correct closer
         assert!(!s.in_code_block());
     }
@@ -160,7 +163,10 @@ mod tests {
         s.observe_line("~~~");
         assert!(s.in_code_block());
         s.observe_line("```"); // backtick must NOT close a tilde fence
-        assert!(s.in_code_block(), "backtick line must not close a tilde fence");
+        assert!(
+            s.in_code_block(),
+            "backtick line must not close a tilde fence"
+        );
         s.observe_line("~~~");
         assert!(!s.in_code_block());
     }
@@ -170,20 +176,26 @@ mod tests {
     #[test]
     fn test_longer_close_closes_fence() {
         let mut s = fs();
-        s.observe_line("```");   // 3-backtick opener
+        s.observe_line("```"); // 3-backtick opener
         assert!(s.in_code_block());
-        s.observe_line("````");  // 4-backtick line: length ≥ 3 → closes
-        assert!(!s.in_code_block(), "4-backtick line must close 3-backtick opener");
+        s.observe_line("````"); // 4-backtick line: length ≥ 3 → closes
+        assert!(
+            !s.in_code_block(),
+            "4-backtick line must close 3-backtick opener"
+        );
     }
 
     #[test]
     fn test_shorter_close_does_not_close_fence() {
         let mut s = fs();
-        s.observe_line("````");  // 4-backtick opener
+        s.observe_line("````"); // 4-backtick opener
         assert!(s.in_code_block());
-        s.observe_line("```");   // 3-backtick line: length < 4 → does NOT close
-        assert!(s.in_code_block(), "3-backtick line must not close 4-backtick opener");
-        s.observe_line("````");  // correct closer
+        s.observe_line("```"); // 3-backtick line: length < 4 → does NOT close
+        assert!(
+            s.in_code_block(),
+            "3-backtick line must not close 4-backtick opener"
+        );
+        s.observe_line("````"); // correct closer
         assert!(!s.in_code_block());
     }
 
