@@ -364,9 +364,7 @@ pub fn plan(
                 // ref — a workspace-relative path that directly addresses the moved location.
                 // Partial-suffix matches (e.g. bare `workflows` for src `.../workflows`) from
                 // files in other repos are the false-positive class this filter eliminates.
-                if !is_in_scope(file_canonical, &scope)
-                    && !is_inward_ref(&target_to_match, src)
-                {
+                if !is_in_scope(file_canonical, &scope) && !is_inward_ref(&target_to_match, src) {
                     continue;
                 }
 

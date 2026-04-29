@@ -107,8 +107,7 @@ pub(crate) fn is_in_scope(file_canonical: &CanonicalPath, scope: &Scope) -> bool
     match scope.domain {
         RewriteDomain::Workspace => true,
         _ => {
-            file_canonical == &scope.root
-                || file_canonical.starts_with(&format!("{}/", scope.root))
+            file_canonical == &scope.root || file_canonical.starts_with(&format!("{}/", scope.root))
         }
     }
 }

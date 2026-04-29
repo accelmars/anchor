@@ -164,9 +164,7 @@ fn test_pass1_replay_all_ops_clean_boundary_untouched() {
     for folder in &src_folders {
         write_file(
             root,
-            &format!(
-                "accelmars-workspace/foundations/anchor-engine/{folder}/README.md"
-            ),
+            &format!("accelmars-workspace/foundations/anchor-engine/{folder}/README.md"),
             &format!("# {folder}\n"),
         );
     }
