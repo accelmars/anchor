@@ -29,11 +29,21 @@ pub enum AuditFormat {
 pub enum Finding {
     NoFrontmatter,
     MissingSchemaVersion,
-    StaleSchemaVersion { current: i64, expected: i64 },
+    StaleSchemaVersion {
+        current: i64,
+        expected: i64,
+    },
     MissingRequired(String),
     MissingTypeConditional(String),
-    InvalidEnum { field: String, value: String, allowed: Vec<String> },
-    WrongType { field: String, expected: String },
+    InvalidEnum {
+        field: String,
+        value: String,
+        allowed: Vec<String>,
+    },
+    WrongType {
+        field: String,
+        expected: String,
+    },
     DuplicateId(String),
 }
 
@@ -62,7 +72,11 @@ impl Finding {
             Finding::MissingTypeConditional(f) => {
                 format!("type-conditional required field '{f}' absent")
             }
-            Finding::InvalidEnum { field, value, allowed } => {
+            Finding::InvalidEnum {
+                field,
+                value,
+                allowed,
+            } => {
                 format!("'{field}': '{value}' not in [{}", allowed.join(", ") + "]")
             }
             Finding::WrongType { field, expected } => {
@@ -109,7 +123,11 @@ pub fn run(
                 AuditFormat::Json => print_json(&findings_by_file, files.len()),
                 AuditFormat::Human => print_human(&findings_by_file, files.len()),
             }
-            if any_issues { 1 } else { 0 }
+            if any_issues {
+                1
+            } else {
+                0
+            }
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -130,12 +148,16 @@ pub fn run_audit(
     let mut results: Vec<(PathBuf, Vec<Finding>)> = Vec::new();
 
     for path in files {
-        let parsed = parse_file(path).map_err(|e| format!("I/O error reading {}: {e}", path.display()))?;
+        let parsed =
+            parse_file(path).map_err(|e| format!("I/O error reading {}: {e}", path.display()))?;
         let findings = validate_file(&parsed.frontmatter, schema, strict, path);
 
         if let Some(fm) = &parsed.frontmatter {
             if let Some(id) = get_str(fm, "id") {
-                id_locations.entry(id.to_string()).or_default().push(path.clone());
+                id_locations
+                    .entry(id.to_string())
+                    .or_default()
+                    .push(path.clone());
             }
         }
         results.push((path.clone(), findings));
@@ -175,7 +197,10 @@ fn validate_file(
     // schema_version check
     match get_i64(fm, "schema_version") {
         None => findings.push(Finding::MissingSchemaVersion),
-        Some(v) if v < 1 => findings.push(Finding::StaleSchemaVersion { current: v, expected: 1 }),
+        Some(v) if v < 1 => findings.push(Finding::StaleSchemaVersion {
+            current: v,
+            expected: 1,
+        }),
         _ => {}
     }
 
@@ -259,14 +284,44 @@ fn print_human(results: &[(PathBuf, Vec<Finding>)], total: usize) {
 
     println!("SCHEMA COMPLIANCE — {total} file(s) scanned");
     println!();
-    println!("  no frontmatter:                  {} file(s)", counts.get("no frontmatter").copied().unwrap_or(0));
-    println!("  missing schema_version:          {} file(s)", counts.get("missing schema_version").copied().unwrap_or(0));
-    println!("  stale schema_version:            {} file(s)", counts.get("stale schema_version").copied().unwrap_or(0));
-    println!("  missing required base field:     {} file(s)", counts.get("missing required base field").copied().unwrap_or(0));
-    println!("  missing type-conditional field:  {} file(s)", counts.get("missing type-conditional field").copied().unwrap_or(0));
-    println!("  invalid enum value:              {} file(s)", counts.get("invalid enum value").copied().unwrap_or(0));
-    println!("  wrong field type:                {} file(s)", counts.get("wrong field type").copied().unwrap_or(0));
-    println!("  duplicate id within engine:      {} collision(s)", counts.get("duplicate id").copied().unwrap_or(0));
+    println!(
+        "  no frontmatter:                  {} file(s)",
+        counts.get("no frontmatter").copied().unwrap_or(0)
+    );
+    println!(
+        "  missing schema_version:          {} file(s)",
+        counts.get("missing schema_version").copied().unwrap_or(0)
+    );
+    println!(
+        "  stale schema_version:            {} file(s)",
+        counts.get("stale schema_version").copied().unwrap_or(0)
+    );
+    println!(
+        "  missing required base field:     {} file(s)",
+        counts
+            .get("missing required base field")
+            .copied()
+            .unwrap_or(0)
+    );
+    println!(
+        "  missing type-conditional field:  {} file(s)",
+        counts
+            .get("missing type-conditional field")
+            .copied()
+            .unwrap_or(0)
+    );
+    println!(
+        "  invalid enum value:              {} file(s)",
+        counts.get("invalid enum value").copied().unwrap_or(0)
+    );
+    println!(
+        "  wrong field type:                {} file(s)",
+        counts.get("wrong field type").copied().unwrap_or(0)
+    );
+    println!(
+        "  duplicate id within engine:      {} collision(s)",
+        counts.get("duplicate id").copied().unwrap_or(0)
+    );
     println!();
 
     if clean {
@@ -274,13 +329,23 @@ fn print_human(results: &[(PathBuf, Vec<Finding>)], total: usize) {
         return;
     }
 
-    for cat in &["missing type-conditional field", "missing required base field", "no frontmatter",
-                  "missing schema_version", "stale schema_version", "invalid enum value",
-                  "wrong field type", "duplicate id"] {
-        let files_with_cat: Vec<_> = results.iter()
+    for cat in &[
+        "missing type-conditional field",
+        "missing required base field",
+        "no frontmatter",
+        "missing schema_version",
+        "stale schema_version",
+        "invalid enum value",
+        "wrong field type",
+        "duplicate id",
+    ] {
+        let files_with_cat: Vec<_> = results
+            .iter()
             .filter(|(_, f)| f.iter().any(|fi| fi.category() == *cat))
             .collect();
-        if files_with_cat.is_empty() { continue; }
+        if files_with_cat.is_empty() {
+            continue;
+        }
         println!("DETAIL — {cat}");
         for (path, findings) in &files_with_cat {
             println!("  {}", path.display());
@@ -293,7 +358,8 @@ fn print_human(results: &[(PathBuf, Vec<Finding>)], total: usize) {
 }
 
 fn print_json(results: &[(PathBuf, Vec<Finding>)], total: usize) {
-    let issues: Vec<serde_json::Value> = results.iter()
+    let issues: Vec<serde_json::Value> = results
+        .iter()
         .filter(|(_, f)| !f.is_empty())
         .map(|(path, findings)| {
             serde_json::json!({

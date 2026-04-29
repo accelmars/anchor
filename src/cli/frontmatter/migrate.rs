@@ -77,7 +77,10 @@ pub fn run(
 
     if !apply {
         // Dry-run: show what would change
-        println!("DRY RUN — {} file(s) would be migrated to schema_version: {to_version}", transforms.len());
+        println!(
+            "DRY RUN — {} file(s) would be migrated to schema_version: {to_version}",
+            transforms.len()
+        );
         println!("(run with --apply to write changes)");
         for t in &transforms {
             println!("  {}", t.path.display());
@@ -180,7 +183,11 @@ fn resolve_path(path: Option<&str>, cwd: &Path, workspace_root: &Path) -> PathBu
                 cwd_rel
             } else {
                 let ws_rel = workspace_root.join(p);
-                if ws_rel.exists() { ws_rel } else { cwd_rel }
+                if ws_rel.exists() {
+                    ws_rel
+                } else {
+                    cwd_rel
+                }
             }
         }
     }
@@ -214,9 +221,19 @@ mod tests {
         let raw = "title: Test\nupdated: 2026-04-29\ntype: gap\n";
         let result = insert_schema_version(raw, 1);
         let lines: Vec<&str> = result.lines().collect();
-        let updated_pos = lines.iter().position(|l| l.starts_with("updated:")).unwrap();
-        let sv_pos = lines.iter().position(|l| l.starts_with("schema_version:")).unwrap();
-        assert_eq!(sv_pos, updated_pos + 1, "schema_version should follow updated; lines: {lines:?}");
+        let updated_pos = lines
+            .iter()
+            .position(|l| l.starts_with("updated:"))
+            .unwrap();
+        let sv_pos = lines
+            .iter()
+            .position(|l| l.starts_with("schema_version:"))
+            .unwrap();
+        assert_eq!(
+            sv_pos,
+            updated_pos + 1,
+            "schema_version should follow updated; lines: {lines:?}"
+        );
     }
 
     #[test]
@@ -224,6 +241,9 @@ mod tests {
         let raw = "title: Test\nschema_version: 0\ntype: gap\n";
         let result = insert_schema_version(raw, 1);
         assert!(result.contains("schema_version: 1"), "result: {result}");
-        assert!(!result.contains("schema_version: 0"), "old version must be replaced; result: {result}");
+        assert!(
+            !result.contains("schema_version: 0"),
+            "old version must be replaced; result: {result}"
+        );
     }
 }

@@ -20,13 +20,13 @@ pub mod schema;
 
 use audit::AuditFormat;
 
+pub use add_required::run_from_env as run_add_required;
 /// CLI argument types for `anchor frontmatter` subcommands.
 /// These are re-exported from main.rs FrontmatterCommands dispatch.
 pub use audit::run_from_env as run_audit;
 pub use check_schema::run_from_env as run_check_schema;
 pub use migrate::run_from_env as run_migrate;
 pub use normalize::run_from_env as run_normalize;
-pub use add_required::run_from_env as run_add_required;
 
 /// Output format shared across subcommands that support JSON output.
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]

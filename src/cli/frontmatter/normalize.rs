@@ -41,7 +41,11 @@ pub fn run(
         }
     };
 
-    let files = if target.is_file() { vec![target] } else { walk_md_files(&target) };
+    let files = if target.is_file() {
+        vec![target]
+    } else {
+        walk_md_files(&target)
+    };
 
     // Collect-then-commit: compute all transforms before writing
     let mut changes: Vec<(PathBuf, Value, String)> = Vec::new();
@@ -77,10 +81,7 @@ pub fn run(
     }
 
     if !apply {
-        println!(
-            "DRY RUN — {} file(s) would be normalized.",
-            changes.len()
-        );
+        println!("DRY RUN — {} file(s) would be normalized.", changes.len());
         println!("(run with --apply to write changes)");
         for (path, _, _) in &changes {
             println!("  {}", path.display());
@@ -119,7 +120,9 @@ pub fn normalize_fm(fm: Value, schema: &SchemaRules, reorder: bool) -> Value {
 
 /// Apply status synonym normalization from schema x-synonyms table.
 fn apply_synonyms(fm: Value, schema: &SchemaRules) -> Value {
-    let Value::Mapping(mut map) = fm else { return fm };
+    let Value::Mapping(mut map) = fm else {
+        return fm;
+    };
 
     for (field, synonym_table) in &schema.synonyms {
         let key = Value::String(field.clone());
@@ -136,7 +139,9 @@ fn apply_synonyms(fm: Value, schema: &SchemaRules) -> Value {
 
 /// Add schema_version: 1 if absent.
 fn ensure_schema_version(fm: Value) -> Value {
-    let Value::Mapping(mut map) = fm else { return fm };
+    let Value::Mapping(mut map) = fm else {
+        return fm;
+    };
 
     let sv_key = Value::String("schema_version".to_string());
     if map.get(&sv_key).is_none() {
@@ -182,9 +187,15 @@ fn resolve_path(path: Option<&str>, cwd: &Path, workspace_root: &Path) -> PathBu
         None => cwd.to_path_buf(),
         Some(p) => {
             let cwd_rel = cwd.join(p);
-            if cwd_rel.exists() { cwd_rel } else {
+            if cwd_rel.exists() {
+                cwd_rel
+            } else {
                 let ws_rel = workspace_root.join(p);
-                if ws_rel.exists() { ws_rel } else { cwd_rel }
+                if ws_rel.exists() {
+                    ws_rel
+                } else {
+                    cwd_rel
+                }
             }
         }
     }
@@ -198,7 +209,10 @@ pub fn run_from_env(
 ) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
     run(path, apply, reorder, schema_path, &workspace_root, &cwd)

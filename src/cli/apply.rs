@@ -275,9 +275,7 @@ fn execute_move(
             for b in &broken {
                 eprint!(
                     "{}",
-                    crate::core::diagnostics::format_broken_ref(
-                        &b.file, b.line, &b.target, capped,
-                    )
+                    crate::core::diagnostics::format_broken_ref(&b.file, b.line, &b.target, capped,)
                 );
             }
             transaction::rollback(&op_dir, lock_guard);

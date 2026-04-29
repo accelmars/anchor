@@ -68,7 +68,11 @@ pub fn run(
             cwd_rel
         } else {
             let ws_rel = workspace_root.join(path);
-            if ws_rel.exists() { ws_rel } else { cwd_rel }
+            if ws_rel.exists() {
+                ws_rel
+            } else {
+                cwd_rel
+            }
         }
     };
 
@@ -197,15 +201,13 @@ pub fn apply_auto_defaults(
     (fm, gaps)
 }
 
-pub fn run_from_env(
-    path: &str,
-    auto: bool,
-    batch: bool,
-    schema_path: Option<&str>,
-) -> i32 {
+pub fn run_from_env(path: &str, auto: bool, batch: bool, schema_path: Option<&str>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
     run(path, auto, batch, schema_path, &workspace_root, &cwd)

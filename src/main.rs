@@ -1,7 +1,9 @@
 use accelmars_anchor::cli;
 use accelmars_anchor::cli::file::refs::OutputFormat;
-use accelmars_anchor::cli::frontmatter::{FmOutputFormat, run_add_required, run_audit, run_check_schema, run_migrate, run_normalize};
 use accelmars_anchor::cli::frontmatter::audit::AuditFormat;
+use accelmars_anchor::cli::frontmatter::{
+    run_add_required, run_audit, run_check_schema, run_migrate, run_normalize, FmOutputFormat,
+};
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -214,24 +216,30 @@ fn main() {
         },
         Commands::Serve { port } => cli::serve::run(port),
         Commands::Frontmatter { subcommand } => match subcommand {
-            FrontmatterCommands::Audit { path, format, strict, schema } => {
+            FrontmatterCommands::Audit {
+                path,
+                format,
+                strict,
+                schema,
+            } => {
                 let fmt: AuditFormat = format.into();
-                run_audit(
-                    path.as_deref(),
-                    fmt,
-                    schema.as_deref(),
-                    strict,
-                )
+                run_audit(path.as_deref(), fmt, schema.as_deref(), strict)
             }
             FrontmatterCommands::Migrate { path, to, apply } => {
                 run_migrate(path.as_deref(), to, apply)
             }
-            FrontmatterCommands::Normalize { path, apply, reorder, schema } => {
-                run_normalize(path.as_deref(), apply, reorder, schema.as_deref())
-            }
-            FrontmatterCommands::AddRequired { path, auto, batch, schema } => {
-                run_add_required(&path, auto, batch, schema.as_deref())
-            }
+            FrontmatterCommands::Normalize {
+                path,
+                apply,
+                reorder,
+                schema,
+            } => run_normalize(path.as_deref(), apply, reorder, schema.as_deref()),
+            FrontmatterCommands::AddRequired {
+                path,
+                auto,
+                batch,
+                schema,
+            } => run_add_required(&path, auto, batch, schema.as_deref()),
             FrontmatterCommands::CheckSchema { spec, schema } => {
                 run_check_schema(spec.as_deref(), schema.as_deref())
             }

@@ -4,11 +4,11 @@
 // (260429-frontmatter-management-design.md). Tests call library functions directly;
 // no CLI subprocess is spawned (Rule 1 compliance).
 
+use accelmars_anchor::cli::frontmatter::add_required;
 use accelmars_anchor::cli::frontmatter::audit::{run_audit, Finding};
+use accelmars_anchor::cli::frontmatter::check_schema;
 use accelmars_anchor::cli::frontmatter::migrate;
 use accelmars_anchor::cli::frontmatter::normalize;
-use accelmars_anchor::cli::frontmatter::add_required;
-use accelmars_anchor::cli::frontmatter::check_schema;
 use accelmars_anchor::cli::frontmatter::schema::SchemaRules;
 use std::fs;
 use std::path::Path;
@@ -61,7 +61,10 @@ fn fm001_no_frontmatter_audit_reports_migrate_skips() {
     let files = vec![ws.path().join("no-fm.md")];
     let (results, any_issues) = run_audit(&files, &schema, false).unwrap();
 
-    assert!(any_issues, "FM-001: audit must report issues for file with no frontmatter");
+    assert!(
+        any_issues,
+        "FM-001: audit must report issues for file with no frontmatter"
+    );
     let (_, findings) = results.first().unwrap();
     assert!(
         findings.iter().any(|f| matches!(f, Finding::NoFrontmatter)),
@@ -76,7 +79,10 @@ fn fm001_no_frontmatter_audit_reports_migrate_skips() {
         ws.path(),
         ws.path(),
     );
-    assert_eq!(exit_code, 0, "FM-001: migrate on no-FM file must exit 0 (no-op)");
+    assert_eq!(
+        exit_code, 0,
+        "FM-001: migrate on no-FM file must exit 0 (no-op)"
+    );
     let after = read_md(ws.path(), "no-fm.md");
     assert!(
         !after.starts_with("---\n"),
@@ -105,8 +111,14 @@ fn fm002_missing_schema_version_migrate_inserts() {
     );
 
     // Content other than schema_version must be preserved
-    assert!(after.contains("title: Test Doc"), "FM-002: title must be preserved");
-    assert!(after.contains("type: gap"), "FM-002: type must be preserved");
+    assert!(
+        after.contains("title: Test Doc"),
+        "FM-002: title must be preserved"
+    );
+    assert!(
+        after.contains("type: gap"),
+        "FM-002: type must be preserved"
+    );
     assert!(after.contains("# Body"), "FM-002: body must be preserved");
 }
 
@@ -130,7 +142,10 @@ fn fm002b_migrate_idempotent() {
     );
 
     let sv_count = after_second.matches("schema_version:").count();
-    assert_eq!(sv_count, 1, "FM-002b: schema_version must appear exactly once; content: {after_second}");
+    assert_eq!(
+        sv_count, 1,
+        "FM-002b: schema_version must appear exactly once; content: {after_second}"
+    );
 }
 
 // ─── FM-003 ──────────────────────────────────────────────────────────────────
@@ -184,7 +199,9 @@ fn fm004_eval_missing_pass_status() {
     let (_, findings) = results.first().unwrap();
 
     assert!(
-        findings.iter().any(|f| matches!(f, Finding::MissingTypeConditional(s) if s == "pass_status")),
+        findings
+            .iter()
+            .any(|f| matches!(f, Finding::MissingTypeConditional(s) if s == "pass_status")),
         "FM-004: audit must flag missing pass_status for type:eval; findings: {findings:?}"
     );
 
@@ -227,7 +244,9 @@ fn fm005_duplicate_id_collision() {
     assert!(any_issues, "FM-005: duplicate id must produce issues");
     for (_, findings) in &results {
         assert!(
-            findings.iter().any(|f| matches!(f, Finding::DuplicateId(id) if id == "a-cap03")),
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::DuplicateId(id) if id == "a-cap03")),
             "FM-005: DuplicateId finding must appear in both files; findings: {findings:?}"
         );
     }
@@ -253,9 +272,17 @@ fn fm006_unknown_field_tolerated() {
     let (_, findings) = results.first().unwrap();
 
     // Unknown fields must not produce InvalidEnum, WrongType, or MissingRequired findings
-    let blocking_findings: Vec<_> = findings.iter().filter(|f| {
-        !matches!(f, Finding::NoFrontmatter | Finding::MissingSchemaVersion | Finding::StaleSchemaVersion { .. })
-    }).collect();
+    let blocking_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| {
+            !matches!(
+                f,
+                Finding::NoFrontmatter
+                    | Finding::MissingSchemaVersion
+                    | Finding::StaleSchemaVersion { .. }
+            )
+        })
+        .collect();
     assert!(
         blocking_findings.is_empty(),
         "FM-006: unknown field must be tolerated (open-world); got findings: {findings:?}"
@@ -283,9 +310,10 @@ fn fm007_index_no_toc_not_flagged_by_default() {
     let (_, findings) = results.first().unwrap();
 
     // Default (non-strict) audit must not flag missing TOC
-    let blocking: Vec<_> = findings.iter().filter(|f| {
-        !matches!(f, Finding::DuplicateId(_))
-    }).collect();
+    let blocking: Vec<_> = findings
+        .iter()
+        .filter(|f| !matches!(f, Finding::DuplicateId(_)))
+        .collect();
     assert!(
         blocking.is_empty(),
         "FM-007: default audit must not flag _INDEX.md for missing TOC; findings: {findings:?}"
@@ -306,7 +334,10 @@ fn fm008_migrate_unknown_version_no_change() {
 
     // Migrate to version 99 (not registered — future unimplemented version)
     let exit_code = migrate::run(Some("doc.md"), 99, true, ws.path(), ws.path());
-    assert_eq!(exit_code, 0, "FM-008: unregistered migrate must exit 0 (no transforms = no-op)");
+    assert_eq!(
+        exit_code, 0,
+        "FM-008: unregistered migrate must exit 0 (no transforms = no-op)"
+    );
 
     let after = read_md(ws.path(), "doc.md");
     assert_eq!(
@@ -327,7 +358,10 @@ fn fm009_custom_synonym_table() {
     // Write a custom synonyms file with an additional synonym: "wip" → "draft"
     let synonyms_toml = "[status]\nwip = \"draft\"\npartially-resolved = \"active\"\n";
     fs::write(
-        ws.path().join(".accelmars").join("anchor").join("frontmatter-synonyms.toml"),
+        ws.path()
+            .join(".accelmars")
+            .join("anchor")
+            .join("frontmatter-synonyms.toml"),
         synonyms_toml,
     )
     .unwrap();
@@ -347,7 +381,10 @@ fn fm009_custom_synonym_table() {
         ws.path(),
         ws.path(),
     );
-    assert_eq!(exit_code, 0, "FM-009: normalize with custom synonyms must exit 0");
+    assert_eq!(
+        exit_code, 0,
+        "FM-009: normalize with custom synonyms must exit 0"
+    );
 
     let after = read_md(ws.path(), "doc.md");
     // The schema has no "wip" synonym — the custom file added it
@@ -366,11 +403,13 @@ fn fm009_custom_synonym_table() {
 #[test]
 fn check_schema_shipped_pair_in_sync() {
     let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("accelmars-workspace")
         .join("FRONTMATTER.md");
     let schema = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("accelmars-workspace")
         .join("FRONTMATTER.schema.json");
 

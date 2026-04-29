@@ -22,11 +22,7 @@ fn make_workspace() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let anchor_dir = tmp.path().join(".accelmars").join("anchor");
     fs::create_dir_all(&anchor_dir).unwrap();
-    fs::write(
-        anchor_dir.join("config.json"),
-        r#"{"schema_version":"1"}"#,
-    )
-    .unwrap();
+    fs::write(anchor_dir.join("config.json"), r#"{"schema_version":"1"}"#).unwrap();
     tmp
 }
 

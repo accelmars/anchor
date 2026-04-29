@@ -29,15 +29,17 @@ pub struct PropDef {
 impl SchemaRules {
     /// Return the default path for the schema relative to the anchor workspace root.
     pub fn default_path(workspace_root: &Path) -> PathBuf {
-        workspace_root.join("accelmars-workspace").join("FRONTMATTER.schema.json")
+        workspace_root
+            .join("accelmars-workspace")
+            .join("FRONTMATTER.schema.json")
     }
 
     /// Load and parse the schema from `path`.
     pub fn load(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read schema at {}: {e}", path.display()))?;
-        let schema: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("invalid JSON in schema: {e}"))?;
+        let schema: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("invalid JSON in schema: {e}"))?;
 
         let base_required = extract_string_array(&schema, "required");
 
@@ -82,19 +84,19 @@ fn extract_properties(schema: &serde_json::Value) -> HashMap<String, PropDef> {
     let mut map = HashMap::new();
     if let Some(props) = schema.get("properties").and_then(|v| v.as_object()) {
         for (key, prop) in props {
-            let json_type = prop
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let enum_values = prop
-                .get("enum")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                });
-            map.insert(key.clone(), PropDef { json_type, enum_values });
+            let json_type = prop.get("type").and_then(|v| v.as_str()).map(String::from);
+            let enum_values = prop.get("enum").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+            map.insert(
+                key.clone(),
+                PropDef {
+                    json_type,
+                    enum_values,
+                },
+            );
         }
     }
     map

@@ -12,9 +12,9 @@
 // NOTE: The Python scripts were deleted after Pass 2. Equivalence is verified against
 // the documented expected outputs from the design intake, not a byte-for-byte diff.
 
+use accelmars_anchor::cli::frontmatter::add_required;
 use accelmars_anchor::cli::frontmatter::migrate;
 use accelmars_anchor::cli::frontmatter::normalize;
-use accelmars_anchor::cli::frontmatter::add_required;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -76,7 +76,10 @@ fn replay_wave1_add_schema_version() {
             "replay Wave 1: {rel} must have schema_version: 1 after migrate; content: {content}"
         );
         // Original content must be preserved
-        assert!(content.contains("# Body"), "replay Wave 1: body must be preserved in {rel}");
+        assert!(
+            content.contains("# Body"),
+            "replay Wave 1: body must be preserved in {rel}"
+        );
     }
 }
 
@@ -112,17 +115,32 @@ fn replay_wave2_normalize_status_synonyms() {
 
     // Python script output equivalence:
     let after_consumed = read_md(ws.path(), "consumed.md");
-    assert!(after_consumed.contains("status: archived"), "consumed → archived; content: {after_consumed}");
-    assert!(!after_consumed.contains("status: consumed"), "original must be replaced");
+    assert!(
+        after_consumed.contains("status: archived"),
+        "consumed → archived; content: {after_consumed}"
+    );
+    assert!(
+        !after_consumed.contains("status: consumed"),
+        "original must be replaced"
+    );
 
     let after_complete = read_md(ws.path(), "complete.md");
-    assert!(after_complete.contains("status: archived"), "complete → archived; content: {after_complete}");
+    assert!(
+        after_complete.contains("status: archived"),
+        "complete → archived; content: {after_complete}"
+    );
 
     let after_open = read_md(ws.path(), "open.md");
-    assert!(after_open.contains("status: active"), "open → active; content: {after_open}");
+    assert!(
+        after_open.contains("status: active"),
+        "open → active; content: {after_open}"
+    );
 
     let after_partial = read_md(ws.path(), "partial.md");
-    assert!(after_partial.contains("status: active"), "partially-resolved → active; content: {after_partial}");
+    assert!(
+        after_partial.contains("status: active"),
+        "partially-resolved → active; content: {after_partial}"
+    );
 }
 
 // ─── Pass 2 Wave 3: Add type-conditional defaults ─────────────────────────────
@@ -161,7 +179,10 @@ fn replay_wave3_add_type_conditional_defaults() {
         ws.path(),
         ws.path(),
     );
-    assert_eq!(exit_analysis, 0, "replay Wave 3 analysis: add-required must exit 0");
+    assert_eq!(
+        exit_analysis, 0,
+        "replay Wave 3 analysis: add-required must exit 0"
+    );
 
     // Python script output equivalence:
     let after_eval = read_md(ws.path(), "eval.md");
@@ -199,18 +220,43 @@ fn replay_full_pipeline() {
     // Step 1: migrate --to 1 --apply
     assert_eq!(migrate::run(None, 1, true, ws.path(), ws.path()), 0);
     // Step 2: normalize --apply
-    assert_eq!(normalize::run(None, true, false, Some(&schema_str), ws.path(), ws.path()), 0);
+    assert_eq!(
+        normalize::run(None, true, false, Some(&schema_str), ws.path(), ws.path()),
+        0
+    );
     // Step 3: add-required --batch --auto (eval only — gap has all required fields)
-    assert_eq!(add_required::run("eval.md", true, false, Some(&schema_str), ws.path(), ws.path()), 0);
+    assert_eq!(
+        add_required::run(
+            "eval.md",
+            true,
+            false,
+            Some(&schema_str),
+            ws.path(),
+            ws.path()
+        ),
+        0
+    );
 
     // Verify post-pipeline state
     let gap_after = read_md(ws.path(), "gap.md");
-    assert!(gap_after.contains("schema_version: 1"), "pipeline: gap must have schema_version");
-    assert!(gap_after.contains("status: active"), "pipeline: partially-resolved → active; content: {gap_after}");
+    assert!(
+        gap_after.contains("schema_version: 1"),
+        "pipeline: gap must have schema_version"
+    );
+    assert!(
+        gap_after.contains("status: active"),
+        "pipeline: partially-resolved → active; content: {gap_after}"
+    );
 
     let eval_after = read_md(ws.path(), "eval.md");
-    assert!(eval_after.contains("schema_version: 1"), "pipeline: eval must have schema_version");
-    assert!(eval_after.contains("pass_status: NOT_RUN"), "pipeline: eval must get pass_status");
+    assert!(
+        eval_after.contains("schema_version: 1"),
+        "pipeline: eval must have schema_version"
+    );
+    assert!(
+        eval_after.contains("pass_status: NOT_RUN"),
+        "pipeline: eval must get pass_status"
+    );
 }
 
 // ─── Field preservation through normalize ─────────────────────────────────────
@@ -281,10 +327,24 @@ fn normalize_idempotent() {
 
     let schema_str = schema_path(ws.path()).to_str().unwrap().to_string();
 
-    normalize::run(Some("idempotent.md"), true, false, Some(&schema_str), ws.path(), ws.path());
+    normalize::run(
+        Some("idempotent.md"),
+        true,
+        false,
+        Some(&schema_str),
+        ws.path(),
+        ws.path(),
+    );
     let after_first = read_md(ws.path(), "idempotent.md");
 
-    normalize::run(Some("idempotent.md"), true, false, Some(&schema_str), ws.path(), ws.path());
+    normalize::run(
+        Some("idempotent.md"),
+        true,
+        false,
+        Some(&schema_str),
+        ws.path(),
+        ws.path(),
+    );
     let after_second = read_md(ws.path(), "idempotent.md");
 
     assert_eq!(

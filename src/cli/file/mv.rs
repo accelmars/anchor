@@ -244,9 +244,7 @@ pub(crate) fn run_impl(
             for b in &broken {
                 eprint!(
                     "{}",
-                    crate::core::diagnostics::format_broken_ref(
-                        &b.file, b.line, &b.target, capped,
-                    )
+                    crate::core::diagnostics::format_broken_ref(&b.file, b.line, &b.target, capped,)
                 );
             }
             eprintln!("Rolled back. No changes applied.");

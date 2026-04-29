@@ -36,7 +36,10 @@ mod tests {
         let result = format_broken_ref("src/file.md", 5, "xyz-qwerty-9k3j.md", &candidates);
         assert!(result.contains("  src/file.md:5\n"));
         assert!(result.contains("    → xyz-qwerty-9k3j.md  (target not found)\n"));
-        assert!(!result.contains("similar:"), "no similar when no close match");
+        assert!(
+            !result.contains("similar:"),
+            "no similar when no close match"
+        );
         assert!(result.ends_with('\n'), "trailing blank line appended");
     }
 
@@ -45,7 +48,10 @@ mod tests {
         // Target "docs/gudie.md" (typo) — candidate "docs/guide.md" (existing) is close match
         let candidates = vec!["docs/guide.md".to_string()];
         let result = format_broken_ref("src/note.md", 3, "docs/gudie.md", &candidates);
-        assert!(result.contains("    similar: docs/guide.md"), "similar suggestion must appear");
+        assert!(
+            result.contains("    similar: docs/guide.md"),
+            "similar suggestion must appear"
+        );
     }
 
     #[test]

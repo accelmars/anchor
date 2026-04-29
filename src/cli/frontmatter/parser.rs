@@ -124,10 +124,7 @@ pub fn insert_i64(fm: &mut Value, key: &str, val: i64) {
 /// Insert a key → empty array into a YAML mapping value.
 pub fn insert_empty_array(fm: &mut Value, key: &str) {
     if let Value::Mapping(map) = fm {
-        map.insert(
-            Value::String(key.to_string()),
-            Value::Sequence(vec![]),
-        );
+        map.insert(Value::String(key.to_string()), Value::Sequence(vec![]));
     }
 }
 
@@ -172,7 +169,10 @@ mod tests {
         let content = "---\ntitle: Test\n---\n# Body\n\n---\n\nMore\n";
         let (fm, body) = split_frontmatter(content);
         assert_eq!(fm.as_deref(), Some("title: Test"));
-        assert!(body.contains("---"), "horizontal rule in body must be preserved");
+        assert!(
+            body.contains("---"),
+            "horizontal rule in body must be preserved"
+        );
     }
 
     #[test]

@@ -42,7 +42,11 @@ pub fn run(
 ) -> i32 {
     let spec = spec_path
         .map(|p| resolve(p, cwd, workspace_root))
-        .unwrap_or_else(|| workspace_root.join("accelmars-workspace").join("FRONTMATTER.md"));
+        .unwrap_or_else(|| {
+            workspace_root
+                .join("accelmars-workspace")
+                .join("FRONTMATTER.md")
+        });
 
     let schema_path = schema_path_arg
         .map(|p| resolve(p, cwd, workspace_root))
@@ -58,7 +62,10 @@ pub fn run(
             0
         }
         Ok(mismatches) => {
-            eprintln!("DIVERGED — {} mismatch(es) between spec and schema:", mismatches.len());
+            eprintln!(
+                "DIVERGED — {} mismatch(es) between spec and schema:",
+                mismatches.len()
+            );
             for m in &mismatches {
                 eprintln!("  [{}] {}", m.rule, m.detail);
             }
@@ -99,7 +106,9 @@ pub fn run_check(spec_path: &Path, schema_path: &Path) -> Result<Vec<Mismatch>, 
         if !schema_required.contains(field) {
             mismatches.push(Mismatch {
                 rule: "BASE_REQUIRED",
-                detail: format!("'{field}' is required in FRONTMATTER.md but absent from schema required[]"),
+                detail: format!(
+                    "'{field}' is required in FRONTMATTER.md but absent from schema required[]"
+                ),
             });
         }
     }
@@ -119,7 +128,10 @@ pub fn run_check(spec_path: &Path, schema_path: &Path) -> Result<Vec<Mismatch>, 
     let schema_conditionals = extract_schema_conditionals(&schema);
 
     for (type_val, spec_fields) in &spec_conditionals {
-        let schema_fields = schema_conditionals.get(type_val).cloned().unwrap_or_default();
+        let schema_fields = schema_conditionals
+            .get(type_val)
+            .cloned()
+            .unwrap_or_default();
         for field in spec_fields {
             if !schema_fields.contains(field) {
                 mismatches.push(Mismatch {
@@ -159,12 +171,14 @@ pub fn run_check(spec_path: &Path, schema_path: &Path) -> Result<Vec<Mismatch>, 
         .and_then(|v| v.as_object())
         .map(|o| !o.is_empty())
         .unwrap_or(false);
-    let md_mentions_synonyms = spec_content.contains("synonyms") || spec_content.contains("consumed");
+    let md_mentions_synonyms =
+        spec_content.contains("synonyms") || spec_content.contains("consumed");
     if md_mentions_synonyms && !has_synonyms {
         mismatches.push(Mismatch {
             rule: "STATUS_SYNONYMS",
-            detail: "FRONTMATTER.md mentions status synonyms but schema has no x-synonyms.status table"
-                .to_string(),
+            detail:
+                "FRONTMATTER.md mentions status synonyms but schema has no x-synonyms.status table"
+                    .to_string(),
         });
     }
 
@@ -237,16 +251,22 @@ fn parse_type_conditionals_from_md(content: &str) -> HashMap<String, HashSet<Str
             in_table = false;
             continue;
         }
-        let Some(ref type_val) = current_type else { continue };
+        let Some(ref type_val) = current_type else {
+            continue;
+        };
 
         // Table parsing — look for "Required" in the "Required?" column
         if line.starts_with('|') {
             in_table = true;
             let cols: Vec<&str> = line.split('|').collect();
-            if cols.len() < 3 { continue; }
+            if cols.len() < 3 {
+                continue;
+            }
             let first_col = cols.get(1).map(|s| s.trim()).unwrap_or("");
             let required_col = cols.get(2).map(|s| s.trim()).unwrap_or("");
-            if first_col.starts_with('-') || first_col.to_lowercase() == "field" { continue; }
+            if first_col.starts_with('-') || first_col.to_lowercase() == "field" {
+                continue;
+            }
             if required_col.contains("Required") && !required_col.contains("Recommended") {
                 if let Some(field) = extract_backtick(first_col) {
                     result.entry(type_val.clone()).or_default().insert(field);
@@ -297,14 +317,21 @@ fn resolve(p: &str, cwd: &Path, workspace_root: &Path) -> PathBuf {
         cwd_rel
     } else {
         let ws_rel = workspace_root.join(p);
-        if ws_rel.exists() { ws_rel } else { cwd_rel }
+        if ws_rel.exists() {
+            ws_rel
+        } else {
+            cwd_rel
+        }
     }
 }
 
 pub fn run_from_env(spec_path: Option<&str>, schema_path: Option<&str>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
-        Err(e) => { eprintln!("error: {e}"); return 2; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
     run(spec_path, schema_path, &workspace_root, &cwd)
