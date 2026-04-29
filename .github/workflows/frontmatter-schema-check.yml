@@ -42,14 +42,14 @@ jobs:
         run: cargo build
 
       - name: Validate schema JSON syntax
-        run: jq -e . .accelmars/canon/templates/accelmars-foundation/frontmatter.schema.json > /dev/null
+        run: jq -e . .accelmars/canon/templates/accelmars-standard/frontmatter.schema.json > /dev/null
 
       - name: Run anchor frontmatter check-schema
         # Spec and schema are in the checked-out accelmars-workspace subdirectory
         run: |
           cargo run -- frontmatter check-schema \
             accelmars-workspace/FRONTMATTER.md \
-            .accelmars/canon/templates/accelmars-foundation/frontmatter.schema.json
+            .accelmars/canon/templates/accelmars-standard/frontmatter.schema.json
 
       - name: Run frontmatter scenario tests
         run: cargo test --test frontmatter_fm_scenarios
