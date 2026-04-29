@@ -1,0 +1,35 @@
+name: Boundary Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  boundary-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No accelmars-workspace literals in src/
+        # Catches reintroduction of AccelMars-specific path defaults in public source.
+        # All subcommand schema/spec defaults must use .accelmars/anchor/ workspace-local config.
+        run: |
+          if grep -r 'accelmars-workspace' src/; then
+            echo "FAIL: 'accelmars-workspace' found in src/ — remove hardcoded path defaults"
+            exit 1
+          fi
+          echo "PASS: no 'accelmars-workspace' literals in src/"
+
+      - name: No accelmars-codex literals in src/ (outside doc comments)
+        # Catches AccelMars-specific repo references in code, tests, and regular comments.
+        # Doc comments (///) may retain illustrative examples; code and test fixtures must not.
+        run: |
+          matches=$(grep -r 'accelmars-codex' src/ | grep -v '///' || true)
+          if [ -n "$matches" ]; then
+            echo "FAIL: 'accelmars-codex' found in src/ outside doc comments:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "PASS: no 'accelmars-codex' literals outside doc comments in src/"

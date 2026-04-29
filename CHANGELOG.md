@@ -9,6 +9,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ### Fixed
 
+- **AENG-009** — `anchor frontmatter` subcommands no longer hardcode `accelmars-workspace/` as the default schema and spec path. Resolution order: explicit `--schema`/`--spec` flag → workspace-local `.accelmars/anchor/frontmatter-schema.json` / `frontmatter-spec.md` → error with paths tried. Test fixtures in `src/core/context_scope.rs` genericized from AccelMars-specific repo names to `org-workspace`/`org-sibling-repo`. CI guard added at `.github/workflows/boundary-check.yml` to prevent reintroduction.
+
 - **AENG-007** — Pre-move gate and ref scanner now skip content inside fenced code blocks (`` ``` `` and `~~~`). Introduces `FenceState` / `FenceMarker` state machine with marker-type and length-comparison semantics; replaces the prior single-bool toggle. Documentation-heavy projects (test guides, gap reports, CHANGELOG entries with example paths) move cleanly. Removes the `git mv` fallback path for archive-style projects.
 
 - **AENG-001** — `anchor apply` now bounds each move operation's rewrite scope to the deepest git-repo ancestor of the source path. Common-noun folder names (`workflows/`, `analysis/`, `evals/`, `reference/`) can be renamed inside one repo without rewriting unrelated occurrences in sibling repos. Out-of-scope files that hold fully-qualified workspace-relative paths to the moved location are still rewritten (inward-ref rule). Adds `src/core/context_scope.rs` with `ScopeResolver`, `scope_for_move`, `is_in_scope`, and `is_inward_ref`. Closes the 1/15 failure from the 2026-04-29 reference pass.

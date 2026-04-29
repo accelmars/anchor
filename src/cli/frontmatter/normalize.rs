@@ -29,9 +29,13 @@ pub fn run(
 ) -> i32 {
     let target = resolve_path(path, cwd, workspace_root);
 
-    let s_path = schema_path
-        .map(|s| cwd.join(s))
-        .unwrap_or_else(|| SchemaRules::default_path(workspace_root));
+    let s_path = match SchemaRules::resolve_schema_path(schema_path, cwd, workspace_root) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
 
     let schema = match SchemaRules::load(&s_path) {
         Ok(s) => s,
