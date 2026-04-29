@@ -15,13 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout accelmars-workspace (schema + spec)
-        uses: actions/checkout@v4
-        with:
-          repository: accelmars/accelmars-workspace
-          path: accelmars-workspace
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

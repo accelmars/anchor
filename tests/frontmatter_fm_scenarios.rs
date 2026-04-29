@@ -38,19 +38,11 @@ fn schema_path(root: &Path) -> std::path::PathBuf {
     root.join("FRONTMATTER.schema.json")
 }
 
-fn read_schema_json() -> String {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let sibling = manifest.join("../accelmars-workspace/FRONTMATTER.schema.json");
-    let nested = manifest.join("accelmars-workspace/FRONTMATTER.schema.json");
-    if sibling.exists() {
-        fs::read_to_string(&sibling).expect("schema read failed (sibling path)")
-    } else {
-        fs::read_to_string(&nested).expect("FRONTMATTER.schema.json not found (tried sibling and nested paths)")
-    }
-}
-
 fn write_test_schema(root: &Path) {
-    fs::write(schema_path(root), read_schema_json()).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/FRONTMATTER.schema.json");
+    let content = fs::read_to_string(&fixture).expect("tests/fixtures/FRONTMATTER.schema.json missing");
+    fs::write(schema_path(root), content).unwrap();
 }
 
 fn load_schema(root: &Path) -> SchemaRules {
