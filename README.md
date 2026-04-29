@@ -1,256 +1,322 @@
-# anchor
+# AccelMarsAnchor
+---
 
-Reference-safe file operations for Markdown workspaces. Move files and directories without breaking any `[text](link.md)` or `[[wiki]]` reference — anywhere in your workspace.
+## What Anchor Is
 
-## Install
+Anchor is a workspace-aware file operations tool. It does what `mv` does — moves
+files and directories — but also rewrites cross-references in markdown files so links
+don't break. It adds a plan layer so you can preview, validate, and apply changes as
+a batch.
 
-```bash
-cargo install --git https://github.com/accelmars/anchor
+**The core loop:**
+
+```
+write plan → validate → diff (preview) → apply
 ```
 
-Requires Rust 1.70+. The binary is named `anchor`.
+A plan is a `.toml` file describing a list of operations. Anchor executes them in
+order and rewrites any markdown `[text](path)` links that pointed to moved paths.
 
-## Quick start
+---
 
-```bash
-# Initialize your workspace (once per machine)
-anchor init
+## First Time Setup
 
-# Check for broken references
+Before anchor commands work, you need a workspace marker. Run once in the root of
+your project:
+
+```sh
+anchor init --path .
+```
+
+This creates `.accelmars/anchor/config.json` alongside two config files:
+- `.accelmars/anchor/ignore` — paths to exclude from ref-scanning (gitignore syntax)
+- `.accelmars/anchor/acked` — acknowledged broken refs you've deferred fixing
+
+**Note — post-v0.3.0: `anchor init --yes` without `--path` now defaults to CWD with a notice instead of erroring.**
+
+**Remaining gotcha — explicit `--path` bypasses parent detection.**  
+If you run `anchor init --yes --path ./subdir` and a parent directory already has
+`.accelmars/`, anchor still creates a nested workspace without warning. Check for a
+parent workspace first:
+```sh
+ls ../.accelmars 2>/dev/null && echo "parent workspace exists — skip init"
+```
+
+---
+
+## All Commands (Quick Reference)
+
+| Command | What it does |
+|---------|-------------|
+| `anchor init --path <dir>` | Initialize workspace at path |
+| `anchor root` | Print workspace root path. Useful in scripts. |
+| `anchor plan list` | Show available plan templates |
+| `anchor plan new [--output file.toml]` | Interactive wizard → generates a plan file |
+| `anchor plan validate <plan.toml>` | Check plan is valid before applying |
+| `anchor diff <plan.toml>` | Preview what apply will do (read-only) |
+| `anchor apply <plan.toml>` | Execute the plan and rewrite refs |
+| `anchor file mv <src> <dst>` | Move one file/dir immediately (no plan) |
+| `anchor file validate` | Scan workspace for broken markdown refs |
+| `anchor file refs <file>` | Find all files that link to a given file |
+
+---
+
+## The Plan-Based Workflow
+
+Use this when you have multiple operations to perform together. It gives you a chance
+to review before committing.
+
+### Step 1 — Write the plan
+
+**Option A: Interactive wizard**
+
+```sh
+anchor plan new --output my-plan.toml
+```
+
+The wizard lists templates and asks questions interactively. Select a template by
+number, then answer the prompts. The wizard writes a `.toml` file ready for apply.
+
+Available templates:
+
+| # | Template | Use when |
+|---|----------|----------|
+| 1 | Batch Move | You have an explicit list of src→dst pairs |
+| 2 | Categorize | You want to group flat items under a new parent folder |
+| 3 | Archive | You want to move items into an archive location |
+| 4 | Rename | You want to rename items |
+| 5 | Scaffold | You want to create a directory structure |
+
+**Tip — wizard as scaffold:** For complex plans (10+ moves), use the wizard to
+generate a starting file, then open it and edit directly — the TOML format is
+straightforward (see Option B below). Run `anchor plan validate` to confirm your
+edits are correct before applying.
+
+**Option B: Hand-author the TOML**
+
+Plan files are straightforward TOML. Write one directly:
+
+```toml
+version = "1"
+description = "What this plan does"
+
+[[ops]]
+type = "create_dir"
+path = "new-parent"
+
+[[ops]]
+type = "move"
+src = "old-location"
+dst = "new-parent/new-name"
+```
+
+Available op types: `move`, `create_dir`. That's it for v0.3.0.
+
+**Important:** If your move destinations are inside a new parent directory that
+doesn't exist yet, add a `create_dir` op for it before the moves. The wizard now
+detects when destinations require a new parent and prompts to add `create_dir` ops.
+
+### Step 2 — Validate
+
+```sh
+anchor plan validate my-plan.toml
+```
+
+Checks that every `src` exists and every `dst` does not yet exist. Exits 0 if valid,
+1 if errors. Fix any errors before proceeding.
+
+**v0.4.0:** `anchor plan validate` now emits a `note:` when a destination parent does not exist. Validate still exits 0 — missing parents are auto-created by apply.
+
+### Step 3 — Preview
+
+```sh
+anchor diff my-plan.toml
+```
+
+Shows each operation and how many refs will be rewritten, without touching any files.
+Safe to run repeatedly.
+
+Use `anchor diff --verbose` to list each file and ref that will be rewritten.
+
+### Step 4 — Apply
+
+```sh
+anchor apply my-plan.toml
+```
+
+Executes all ops in order. For each move, rewrites markdown cross-references. Prints
+progress as it runs.
+
+---
+
+## The Direct Move Workflow
+
+For single operations, skip the plan entirely:
+
+```sh
+anchor file mv old-path new-path
+```
+
+This moves the file or directory and rewrites all inbound markdown refs in one step.
+Same ref-rewriting behaviour as apply — same limitations apply.
+
+---
+
+## Reference Health
+
+### Check for broken refs
+
+```sh
 anchor file validate
 ```
 
-## Commands
+Scans all `.md` files in the workspace. Reports any `[text](path)` links where the
+target doesn't exist, with file and line number.
 
-### `anchor root`
-
-Print the workspace root path.
-
-```bash
-anchor root
-# /Users/you/projects
-```
-
-Use in scripts: `$(anchor root)/path/to/file`
-
----
-
-### `anchor init`
-
-Initialize a workspace. Detects the workspace root (a directory containing git repos), creates `.accelmars/anchor/config.json` there. Also writes a default `.accelmars/anchor/ignore`.
-
-```bash
-anchor init
-
-# Detecting workspace root...
-#   Candidate: /Users/you/projects/  (contains 5 git repos)
-#
-# [1/2] Workspace root [/Users/you/projects/]: _
-```
-
-Run once per machine. `.accelmars/anchor/` is not committed to git.
-
-#### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--yes` | Accept the detected workspace root without prompting. Fully non-interactive — no prompts emitted, only the final success summary. |
-| `--path <dir>` | Use `<dir>` as the workspace root, skipping auto-detection. Validates that the path exists and is writable. |
-
-`--yes` and `--path` can be combined:
-
-```bash
-# Accept detected root non-interactively (CI, scripts)
-anchor init --yes
-
-# Specify path explicitly (still prompts for confirmation)
-anchor init --path /Users/you/projects
-
-# Fully non-interactive: specify path, skip all prompts
-anchor init --yes --path /Users/you/projects
-```
-
----
-
-### `anchor file mv <src> <dst>`
-
-Reference-safe move of a file or directory. Rewrites every `[text](path.md)` and `[[wiki]]` reference to the moved item across the entire workspace — atomically.
-
-```bash
-anchor file mv people/old-name.md people/new-name.md
-anchor file mv projects/active/my-project projects/archive/my-project
-```
-
-Default (no flags): exits 0, no output on success.
-
-With `--verbose`:
-```
-Moved. Rewrote 12 references in 10 files.
-```
-
-With `--format json`:
-```json
-{"moved":true,"refs_rewritten":12,"files_touched":10,"src":"projects/active/my-project","dst":"projects/archive/my-project"}
-```
-
-If validation fails after rewriting, the operation rolls back completely — workspace unchanged.
-
-> **Atomicity:** The final `rename()` step is atomic on same-filesystem moves. Cross-filesystem moves (different mount points) are not atomic. Cross-filesystem atomicity is a Phase 2 concern.
-
-#### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--verbose` | Print a human-readable confirmation on success. Mutually exclusive with `--format`. |
-| `--format json` | Output JSON result on success. For AI agents and scripts. Mutually exclusive with `--verbose`. |
-
-#### `--format json` schema
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `moved` | bool | Always `true` on success |
-| `refs_rewritten` | number | Number of reference rewrites applied |
-| `files_touched` | number | Number of distinct files whose content was updated |
-| `src` | string | Workspace-relative source path |
-| `dst` | string | Workspace-relative destination path |
-
----
-
-### `anchor file validate`
-
-Scan all `.md` files in the workspace and report broken references.
-
-```bash
-anchor file validate
-
-# ✓ 1,247 files scanned. No broken references.
-```
-
-When broken references are found:
 ```
 BROKEN REFERENCES (2):
-
-  docs/guide.md:34
-    → ../archive/old-project/  (not found)
-
-  people/alice/MIND.md:8
-    → ../../archive/removed/  (not found)
-
-2 broken references in 1,247 files.
+  my-file.md:14  → old-folder/guide.md  (not found)
+    similar: new-folder/guide.md
+2 broken references in 2 files.
 ```
 
-Exit 0 = clean. Exit 1 = broken references found.
+The `similar:` hint is a best-guess fuzzy match — sometimes accurate, sometimes not.
 
-#### `--format json`
+Exit codes: 0 = clean, 1 = broken refs found, 2 = system error.
 
-Output results as JSON for programmatic use (AI agents, scripts):
+### Find what references a file
 
-```bash
-anchor file validate --format json
+```sh
+anchor file refs path/to/file.md
 ```
 
-Clean workspace:
-```json
-{"clean":true,"files_scanned":1247,"broken":[],"acknowledged":0}
-```
-
-With broken references:
-```json
-{
-  "clean": false,
-  "files_scanned": 1247,
-  "broken": [
-    {"file": "docs/guide.md", "line": 34, "ref": "../archive/old-project/"},
-    {"file": "people/alice/MIND.md", "line": 8, "ref": "../../archive/removed/"}
-  ],
-  "acknowledged": 3
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `clean` | bool | `true` if no unresolved broken references |
-| `files_scanned` | number | Total `.md` files scanned |
-| `broken` | array | Unresolved broken refs: `file` (workspace-relative), `line` (1-based), `ref` (raw target string) |
-| `acknowledged` | number | Broken refs suppressed by `.accelmars/anchor/acked` patterns |
+Lists every file in the workspace that links to the given path. Useful before moving
+something to understand the blast radius.
 
 ---
 
-### `anchor file refs <file>`
+## What Anchor Rewrites (and What It Doesn't)
 
-List all files in the workspace that reference a given file. Run this before moving a frequently-referenced file to understand the impact.
+Understanding the scope of ref-rewriting is critical to knowing when a rename is
+truly clean.
 
-```bash
-anchor file refs projects/my-project/STATUS.md
+### Rewritten ✓
 
-# References to: projects/my-project/STATUS.md
-#
-#   docs/CLAUDE.md:47
-#   people/alice/MIND.md:8
-#
-# 2 files reference this file.
-```
+| Format | Example |
+|--------|---------|
+| Standard markdown link | `[text](path/to/file.md)` |
+| Fragment link | `[text](path/to/file.md#section)` |
+| Title-attribute link | `[text](path/to/file.md "Title")` |
+| Backtick refs in .md files | `` `path/to/file.md` `` |
+| HTML anchor tags | `<a href="path/to/file.md">` |
+| Link text matching path | `[path/to/file.md](path/to/file.md)` (text updated in sync) |
 
-Zero results:
-```bash
-anchor file refs projects/my-project/STATUS.md
-# No references found.
-```
+### NOT rewritten ✗
 
-Exit 0 always (zero refs is not an error).
+| Format | Example |
+|--------|---------|
+| Plain text (prose, tables, code blocks) | `see path/to/file.md for details` — not rewritten, but anchor warns when 0 refs are rewritten and plain-text occurrences exist |
+| Markdown table cells (non-link) | `\| path/to/file.md \|` |
+| Fenced code blocks | ` ```\npath/to/file.md\n``` ` |
+| Non-.md files | `config.json`, `settings.yaml`, `.ts`, `.py` |
 
-#### `--format json`
+**Watch for non-.md files.** Anchor now rewrites backtick refs and HTML links within
+`.md` files, so most in-markdown formats are covered. The remaining gap is
+**non-.md files** (`config.json`, `settings.yaml`, `.ts`, `.py`): anchor emits a
+`stderr` warning listing how many such files contain occurrences, and suggests
+`anchor refs <old-path>` to inspect them — but you must fix those files manually.
 
-Output results as JSON for programmatic use (AI agents, scripts):
-
-```bash
-anchor file refs projects/my-project/STATUS.md --format json
-```
-
-```json
-{
-  "refs": [
-    {"file": "docs/CLAUDE.md", "line": 47},
-    {"file": "people/alice/MIND.md", "line": 8}
-  ],
-  "query_path": "projects/my-project/STATUS.md",
-  "count": 2
-}
-```
-
-Zero results with `--format json`:
-```json
-{"refs": [], "query_path": "projects/my-project/STATUS.md", "count": 0}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `refs` | array | Each entry: `file` (workspace-relative path), `line` (1-based) |
-| `query_path` | string | Normalized workspace-relative path that was queried |
-| `count` | number | Total number of reference hits |
-
-> **Note for AI agents:** `count: 0` means the file exists but has no inbound references. If you receive `count: 0` for a path you expect to be referenced, verify the path is correct using `anchor file validate`.
+**Plain text within `.md`** (unformatted prose, table cells with bare paths, fenced
+code blocks) is also not rewritten. Check your navigation documents
+(`CONSTELLATION.md`, `CLAUDE.md`, `README.md`) for bare path references after apply.
 
 ---
 
-## Architecture
+## Known Limitations
 
-anchor works at the **workspace** level — a directory that contains one or more git repositories (not a single repo). When you run `anchor init`, it detects or accepts a workspace root and writes configuration there.
+### No rollback on partial failure
 
-Inside that workspace, anchor tracks two kinds of Markdown references:
+If op 5 of 10 fails, ops 1–4 have been applied and cannot be undone automatically.
+Run `anchor file validate` to identify the state of the workspace, then apply a
+corrective plan.
 
-- `[text](path.md)` — standard Markdown links to other `.md` files
-- `[[wiki]]` — wiki-style links by filename stem
+### Explicit `--path` bypasses parent workspace detection
 
-When you move a file with `anchor file mv`, anchor rewrites every inbound reference to that file across the entire workspace before committing the filesystem rename. The rename and reference rewrites are applied as a single atomic transaction — if anything fails, the workspace rolls back to its original state unchanged.
+`anchor init --yes` (no `--path`) now defaults to CWD safely. But if you pass
+`--path ./subdir` explicitly, anchor does not check whether a parent directory
+already has `.accelmars/` — it creates a nested workspace without warning.
 
-anchor does **not** track:
+### Wizard is a scaffold, not a complete authoring tool
 
-- Non-Markdown files (code, images, binaries, data files)
-- Plain text that looks like a path but is not a Markdown link
-- References in files excluded by `.accelmars/anchor/ignore`
+The wizard is designed for simple plans (up to ~5 items). For larger or more
+complex plans: generate a starting file with the wizard, edit it manually, then
+use `anchor plan validate` to check your edits before applying.
+
+### Non-.md file paths not rewritten
+
+Paths in `config.json`, `settings.yaml`, `.ts`, `.py`, and other non-markdown files
+are not rewritten. Anchor warns you (`stderr`) with a count after each move — treat
+this as a TODO list for manual cleanup.
 
 ---
+
+## Exit Codes
+
+| Command | Exit 0 | Exit 1 | Exit 2 |
+|---------|--------|--------|--------|
+| `anchor init` | Initialized | Error (bad path, no candidate) | — |
+| `anchor root` | Root found | No workspace | System error |
+| `anchor file mv` | Moved + refs rewritten | Flag conflict | Src missing, dst exists, I/O error |
+| `anchor file validate` | No broken refs | Broken refs found | System error |
+| `anchor file refs` | Always exits 0 | — | — |
+| `anchor apply` | All ops complete | Preflight or op failure | Workspace/infra error |
+| `anchor diff` | Preview shown | Plan parse error or no workspace found | Scan/I/O error |
+| `anchor plan validate` | Plan valid | Validation errors | Parse error |
+| `anchor plan new` | Plan file written | Invalid input or write failure | — |
+| `anchor plan list` | Templates listed (always) | — | — |
+
+---
+
+## Typical Session
+
+```sh
+# 1. Check workspace is initialized
+anchor root
+
+# 2. See what references a folder before moving it
+anchor file refs foundations/gateway-engine/
+
+# 3. Write the plan (by hand for large batches)
+cat > restructure.toml << 'EOF'
+version = "1"
+description = "Group foundations under foundations/"
+
+[[ops]]
+type = "create_dir"
+path = "foundations"
+
+[[ops]]
+type = "move"
+src = "foundations/gateway-engine"
+dst = "foundations/gateway-engine"
+EOF
+
+# 4. Validate
+anchor plan validate restructure.toml
+
+# 5. Preview (add --verbose to see each ref that will change)
+anchor diff --verbose restructure.toml
+
+# 6. Apply
+anchor apply restructure.toml
+# anchor warns on stderr if any non-.md files have unhandled occurrences
+
+# 7. Verify — must exit 0
+anchor validate
+
+# 8. Manually check plain-text refs (not in backticks/links) in navigation docs
+grep -r "foundations/gateway-engine" CONSTELLATION.md CLAUDE.md
+```
 
 ## When NOT to use anchor
 
@@ -266,18 +332,6 @@ anchor is purpose-built for Markdown workspaces with cross-file links. It is the
 ## Telemetry
 
 anchor collects no telemetry. No data leaves your machine.
-
----
-
-## Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Logical failure (broken refs found, file not found, not initialized) |
-| 2 | System error (permissions, I/O failure, workspace corrupted) |
-
-`anchor file refs` always exits 0 (zero references is a valid result, not a failure).
 
 ---
 
