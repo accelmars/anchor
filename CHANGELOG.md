@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Fixed — AENG-001 — context-scoped reference rewrite. `anchor apply` now bounds each move op's rewrite scope to the deepest git-repo ancestor of the source path, preventing bare-name backtick path segments (e.g. `` `workflows` ``) from being rewritten in unrelated repos. Out-of-scope files that hold fully-qualified workspace-relative paths to the moved location are still rewritten (inward ref rule). Adds `src/core/context_scope.rs` with `ScopeResolver`, `scope_for_move`, `is_in_scope`, and `is_inward_ref`. Closes the `workflows/` Pass 1 failure (op 15/15, 2026-04-29).
+
 ### Fixed — AENG-007 — pre-move gate and ref scanner now skip fenced code block content (P0; unblocks documentation-heavy moves). Introduces `FenceState` / `FenceMarker` state machine with proper marker-type and length-comparison semantics; replaces the prior simple bool toggle.
 
 ### Added — AENG-008 — post-apply UX-001 surfaces partial-path plain-text remainder. After `anchor apply`, plain-text occurrences of partial path segments (e.g. `os-council` from `councils/os-council`) are reported per-file with occurrence counts. Previously only full-path matches were reported. Closes Gap B from 260428-council-rename-gap-report.

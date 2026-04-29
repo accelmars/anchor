@@ -1,4 +1,5 @@
 pub mod acked;
+pub mod context_scope;
 pub mod diagnostics;
 pub mod fence_state;
 pub mod parser;

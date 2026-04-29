@@ -12,7 +12,10 @@
 // COMMIT order (HANDOVER.md anti-pattern): rename rewrites over originals FIRST,
 // then rename moved/src → dst. Reversing this order breaks recovery on crash.
 
-use crate::core::{parser, resolver, rewriter};
+use crate::core::{
+    context_scope::{is_in_scope, is_inward_ref, scope_for_move, ScopeResolver},
+    parser, resolver, rewriter,
+};
 use crate::infra::temp::{self, TempOpDir};
 use crate::model::{
     manifest::{self, Manifest},
@@ -293,6 +296,11 @@ pub fn plan(
 ) -> Result<RewritePlan, TransactionError> {
     let mut entries: Vec<RewriteEntry> = Vec::new();
 
+    // Context-scope resolver: built once per plan() call (not per reference).
+    // Discovers repo roots at depth 1 under workspace_root to bound rewrite scope.
+    let scope_resolver = ScopeResolver::new(workspace_root);
+    let scope = scope_for_move(&scope_resolver, src);
+
     for file_canonical in workspace_files {
         let file_path = workspace_root.join(file_canonical.as_str());
         let content = match std::fs::read_to_string(&file_path) {
@@ -348,6 +356,15 @@ pub fn plan(
                 // For non-prefixed refs: relative path is stable — skip.
                 // For $(anchor root)/-prefixed refs: absolute path must still be rewritten — do not skip.
                 if !has_anchor_prefix && inside_src(file_canonical, src) {
+                    continue;
+                }
+
+                // Context-scope filter (AENG-001): skip out-of-scope bare-name occurrences.
+                // Out-of-scope files may only be rewritten when the reference is an inward
+                // ref — a workspace-relative path that directly addresses the moved location.
+                // Partial-suffix matches (e.g. bare `workflows` for src `.../workflows`) from
+                // files in other repos are the false-positive class this filter eliminates.
+                if !is_in_scope(file_canonical, &scope) && !is_inward_ref(&target_to_match, src) {
                     continue;
                 }
 
