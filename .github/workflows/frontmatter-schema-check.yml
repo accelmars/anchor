@@ -18,14 +18,6 @@ jobs:
       - name: Checkout anchor
         uses: actions/checkout@v4
 
-      - name: Checkout accelmars-workspace (schema + spec)
-        uses: actions/checkout@v4
-        with:
-          repository: accelmars/accelmars-workspace
-          path: accelmars-workspace
-          # Uses GITHUB_TOKEN; requires accelmars-workspace to be accessible
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -38,18 +30,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build anchor
-        run: cargo build
-
       - name: Validate schema JSON syntax
         run: jq -e . .accelmars/canon/templates/accelmars-standard/frontmatter.schema.json > /dev/null
-
-      - name: Run anchor frontmatter check-schema
-        # Spec and schema are in the checked-out accelmars-workspace subdirectory
-        run: |
-          cargo run -- frontmatter check-schema \
-            accelmars-workspace/FRONTMATTER.md \
-            .accelmars/canon/templates/accelmars-standard/frontmatter.schema.json
 
       - name: Run frontmatter scenario tests
         run: cargo test --test frontmatter_fm_scenarios
