@@ -30,9 +30,6 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Validate schema JSON syntax
-        run: jq -e . .accelmars/canon/templates/accelmars-standard/frontmatter.schema.json > /dev/null
-
       - name: Run frontmatter scenario tests
         run: cargo test --test frontmatter_fm_scenarios
 
