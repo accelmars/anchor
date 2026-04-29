@@ -41,7 +41,8 @@ fn schema_path(root: &Path) -> std::path::PathBuf {
 fn write_test_schema(root: &Path) {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/FRONTMATTER.schema.json");
-    let content = fs::read_to_string(&fixture).expect("tests/fixtures/FRONTMATTER.schema.json missing");
+    let content =
+        fs::read_to_string(&fixture).expect("tests/fixtures/FRONTMATTER.schema.json missing");
     fs::write(schema_path(root), content).unwrap();
 }
 
