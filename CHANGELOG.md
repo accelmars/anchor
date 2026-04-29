@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
+### Added — AENG-008 — post-apply UX-001 surfaces partial-path plain-text remainder. After `anchor apply`, plain-text occurrences of partial path segments (e.g. `os-council` from `councils/os-council`) are reported per-file with occurrence counts. Previously only full-path matches were reported. Closes Gap B from 260428-council-rename-gap-report.
+
 ### Added — AENG-006 — `anchor frontmatter` subcommand family: `audit`, `migrate`, `normalize`, `add-required`, `check-schema`. `FRONTMATTER.schema.json` at workspace root (JSON Schema 2020-12). CI diff guard (`anchor frontmatter check-schema`) detects drift between FRONTMATTER.md and the schema.
 
 ### Added — AENG-002 — rollback now prints per-ref diagnostics matching anchor file validate format.
