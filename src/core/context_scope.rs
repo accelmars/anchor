@@ -222,10 +222,7 @@ mod tests {
             &"org-workspace/foundations/engine/workflows/foo.md".to_string(),
             &scope
         ));
-        assert!(is_in_scope(
-            &"org-workspace/README.md".to_string(),
-            &scope
-        ));
+        assert!(is_in_scope(&"org-workspace/README.md".to_string(), &scope));
     }
 
     /// File outside repo scope → not in scope.

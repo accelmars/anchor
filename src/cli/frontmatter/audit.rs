@@ -98,8 +98,7 @@ pub fn run(
 ) -> i32 {
     let target = resolve_path(path, cwd, workspace_root);
 
-    let schema_path = match SchemaRules::resolve_schema_path(schema_override, cwd, workspace_root)
-    {
+    let schema_path = match SchemaRules::resolve_schema_path(schema_override, cwd, workspace_root) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");

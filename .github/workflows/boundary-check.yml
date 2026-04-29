@@ -26,7 +26,7 @@ jobs:
         # Catches AccelMars-specific repo references in code, tests, and regular comments.
         # Doc comments (///) may retain illustrative examples; code and test fixtures must not.
         run: |
-          matches=$(grep -r 'accelmars-codex' src/ | grep -v '///')
+          matches=$(grep -r 'accelmars-codex' src/ | grep -v '///' || true)
           if [ -n "$matches" ]; then
             echo "FAIL: 'accelmars-codex' found in src/ outside doc comments:"
             echo "$matches"

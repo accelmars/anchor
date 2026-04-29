@@ -62,15 +62,13 @@ pub fn run(
 
     let schema_path = match schema_path_arg {
         Some(p) => resolve(p, cwd, workspace_root),
-        None => {
-            match SchemaRules::resolve_schema_path(None, cwd, workspace_root) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return 2;
-                }
+        None => match SchemaRules::resolve_schema_path(None, cwd, workspace_root) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
             }
-        }
+        },
     };
 
     match run_check(&spec, &schema_path) {
