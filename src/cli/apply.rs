@@ -4,6 +4,7 @@
 // Pre-flight validates ALL Move ops before any op executes.
 // Per-op lock — same as file mv. Already-committed moves are NOT rolled back on failure.
 
+use crate::apply::post_apply_scan::{format_plain_text_warning, scan_partial_plain_text};
 use crate::core::{scanner, transaction};
 use crate::infra::{lock, temp, workspace};
 use crate::model::{
@@ -303,14 +304,37 @@ fn execute_move(
         eprintln!("{non_md_updated} non-markdown file(s) updated.");
     }
 
-    // Post-commit: warn if 0 refs rewritten but .md files contain plain-text occurrences.
-    if refs_rewritten == 0 {
-        let plaintext_count = count_plaintext_md_occurrences(workspace_root, src);
-        if plaintext_count > 0 {
-            eprintln!(
-                "note: 0 markdown refs rewritten. {plaintext_count} plain-text occurrence(s) of '{src}' in .md files were not rewritten."
-            );
-        }
+    // Post-commit: UX-001 — emit full-path and partial-path plain-text occurrence warning.
+    // Runs after every move (not just zero-ref moves) so the operator always sees the residual.
+    let workspace_md: Vec<String> = workspace_files
+        .iter()
+        .filter(|f| f.ends_with(".md"))
+        .cloned()
+        .collect();
+
+    // Full-path: files containing the full src string as plain text, sorted by file.
+    let mut full_path_lines: Vec<(String, usize)> = workspace_md
+        .iter()
+        .filter_map(|f| {
+            let content = std::fs::read_to_string(workspace_root.join(f.as_str())).ok()?;
+            let count = content.matches(src).count();
+            if count > 0 {
+                Some((f.clone(), count))
+            } else {
+                None
+            }
+        })
+        .collect();
+    full_path_lines.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Partial-path: trailing segment occurrences via post_apply_scan.
+    let partial_hits = scan_partial_plain_text(&workspace_md, src, workspace_root);
+
+    // Trailing segment for the closing hint line.
+    let trailing = src.rsplit('/').next().unwrap_or(src);
+
+    if let Some(warning) = format_plain_text_warning(&full_path_lines, &partial_hits, trailing) {
+        eprintln!("{warning}");
     }
 
     Ok((refs_rewritten, files_touched))
