@@ -2,8 +2,8 @@
 //
 // A move op's rewrite scope is bounded to the deepest domain that contains its source path.
 // This prevents bare-name substring matches from crossing repo boundaries — e.g., moving
-// `accelmars-workspace/foundations/anchor-engine/workflows` must not rewrite `workflows/`
-// mentions in unrelated repos like `accelmars-codex/`.
+// `org-workspace/foundations/engine/workflows` must not rewrite `workflows/`
+// mentions in unrelated repos like `org-sibling-repo/`.
 //
 // Domain hierarchy:
 //   1. Workspace root (fallback when no repo root contains the source)
@@ -11,7 +11,7 @@
 //   3. Workspace-defined sub-boundaries (future: from WorkspaceConfig.scopes)
 //
 // The "inward ref" rule: out-of-scope files may still hold workspace-relative paths that
-// directly address the moved location (e.g. `$(anchor root)/accelmars-workspace/.../workflows`).
+// directly address the moved location (e.g. `$(anchor root)/org-workspace/.../workflows`).
 // These are rewritten regardless of scope. Short suffix matches (e.g. bare `workflows`) from
 // out-of-scope files are the false-positive class this module prevents.
 
@@ -56,7 +56,7 @@ impl ScopeResolver {
 }
 
 /// Scan `workspace_root` for depth-1 children that contain a `.git` entry.
-/// Returns sorted workspace-relative canonical names (e.g. `["accelmars-codex", "anchor", ...]`).
+/// Returns sorted workspace-relative canonical names (e.g. `["org-sibling-repo", "anchor", ...]`).
 fn discover_repo_roots(workspace_root: &Path) -> Vec<CanonicalPath> {
     let mut roots = Vec::new();
     let Ok(entries) = std::fs::read_dir(workspace_root) else {
@@ -147,20 +147,20 @@ mod tests {
 
     // ── scope_for_move ────────────────────────────────────────────────────────
 
-    /// Cross-repo scenario: src inside accelmars-workspace, codex is a sibling repo.
-    /// scope_for_move should return Repo("accelmars-workspace").
+    /// Cross-repo scenario: src inside org-workspace, sibling repo is a peer.
+    /// scope_for_move should return Repo("org-workspace").
     #[test]
     fn test_scope_for_move_repo_root() {
-        let ws = make_workspace_with_repos(&["accelmars-workspace", "accelmars-codex"]);
+        let ws = make_workspace_with_repos(&["org-workspace", "org-sibling-repo"]);
         let resolver = ScopeResolver::new(ws.path());
 
-        let src = "accelmars-workspace/foundations/anchor-engine/workflows".to_string();
+        let src = "org-workspace/foundations/engine/workflows".to_string();
         let scope = scope_for_move(&resolver, &src);
 
-        assert_eq!(scope.root, "accelmars-workspace");
+        assert_eq!(scope.root, "org-workspace");
         assert_eq!(
             scope.domain,
-            RewriteDomain::Repo("accelmars-workspace".to_string())
+            RewriteDomain::Repo("org-workspace".to_string())
         );
     }
 
@@ -168,16 +168,16 @@ mod tests {
     /// scope_for_move should find it at depth 1 and return Repo(src).
     #[test]
     fn test_scope_for_move_src_is_repo_root() {
-        let ws = make_workspace_with_repos(&["accelmars-codex"]);
+        let ws = make_workspace_with_repos(&["org-sibling-repo"]);
         let resolver = ScopeResolver::new(ws.path());
 
-        let src = "accelmars-codex".to_string();
+        let src = "org-sibling-repo".to_string();
         let scope = scope_for_move(&resolver, &src);
 
-        assert_eq!(scope.root, "accelmars-codex");
+        assert_eq!(scope.root, "org-sibling-repo");
         assert_eq!(
             scope.domain,
-            RewriteDomain::Repo("accelmars-codex".to_string())
+            RewriteDomain::Repo("org-sibling-repo".to_string())
         );
     }
 
@@ -214,16 +214,16 @@ mod tests {
     #[test]
     fn test_is_in_scope_inside_repo() {
         let scope = Scope {
-            domain: RewriteDomain::Repo("accelmars-workspace".to_string()),
-            root: "accelmars-workspace".to_string(),
+            domain: RewriteDomain::Repo("org-workspace".to_string()),
+            root: "org-workspace".to_string(),
         };
 
         assert!(is_in_scope(
-            &"accelmars-workspace/foundations/anchor-engine/workflows/foo.md".to_string(),
+            &"org-workspace/foundations/engine/workflows/foo.md".to_string(),
             &scope
         ));
         assert!(is_in_scope(
-            &"accelmars-workspace/README.md".to_string(),
+            &"org-workspace/README.md".to_string(),
             &scope
         ));
     }
@@ -232,16 +232,16 @@ mod tests {
     #[test]
     fn test_is_in_scope_outside_repo() {
         let scope = Scope {
-            domain: RewriteDomain::Repo("accelmars-workspace".to_string()),
-            root: "accelmars-workspace".to_string(),
+            domain: RewriteDomain::Repo("org-workspace".to_string()),
+            root: "org-workspace".to_string(),
         };
 
         assert!(!is_in_scope(
-            &"accelmars-codex/BOUNDARY.md".to_string(),
+            &"org-sibling-repo/BOUNDARY.md".to_string(),
             &scope
         ));
         assert!(!is_in_scope(
-            &"accelmars-guild/projects/foo.md".to_string(),
+            &"org-guild/projects/foo.md".to_string(),
             &scope
         ));
     }
@@ -255,11 +255,11 @@ mod tests {
         };
 
         assert!(is_in_scope(
-            &"accelmars-codex/BOUNDARY.md".to_string(),
+            &"org-sibling-repo/BOUNDARY.md".to_string(),
             &scope
         ));
         assert!(is_in_scope(
-            &"accelmars-workspace/foundations/anchor-engine/workflows/foo.md".to_string(),
+            &"org-workspace/foundations/engine/workflows/foo.md".to_string(),
             &scope
         ));
     }
@@ -269,9 +269,9 @@ mod tests {
     /// Full canonical path matching src → inward ref.
     #[test]
     fn test_is_inward_ref_exact_match() {
-        let src = "accelmars-workspace/foundations/anchor-engine/workflows".to_string();
+        let src = "org-workspace/foundations/engine/workflows".to_string();
         assert!(is_inward_ref(
-            "accelmars-workspace/foundations/anchor-engine/workflows",
+            "org-workspace/foundations/engine/workflows",
             &src
         ));
     }
@@ -279,9 +279,9 @@ mod tests {
     /// Path under src → inward ref.
     #[test]
     fn test_is_inward_ref_subpath() {
-        let src = "accelmars-workspace/foundations/anchor-engine/workflows".to_string();
+        let src = "org-workspace/foundations/engine/workflows".to_string();
         assert!(is_inward_ref(
-            "accelmars-workspace/foundations/anchor-engine/workflows/design.md",
+            "org-workspace/foundations/engine/workflows/design.md",
             &src
         ));
     }
@@ -289,18 +289,18 @@ mod tests {
     /// Bare name suffix (the AENG-001 false-positive class) → NOT inward ref.
     #[test]
     fn test_is_inward_ref_bare_name_not_inward() {
-        let src = "accelmars-workspace/foundations/anchor-engine/workflows".to_string();
+        let src = "org-workspace/foundations/engine/workflows".to_string();
         assert!(!is_inward_ref("workflows", &src));
-        assert!(!is_inward_ref("anchor-engine/workflows", &src));
-        assert!(!is_inward_ref("foundations/anchor-engine/workflows", &src));
+        assert!(!is_inward_ref("engine/workflows", &src));
+        assert!(!is_inward_ref("foundations/engine/workflows", &src));
     }
 
     /// Trailing slash stripped before comparison.
     #[test]
     fn test_is_inward_ref_trailing_slash_stripped() {
-        let src = "accelmars-workspace/foundations/anchor-engine/workflows".to_string();
+        let src = "org-workspace/foundations/engine/workflows".to_string();
         assert!(is_inward_ref(
-            "accelmars-workspace/foundations/anchor-engine/workflows/",
+            "org-workspace/foundations/engine/workflows/",
             &src
         ));
     }

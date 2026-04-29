@@ -27,11 +27,36 @@ pub struct PropDef {
 }
 
 impl SchemaRules {
-    /// Return the default path for the schema relative to the anchor workspace root.
-    pub fn default_path(workspace_root: &Path) -> PathBuf {
-        workspace_root
-            .join("accelmars-workspace")
-            .join("FRONTMATTER.schema.json")
+    /// Resolve the schema path: explicit flag → workspace-local config → error.
+    ///
+    /// Resolution order:
+    ///   1. `explicit_path` when provided (resolved relative to `cwd`)
+    ///   2. `<workspace_root>/.accelmars/anchor/frontmatter-schema.json`
+    ///   3. Error — names every path tried
+    pub fn resolve_schema_path(
+        explicit_path: Option<&str>,
+        cwd: &Path,
+        workspace_root: &Path,
+    ) -> Result<PathBuf, String> {
+        if let Some(p) = explicit_path {
+            let resolved = if std::path::Path::new(p).is_absolute() {
+                PathBuf::from(p)
+            } else {
+                cwd.join(p)
+            };
+            return Ok(resolved);
+        }
+        let workspace_local = workspace_root
+            .join(".accelmars")
+            .join("anchor")
+            .join("frontmatter-schema.json");
+        if workspace_local.exists() {
+            return Ok(workspace_local);
+        }
+        Err(format!(
+            "schema not found — tried:\n  {}\nUse --schema <path> or place the schema at .accelmars/anchor/frontmatter-schema.json",
+            workspace_local.display()
+        ))
     }
 
     /// Load and parse the schema from `path`.
@@ -145,4 +170,86 @@ fn extract_synonyms(schema: &serde_json::Value) -> HashMap<String, HashMap<Strin
         }
     }
     outer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_workspace() -> TempDir {
+        TempDir::new().unwrap()
+    }
+
+    fn make_workspace_with_schema() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let schema_dir = dir.path().join(".accelmars").join("anchor");
+        fs::create_dir_all(&schema_dir).unwrap();
+        fs::write(
+            schema_dir.join("frontmatter-schema.json"),
+            r#"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","required":["title"],"properties":{"title":{"type":"string"}}}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_schema_path_explicit_wins() {
+        let ws = make_workspace();
+        let explicit = ws.path().join("my-schema.json");
+        fs::write(&explicit, "{}").unwrap();
+
+        let result = SchemaRules::resolve_schema_path(
+            Some(explicit.to_str().unwrap()),
+            ws.path(),
+            ws.path(),
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), explicit);
+    }
+
+    #[test]
+    fn resolve_schema_path_workspace_local_fallback() {
+        let ws = make_workspace_with_schema();
+        let expected = ws
+            .path()
+            .join(".accelmars")
+            .join("anchor")
+            .join("frontmatter-schema.json");
+
+        let result = SchemaRules::resolve_schema_path(None, ws.path(), ws.path());
+        assert!(result.is_ok(), "should find workspace-local schema");
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn resolve_schema_path_error_names_paths_tried() {
+        let ws = make_workspace();
+
+        let result = SchemaRules::resolve_schema_path(None, ws.path(), ws.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains(".accelmars/anchor/frontmatter-schema.json"),
+            "error must name path tried: {msg}"
+        );
+        assert!(
+            msg.contains("--schema"),
+            "error must suggest --schema flag: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_schema_path_explicit_relative_resolved_from_cwd() {
+        let ws = make_workspace();
+        let schema_file = ws.path().join("sub").join("schema.json");
+        fs::create_dir_all(schema_file.parent().unwrap()).unwrap();
+        fs::write(&schema_file, "{}").unwrap();
+
+        let result =
+            SchemaRules::resolve_schema_path(Some("sub/schema.json"), ws.path(), ws.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), ws.path().join("sub").join("schema.json"));
+    }
 }

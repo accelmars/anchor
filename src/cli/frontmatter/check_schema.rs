@@ -23,6 +23,7 @@
 //   spec   — path to FRONTMATTER.md  (default: workspace-relative)
 //   schema — path to FRONTMATTER.schema.json (default: workspace-relative)
 
+use super::schema::SchemaRules;
 use crate::infra::workspace;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,21 +41,37 @@ pub fn run(
     workspace_root: &Path,
     cwd: &Path,
 ) -> i32 {
-    let spec = spec_path
-        .map(|p| resolve(p, cwd, workspace_root))
-        .unwrap_or_else(|| {
-            workspace_root
-                .join("accelmars-workspace")
-                .join("FRONTMATTER.md")
-        });
+    let spec = match spec_path {
+        Some(p) => resolve(p, cwd, workspace_root),
+        None => {
+            let workspace_local = workspace_root
+                .join(".accelmars")
+                .join("anchor")
+                .join("frontmatter-spec.md");
+            if workspace_local.exists() {
+                workspace_local
+            } else {
+                eprintln!(
+                    "spec not found — tried:\n  {}\nUse `anchor frontmatter check-schema <spec> <schema>` or place the spec at .accelmars/anchor/frontmatter-spec.md",
+                    workspace_local.display()
+                );
+                return 2;
+            }
+        }
+    };
 
-    let schema_path = schema_path_arg
-        .map(|p| resolve(p, cwd, workspace_root))
-        .unwrap_or_else(|| {
-            workspace_root
-                .join("accelmars-workspace")
-                .join("FRONTMATTER.schema.json")
-        });
+    let schema_path = match schema_path_arg {
+        Some(p) => resolve(p, cwd, workspace_root),
+        None => {
+            match SchemaRules::resolve_schema_path(None, cwd, workspace_root) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 2;
+                }
+            }
+        }
+    };
 
     match run_check(&spec, &schema_path) {
         Ok(mismatches) if mismatches.is_empty() => {
