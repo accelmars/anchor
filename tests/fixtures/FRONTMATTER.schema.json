@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accelmars.com/schemas/frontmatter-v1",
+  "title": "AccelMars Foundation Frontmatter Schema v1",
+  "description": "Machine-readable authority for YAML frontmatter on all foundation documents. FRONTMATTER.md is the human-readable narrative. Run 'anchor frontmatter check-schema' to detect drift between the two.",
+  "type": "object",
+  "required": ["title", "type", "engine", "status", "schema_version", "created", "updated"],
+  "properties": {
+    "title":          { "type": "string", "minLength": 1 },
+    "type": {
+      "type": "string",
+      "enum": ["analysis", "eval", "workflow", "identity", "gap", "capability", "index",
+               "intake", "reference", "guide", "operations", "security", "positioning",
+               "blueprint", "meta"]
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["platform", "gateway", "pact", "cortex", "guild", "canon", "codex",
+               "forge", "mind", "anchor", "crucible", "signal", "reach"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "active", "archived"]
+    },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "created":        { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "updated":        { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "id":             { "type": "string" },
+    "category":       { "type": "string" },
+    "priority":       { "type": "string" },
+    "maturity": {
+      "type": "string",
+      "enum": ["LIVE", "SCAFFOLDED", "DESIGNED", "PLANNED", "TBD"]
+    },
+    "tags":           { "type": "array", "items": { "type": "string" } },
+    "author":         { "type": "string" },
+    "depends_on":     { "type": "array", "items": { "type": "string" } },
+    "feeds_into":     { "type": "array", "items": { "type": "string" } },
+    "pass_status": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL", "NOT_RUN"]
+    },
+    "last_run":           { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "coverage":           { "type": "string" },
+    "entry_point":        { "type": "string" },
+    "triggers":           { "type": "array", "items": { "type": "string" } },
+    "boundary": {
+      "type": "string",
+      "enum": ["open", "closed", "mixed"]
+    },
+    "version":            { "type": "string" },
+    "transaction_phase": {
+      "type": "string",
+      "enum": ["plan", "apply", "validate", "commit", "rollback"]
+    },
+    "adapter":            { "type": "string" },
+    "source_kind": {
+      "type": "string",
+      "enum": ["structured", "prose", "code", "mixed"]
+    },
+    "persona":            { "type": "string" },
+    "lifecycle_state":    { "type": "string" },
+    "provider":           { "type": "string" },
+    "tier":               { "type": "string" },
+    "contract_kind":      { "type": "string" },
+    "execution_mode":     { "type": "string" },
+    "consumed":           { "type": "string" },
+    "consumed_by":        { "type": "string" }
+  },
+  "x-synonyms": {
+    "status": {
+      "consumed":          "archived",
+      "complete":          "archived",
+      "open":              "active",
+      "partially-resolved": "active"
+    }
+  },
+  "x-canonical-key-order": [
+    "title", "type", "engine", "status", "schema_version", "created", "updated",
+    "id", "category", "priority", "maturity", "tags", "author", "depends_on", "feeds_into",
+    "pass_status", "last_run", "coverage", "entry_point", "triggers",
+    "boundary", "version", "transaction_phase",
+    "adapter", "source_kind", "persona", "lifecycle_state",
+    "provider", "tier", "contract_kind", "execution_mode",
+    "consumed", "consumed_by"
+  ],
+  "allOf": [
+    {
+      "if":   { "properties": { "type": { "const": "analysis" } }, "required": ["type"] },
+      "then": { "required": ["id", "priority", "depends_on"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "eval" } }, "required": ["type"] },
+      "then": { "required": ["id", "pass_status"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "workflow" } }, "required": ["type"] },
+      "then": { "required": ["entry_point"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "identity" } }, "required": ["type"] },
+      "then": { "required": ["boundary"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "gap" } }, "required": ["type"] },
+      "then": { "required": ["id", "priority", "maturity"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "capability" } }, "required": ["type"] },
+      "then": { "required": ["id", "maturity"] }
+    },
+    {
+      "if":   { "properties": { "type": { "const": "index" } }, "required": ["type"] },
+      "then": { "required": ["category"] }
+    }
+  ]
+}

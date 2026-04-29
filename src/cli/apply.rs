@@ -269,12 +269,17 @@ fn execute_move(
     match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
         Ok(()) => {}
         Err(transaction::ValidationError::BrokenRefs(broken)) => {
-            let msg = format!(
-                "BROKEN REFERENCES AFTER REWRITE ({}): rolled back.",
-                broken.len()
-            );
+            let capped = &workspace_files[..200.min(workspace_files.len())];
+            eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", broken.len());
+            eprintln!();
+            for b in &broken {
+                eprint!(
+                    "{}",
+                    crate::core::diagnostics::format_broken_ref(&b.file, b.line, &b.target, capped,)
+                );
+            }
             transaction::rollback(&op_dir, lock_guard);
-            return Err(msg);
+            return Err("rolled back.".to_string());
         }
         Err(transaction::ValidationError::Io(e)) => {
             transaction::rollback(&op_dir, lock_guard);

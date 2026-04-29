@@ -1,5 +1,9 @@
 use accelmars_anchor::cli;
 use accelmars_anchor::cli::file::refs::OutputFormat;
+use accelmars_anchor::cli::frontmatter::audit::AuditFormat;
+use accelmars_anchor::cli::frontmatter::{
+    run_add_required, run_audit, run_check_schema, run_migrate, run_normalize, FmOutputFormat,
+};
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -64,6 +68,77 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 3000)]
         port: u16,
+    },
+    /// Frontmatter management (audit, migrate, normalize, add-required, check-schema)
+    Frontmatter {
+        #[command(subcommand)]
+        subcommand: FrontmatterCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum FrontmatterCommands {
+    /// Report schema compliance for .md files under PATH
+    Audit {
+        /// Path to scan (default: current directory)
+        path: Option<String>,
+        /// Output format
+        #[arg(long, value_enum, default_value = "human")]
+        format: FmOutputFormat,
+        /// Enable strict checks (e.g. _INDEX.md TOC presence)
+        #[arg(long)]
+        strict: bool,
+        /// Path to JSON Schema file (overrides workspace default)
+        #[arg(long)]
+        schema: Option<String>,
+    },
+    /// Apply schema_version migrations
+    Migrate {
+        /// Path to migrate (default: current directory)
+        path: Option<String>,
+        /// Target schema version
+        #[arg(long = "to")]
+        to: u32,
+        /// Apply changes (default: dry-run)
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Normalize frontmatter (status synonyms, optional key reordering)
+    Normalize {
+        /// Path to normalize (default: current directory)
+        path: Option<String>,
+        /// Apply changes (default: dry-run)
+        #[arg(long)]
+        apply: bool,
+        /// Reorder keys to canonical order
+        #[arg(long)]
+        reorder: bool,
+        /// Path to JSON Schema file (overrides workspace default)
+        #[arg(long)]
+        schema: Option<String>,
+    },
+    /// Fill deterministic missing required fields
+    #[command(name = "add-required")]
+    AddRequired {
+        /// File or directory path
+        path: String,
+        /// Auto-fill safe defaults without prompting
+        #[arg(long)]
+        auto: bool,
+        /// Scan directory recursively (default: single file)
+        #[arg(long)]
+        batch: bool,
+        /// Path to JSON Schema file (overrides workspace default)
+        #[arg(long)]
+        schema: Option<String>,
+    },
+    /// CI guard: verify FRONTMATTER.md and FRONTMATTER.schema.json are in sync
+    #[command(name = "check-schema")]
+    CheckSchema {
+        /// Path to FRONTMATTER.md (default: workspace-relative)
+        spec: Option<String>,
+        /// Path to FRONTMATTER.schema.json (default: workspace-relative)
+        schema: Option<String>,
     },
 }
 
@@ -140,6 +215,35 @@ fn main() {
             PlanCommands::Validate { plan } => process::exit(cli::plan::run_validate(&plan)),
         },
         Commands::Serve { port } => cli::serve::run(port),
+        Commands::Frontmatter { subcommand } => match subcommand {
+            FrontmatterCommands::Audit {
+                path,
+                format,
+                strict,
+                schema,
+            } => {
+                let fmt: AuditFormat = format.into();
+                run_audit(path.as_deref(), fmt, schema.as_deref(), strict)
+            }
+            FrontmatterCommands::Migrate { path, to, apply } => {
+                run_migrate(path.as_deref(), to, apply)
+            }
+            FrontmatterCommands::Normalize {
+                path,
+                apply,
+                reorder,
+                schema,
+            } => run_normalize(path.as_deref(), apply, reorder, schema.as_deref()),
+            FrontmatterCommands::AddRequired {
+                path,
+                auto,
+                batch,
+                schema,
+            } => run_add_required(&path, auto, batch, schema.as_deref()),
+            FrontmatterCommands::CheckSchema { spec, schema } => {
+                run_check_schema(spec.as_deref(), schema.as_deref())
+            }
+        },
         Commands::File { subcommand } => match subcommand {
             FileCommands::Mv {
                 src,

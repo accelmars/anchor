@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod diff;
 pub mod file;
+pub mod frontmatter;
 pub mod init;
 pub mod plan;
 pub mod recover;
