@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::core::fence_state::FenceState;
 use crate::model::{
     reference::{RefForm, Reference},
     CanonicalPath,
@@ -56,12 +57,6 @@ fn in_backtick_span(spans: &[(usize, usize)], start: usize, end: usize) -> bool 
     spans.iter().any(|&(s, e)| s <= start && end <= e)
 }
 
-/// Returns true if `line` is a fenced code block delimiter (``` or ~~~).
-fn is_fence_delimiter(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("```") || t.starts_with("~~~")
-}
-
 /// Split `path#anchor` into `(path, Some(anchor))` or `(path, None)`.
 fn strip_anchor(path: &str) -> (String, Option<String>) {
     match path.find('#') {
@@ -84,7 +79,7 @@ pub fn parse_references(source_file: &CanonicalPath, content: &str) -> Vec<Refer
     let form2 = form2_re();
 
     let mut refs = Vec::new();
-    let mut in_fence = false;
+    let mut fence = FenceState::default();
     let mut pos = 0usize;
 
     while pos < content.len() {
@@ -92,13 +87,12 @@ pub fn parse_references(source_file: &CanonicalPath, content: &str) -> Vec<Refer
         let newline_pos = content[pos..].find('\n').map(|p| pos + p);
         let line_end = newline_pos.unwrap_or(content.len());
 
-        // Line content: strip trailing \r for \r\n files, but keep positions relative to pos
+        // Line content: keep positions relative to pos; FenceState strips \r internally
         let line_raw = &content[pos..line_end];
         let line = line_raw.trim_end_matches('\r');
 
-        if is_fence_delimiter(line) {
-            in_fence = !in_fence;
-        } else if !in_fence {
+        fence.observe_line(line);
+        if !fence.in_code_block() {
             let backtick_spans = find_backtick_spans(line);
 
             // Form 1: [text](path.md) or [text](path.md#anchor)
