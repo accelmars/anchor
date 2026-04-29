@@ -5,15 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased]
 
-### Fixed — AENG-001 — context-scoped reference rewrite. `anchor apply` now bounds each move op's rewrite scope to the deepest git-repo ancestor of the source path, preventing bare-name backtick path segments (e.g. `` `workflows` ``) from being rewritten in unrelated repos. Out-of-scope files that hold fully-qualified workspace-relative paths to the moved location are still rewritten (inward ref rule). Adds `src/core/context_scope.rs` with `ScopeResolver`, `scope_for_move`, `is_in_scope`, and `is_inward_ref`. Closes the `workflows/` Pass 1 failure (op 15/15, 2026-04-29).
+## v0.6.0 — 2026-04-29
 
-### Fixed — AENG-007 — pre-move gate and ref scanner now skip fenced code block content (P0; unblocks documentation-heavy moves). Introduces `FenceState` / `FenceMarker` state machine with proper marker-type and length-comparison semantics; replaces the prior simple bool toggle.
+### Fixed
 
-### Added — AENG-008 — post-apply UX-001 surfaces partial-path plain-text remainder. After `anchor apply`, plain-text occurrences of partial path segments (e.g. `os-council` from `councils/os-council`) are reported per-file with occurrence counts. Previously only full-path matches were reported. Closes Gap B from 260428-council-rename-gap-report.
+- **AENG-007** — Pre-move gate and ref scanner now skip content inside fenced code blocks (`` ``` `` and `~~~`). Introduces `FenceState` / `FenceMarker` state machine with marker-type and length-comparison semantics; replaces the prior single-bool toggle. Documentation-heavy projects (test guides, gap reports, CHANGELOG entries with example paths) move cleanly. Removes the `git mv` fallback path for archive-style projects.
 
-### Added — AENG-006 — `anchor frontmatter` subcommand family: `audit`, `migrate`, `normalize`, `add-required`, `check-schema`. `FRONTMATTER.schema.json` at workspace root (JSON Schema 2020-12). CI diff guard (`anchor frontmatter check-schema`) detects drift between FRONTMATTER.md and the schema.
+- **AENG-001** — `anchor apply` now bounds each move operation's rewrite scope to the deepest git-repo ancestor of the source path. Common-noun folder names (`workflows/`, `analysis/`, `evals/`, `reference/`) can be renamed inside one repo without rewriting unrelated occurrences in sibling repos. Out-of-scope files that hold fully-qualified workspace-relative paths to the moved location are still rewritten (inward-ref rule). Adds `src/core/context_scope.rs` with `ScopeResolver`, `scope_for_move`, `is_in_scope`, and `is_inward_ref`. Closes the 1/15 failure from the 2026-04-29 reference pass.
 
-### Added — AENG-002 — rollback now prints per-ref diagnostics matching anchor file validate format.
+### Added
+
+- **AENG-002** — Rollback now prints per-ref diagnostics matching `anchor file validate` output format: origin file, line number, the rewrite that failed (`old → new`), and the closest match if one exists. Removes detective work when a plan rolls back due to broken post-rewrite references.
+
+- **AENG-006** — `anchor frontmatter` subcommand family: `audit`, `migrate`, `normalize`, `add-required`, `check-schema`. Workspace-root `FRONTMATTER.schema.json` (JSON Schema 2020-12) is the machine-readable authority; `anchor frontmatter check-schema` is the CI diff guard that fails when the schema diverges from `FRONTMATTER.md`. Frontmatter management that previously required bespoke scripts is now a first-class subcommand.
+
+- **AENG-008** — After `anchor apply`, partial-path plain-text occurrences are now surfaced in the post-apply report: each file is listed with occurrence counts for path segments that were not automatically rewritten (e.g. `os-council` from a `councils/os-council` rename). Previously only full-path matches were reported; the predictable remainder was invisible.
 
 ## [0.5.0] — 2026-04-28
 
