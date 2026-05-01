@@ -2,7 +2,7 @@
 header = ""
 body = """
 {% if version -%}
-## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+## [{{ version | split(pat="-v") | last }}] - {{ timestamp | date(format="%Y-%m-%d") }}
 {% else -%}
 ## [Unreleased]
 {% endif -%}
@@ -11,7 +11,7 @@ body = """
 {% for commit in commits -%}
 - {% if commit.scope %}(**{{ commit.scope }}**) {% endif %}\
 {% if commit.breaking %}[**BREAKING**] {% endif %}\
-{{ commit.message | upper_first | regex_replace(pattern=" \\\\(#\\\\d+\\\\)$", replacement="") }}\
+{{ commit.message | upper_first }}\
 {% if commit.links %} ([{{ commit.links | map(attribute="text") | join(sep=", ") }}]({{ commit.links | first | get(key="href") }})){% endif %}
 {% endfor %}
 {% endfor %}
