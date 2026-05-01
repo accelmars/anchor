@@ -2,7 +2,8 @@
 changelog_config = "cliff.toml"
 # Disable crates.io publishing until CARGO_REGISTRY_TOKEN is configured.
 publish = false
-# release-plz creates both git tags and GitHub Releases (no cargo-dist on anchor).
-git_release_enable = true
+# cargo-dist owns GitHub Release creation (with binary assets).
+# release-plz creates git tags only; GitHub Releases are created by cargo-dist.
+git_release_enable = false
 # Enforce package-prefixed tags: accelmars-anchor-v{version}
 git_tag_name = "{{ package }}-v{{ version }}"
