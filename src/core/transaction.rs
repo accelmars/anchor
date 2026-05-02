@@ -20,7 +20,7 @@ use crate::infra::temp::{self, TempOpDir};
 use crate::model::{
     manifest::{self, Manifest},
     reference::RefForm,
-    rewrite::{RewriteEntry, RewritePlan},
+    rewrite::{ProseSkip, RewriteEntry, RewritePlan},
     CanonicalPath,
 };
 use std::path::Path;
@@ -268,6 +268,28 @@ fn rewrite_partial_backtick(target_raw: &str, src: &str, dst: &str) -> Option<St
     None
 }
 
+/// Returns true if `line` is a prose context where a backtick path is a historical mention.
+///
+/// Prose signals (AENG-010): arrow characters, path-movement keywords, adjacent `from`/`to`
+/// tokens. When any signal matches, the backtick ref on that line is classified as a
+/// prose-mention candidate and excluded from rewriting.
+///
+/// Scope: `.md` files only. Non-MD files never reach this heuristic.
+/// Anti-pattern guard: a `| table row | \`path\` |` line has no arrow/keyword — not matched.
+fn is_prose_line(line: &str) -> bool {
+    // Highest-confidence: arrow signals
+    if line.contains('→') || line.contains("->") {
+        return true;
+    }
+    let lower = line.to_lowercase();
+    lower.contains("moved")
+        || lower.contains("renamed")
+        || lower.contains("previously")
+        || lower.contains("was at")
+        || lower.contains("from `")
+        || lower.contains("to `")
+}
+
 /// PLAN phase: scan workspace, classify all references (A/B/C), build the rewrite plan.
 ///
 /// Algorithm from 04-TRANSACTIONS.md §PLAN Phase Detail:
@@ -288,13 +310,16 @@ fn rewrite_partial_backtick(target_raw: &str, src: &str, dst: &str) -> Option<St
 /// - `src`: canonical path of the file or directory being moved
 /// - `dst`: canonical path of the destination
 /// - `workspace_files`: pre-computed list of all `.md` files in the workspace
+/// - `allow_prose_rewrites`: when true, skip prose heuristic — all backtick refs become entries
 pub fn plan(
     workspace_root: &Path,
     src: &CanonicalPath,
     dst: &CanonicalPath,
     workspace_files: &[CanonicalPath],
+    allow_prose_rewrites: bool,
 ) -> Result<RewritePlan, TransactionError> {
     let mut entries: Vec<RewriteEntry> = Vec::new();
+    let mut prose_skips: Vec<ProseSkip> = Vec::new();
 
     // Context-scope resolver: built once per plan() call (not per reference).
     // Discovers repo roots at depth 1 under workspace_root to bound rewrite scope.
@@ -369,6 +394,32 @@ pub fn plan(
                 }
 
                 let old_text = content[reference.span.0..reference.span.1].to_string();
+
+                // AENG-010: prose heuristic — classify backtick refs on prose-signal lines
+                // as candidates, exclude from rewriting, report as [prose?] in diff --verbose.
+                if !allow_prose_rewrites {
+                    let line_start = content[..reference.span.0]
+                        .rfind('\n')
+                        .map_or(0, |p| p + 1);
+                    let line_end = content[reference.span.0..]
+                        .find('\n')
+                        .map_or(content.len(), |p| reference.span.0 + p);
+                    if is_prose_line(&content[line_start..line_end]) {
+                        let line_no = content[..reference.span.0]
+                            .chars()
+                            .filter(|&c| c == '\n')
+                            .count()
+                            + 1;
+                        prose_skips.push(ProseSkip {
+                            file: file_canonical.clone(),
+                            span: reference.span,
+                            line: line_no,
+                            old_text,
+                        });
+                        continue;
+                    }
+                }
+
                 let inner = &old_text[1..old_text.len() - 1]; // strip surrounding backticks
                 let had_slash = inner.ends_with('/');
                 let new_text = if has_anchor_prefix {
@@ -544,6 +595,7 @@ pub fn plan(
         src: src.clone(),
         dst: dst.clone(),
         entries,
+        prose_skips,
     })
 }
 
@@ -873,7 +925,7 @@ mod tests {
             "docs/README.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         // Must have exactly one RewriteEntry for docs/README.md (Case A)
         assert_eq!(plan.entries.len(), 1, "exactly one Case A entry expected");
@@ -920,7 +972,7 @@ mod tests {
             "projects/foo/notes.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         // Must have exactly one RewriteEntry for projects/foo/notes.md (Case B)
         assert_eq!(plan.entries.len(), 1, "exactly one Case B entry expected");
@@ -962,7 +1014,7 @@ mod tests {
             "projects/foo/b.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         // Case C: relative path between a.md and b.md is stable — NO entries
         assert!(
@@ -1093,7 +1145,7 @@ mod tests {
             "CONSTELLATION.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt_entries: Vec<_> = plan
             .entries
@@ -1129,7 +1181,7 @@ mod tests {
             "projects/foo/b.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         // Case C: source and target both inside src → no backtick rewrite entry
         let bt_entries: Vec<_> = plan
@@ -1166,7 +1218,7 @@ mod tests {
             "docs/overview.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt_entries: Vec<_> = plan
             .entries
@@ -1258,7 +1310,7 @@ mod tests {
             "README.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let href_entries: Vec<_> = plan
             .entries
@@ -1347,7 +1399,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/proposals/MKT-039.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1390,7 +1442,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/STATUS.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1433,7 +1485,7 @@ mod tests {
             "docs/overview.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1472,7 +1524,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/proposals/MKT-144.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1520,7 +1572,7 @@ mod tests {
             "accelmars-guild/contracts/SKW-002.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1561,7 +1613,7 @@ mod tests {
         let workspace_files =
             vec!["accelmars-guild/projects/skill-council/contracts/SKW-002.md".to_string()];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1613,7 +1665,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/CLAUDE.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1665,7 +1717,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/STATUS.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1707,7 +1759,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/CLAUDE.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1746,7 +1798,7 @@ mod tests {
             "docs/overview.md".to_string(),
         ];
 
-        let plan = plan(root, &src, &dst, &workspace_files).unwrap();
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
         let bt: Vec<_> = plan
             .entries
@@ -1794,6 +1846,7 @@ mod tests {
             src,
             dst,
             entries: vec![],
+            prose_skips: vec![],
         };
 
         // validate() must not return an error despite the href target not existing on disk
@@ -1802,6 +1855,211 @@ mod tests {
             result.is_ok(),
             "validate must skip HtmlHref refs, got: {:?}",
             result.err()
+        );
+    }
+
+    // ── AENG-010: Prose heuristic tests ──────────────────────────────────────
+
+    /// Backtick path on a `"moved from \`X\` → \`Y\`"` line is classified as prose.
+    /// The ref must be in prose_skips, NOT in entries.
+    /// Note: backtick parser only classifies spans whose content contains '/' as Backtick
+    /// refs — bare names are ignored. Tests use slash-containing paths to match reality.
+    #[test]
+    fn prose_arrow_line_skipped() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/old-schema".to_string();
+        let dst = "foundations/old-schema".to_string();
+
+        write_file(root, "projects/old-schema/README.md", "# Schema\n");
+        // Arrow line — should be classified as prose mention
+        write_file(
+            root,
+            "docs/HISTORY.md",
+            "moved from `projects/old-schema` → `foundations/old-schema` in 2026-04-29\n",
+        );
+
+        let workspace_files = vec![
+            "projects/old-schema/README.md".to_string(),
+            "docs/HISTORY.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        assert!(
+            plan.entries.is_empty(),
+            "arrow-line backtick ref must NOT be in entries, got: {:?}",
+            plan.entries
+        );
+        assert_eq!(
+            plan.prose_skips.len(),
+            1,
+            "arrow-line backtick ref must be in prose_skips"
+        );
+        assert_eq!(plan.prose_skips[0].file, "docs/HISTORY.md");
+        assert_eq!(plan.prose_skips[0].old_text, "`projects/old-schema`");
+    }
+
+    /// Backtick path on a line containing the keyword "previously" is classified as prose.
+    #[test]
+    fn prose_keyword_line_skipped() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/legacy-engine".to_string();
+        let dst = "foundations/legacy-engine".to_string();
+
+        write_file(root, "projects/legacy-engine/core.md", "# Core\n");
+        write_file(
+            root,
+            "docs/CHANGELOG.md",
+            "previously at `projects/legacy-engine`, now renamed.\n",
+        );
+
+        let workspace_files = vec![
+            "projects/legacy-engine/core.md".to_string(),
+            "docs/CHANGELOG.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        assert!(
+            plan.entries.is_empty(),
+            "'previously' keyword must cause prose skip, entries must be empty"
+        );
+        assert_eq!(
+            plan.prose_skips.len(),
+            1,
+            "'previously' keyword line must produce 1 prose_skip"
+        );
+        assert_eq!(
+            plan.prose_skips[0].old_text,
+            "`projects/legacy-engine`"
+        );
+    }
+
+    /// Backtick path in a `| Location | \`path\` |` table row is NOT prose.
+    /// Path Anchor table rows are structured references — must stay in entries.
+    #[test]
+    fn table_row_not_skipped() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/anchor-engine".to_string();
+        let dst = "foundations/anchor-engine".to_string();
+
+        write_file(root, "projects/anchor-engine/README.md", "# Anchor\n");
+        // Table row — no arrow, no keyword — must NOT be classified as prose
+        write_file(
+            root,
+            "contracts/WR-001.md",
+            "| anchor engine | `projects/anchor-engine` |\n",
+        );
+
+        let workspace_files = vec![
+            "projects/anchor-engine/README.md".to_string(),
+            "contracts/WR-001.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        assert!(
+            plan.prose_skips.is_empty(),
+            "table row must NOT produce a prose_skip; got: {:?}",
+            plan.prose_skips
+        );
+        assert_eq!(
+            plan.entries.len(),
+            1,
+            "table row backtick ref must be a live rewrite entry"
+        );
+        assert_eq!(plan.entries[0].old_text, "`projects/anchor-engine`");
+        assert_eq!(
+            plan.entries[0].new_text,
+            "`foundations/anchor-engine`"
+        );
+    }
+
+    /// With `allow_prose_rewrites=true`, an arrow-line backtick ref is treated as a live
+    /// ref — it goes to entries, NOT prose_skips. Reverts to pre-AENG-010 behavior.
+    #[test]
+    fn allow_prose_rewrites_overrides() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "projects/old-schema".to_string();
+        let dst = "foundations/old-schema".to_string();
+
+        write_file(root, "projects/old-schema/README.md", "# Schema\n");
+        write_file(
+            root,
+            "docs/HISTORY.md",
+            "moved from `projects/old-schema` → `foundations/old-schema` in 2026-04-29\n",
+        );
+
+        let workspace_files = vec![
+            "projects/old-schema/README.md".to_string(),
+            "docs/HISTORY.md".to_string(),
+        ];
+
+        // allow_prose_rewrites=true: all backtick refs become live entries
+        let plan = plan(root, &src, &dst, &workspace_files, true).unwrap();
+
+        assert!(
+            plan.prose_skips.is_empty(),
+            "allow_prose_rewrites=true must produce no prose_skips"
+        );
+        assert_eq!(
+            plan.entries.len(),
+            1,
+            "allow_prose_rewrites=true: arrow-line ref must be in entries"
+        );
+        assert_eq!(plan.entries[0].old_text, "`projects/old-schema`");
+    }
+
+    /// A `state_log` entry describing a past move is classified as prose.
+    /// Line: `  - "2026-04-29: moved from \`X\` to \`Y\`"`
+    #[test]
+    fn state_log_line_skipped() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        let src = "accelmars-workspace/FRONTMATTER.schema.json".to_string();
+        let dst = ".accelmars/canon/templates/accelmars-standard/frontmatter.schema.json"
+            .to_string();
+
+        // The src doesn't need to be a .md file; it just needs to exist for the move
+        write_file(root, "accelmars-workspace/FRONTMATTER.schema.json", "{}");
+
+        // state_log line in a contract — describes the past move historically
+        write_file(
+            root,
+            "contracts/AN-042.md",
+            "state_log:\n  - \"2026-04-29: moved from `accelmars-workspace/FRONTMATTER.schema.json` to `.accelmars/canon/templates/`\"\n",
+        );
+
+        let workspace_files = vec![
+            "contracts/AN-042.md".to_string(),
+        ];
+
+        let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        assert!(
+            plan.entries.is_empty(),
+            "state_log line must NOT be in entries; got: {:?}",
+            plan.entries
+        );
+        assert_eq!(
+            plan.prose_skips.len(),
+            1,
+            "state_log line must produce 1 prose_skip"
+        );
+        assert!(
+            plan.prose_skips[0]
+                .old_text
+                .contains("FRONTMATTER.schema.json"),
+            "prose_skip old_text must contain the old path"
         );
     }
 }

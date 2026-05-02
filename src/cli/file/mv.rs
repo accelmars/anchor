@@ -86,6 +86,7 @@ pub fn run(
     dst: &str,
     verbose: bool,
     format: Option<OutputFormat>,
+    allow_prose_rewrites: bool,
 ) -> Result<(), MvError> {
     // Flag mutual exclusion check at entry point — before any mutations
     if verbose && format.is_some() {
@@ -96,7 +97,15 @@ pub fn run(
 
     let workspace_root = workspace::find_workspace_root()?;
     let cwd = std::env::current_dir().ok();
-    run_impl(src, dst, verbose, format, &workspace_root, cwd.as_deref())
+    run_impl(
+        src,
+        dst,
+        verbose,
+        format,
+        allow_prose_rewrites,
+        &workspace_root,
+        cwd.as_deref(),
+    )
 }
 
 pub(crate) fn run_impl(
@@ -104,6 +113,7 @@ pub(crate) fn run_impl(
     dst: &str,
     verbose: bool,
     format: Option<OutputFormat>,
+    allow_prose_rewrites: bool,
     workspace_root: &std::path::Path,
     cwd: Option<&std::path::Path>,
 ) -> Result<(), MvError> {
@@ -183,6 +193,7 @@ pub(crate) fn run_impl(
         &src_canonical,
         &dst_canonical,
         &workspace_files,
+        allow_prose_rewrites,
     )?;
 
     // Counts needed for verbose/JSON output — available from PLAN phase
@@ -523,7 +534,7 @@ mod tests {
     /// `--verbose` and `--format json` together return an error before any filesystem operations.
     #[test]
     fn test_mv_verbose_and_json_errors() {
-        let result = run("anything", "anywhere", true, Some(OutputFormat::Json));
+        let result = run("anything", "anywhere", true, Some(OutputFormat::Json), false);
         assert!(
             matches!(result, Err(MvError::ConflictingFlags(_))),
             "both flags must return ConflictingFlags error"
@@ -555,6 +566,7 @@ mod tests {
             "new-dir",
             false,
             None,
+            false,
             root.path(),
             Some(&subdir),
         );
@@ -607,6 +619,7 @@ mod tests {
             "some-dst.md",
             false,
             None,
+            false,
             root.path(),
             Some(root.path()),
         );

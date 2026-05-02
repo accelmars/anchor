@@ -181,6 +181,9 @@ enum FileCommands {
         /// Output format for machine consumers (mutually exclusive with --verbose)
         #[arg(long, value_enum)]
         format: Option<OutputFormat>,
+        /// Rewrite all backtick path refs, including prose mentions (disables AENG-010 heuristic)
+        #[arg(long)]
+        allow_prose_rewrites: bool,
     },
     /// Detect all broken references in the workspace
     Validate {
@@ -274,7 +277,8 @@ fn main() {
                 dst,
                 verbose,
                 format,
-            } => match cli::file::mv::run(&src, &dst, verbose, format) {
+                allow_prose_rewrites,
+            } => match cli::file::mv::run(&src, &dst, verbose, format, allow_prose_rewrites) {
                 Ok(()) => 0,
                 Err(cli::file::mv::MvError::ConflictingFlags(_)) => {
                     eprintln!("error: --verbose and --format are mutually exclusive");
