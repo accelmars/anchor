@@ -2,6 +2,10 @@
 changelog_config = "cliff.toml"
 # Disable crates.io publishing until CARGO_REGISTRY_TOKEN is configured.
 publish = false
+# Without a registry baseline, release-plz cannot compute the next version.
+# git_only = true tells release-plz to use the latest git tag as the version baseline.
+# Required when publish = false. Standard: councils/os/decisions/260502-release-pipeline-standard.md
+git_only = true
 # cargo-dist owns GitHub Release creation (with binary assets).
 # release-plz creates git tags only; GitHub Releases are created by cargo-dist.
 git_release_enable = false
