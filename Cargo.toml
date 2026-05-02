@@ -34,3 +34,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
