@@ -150,7 +150,10 @@ impl AckedRefs {
 
     /// Load `file:line` entries from `.accelmars/anchor/acked`. Tolerates missing file.
     pub(crate) fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root.join(".accelmars").join("anchor").join("acked");
+        let path = workspace_root
+            .join(".accelmars")
+            .join("anchor")
+            .join("acked");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return Self::empty(),
@@ -173,7 +176,10 @@ impl AckedRefs {
         if new_lines.is_empty() {
             return;
         }
-        let path = workspace_root.join(".accelmars").join("anchor").join("acked");
+        let path = workspace_root
+            .join(".accelmars")
+            .join("anchor")
+            .join("acked");
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -310,10 +316,8 @@ mod acked_refs_tests {
         let ws = make_workspace();
         AckedRefs::save(ws.path(), &[("file.md".to_string(), 1)]);
         AckedRefs::save(ws.path(), &[("file.md".to_string(), 1)]);
-        let content = fs::read_to_string(
-            ws.path().join(".accelmars").join("anchor").join("acked"),
-        )
-        .unwrap();
+        let content =
+            fs::read_to_string(ws.path().join(".accelmars").join("anchor").join("acked")).unwrap();
         assert_eq!(
             content.lines().filter(|l| *l == "file.md:1").count(),
             1,

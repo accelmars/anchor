@@ -350,7 +350,10 @@ fn execute_move(
                 acked_refs
                     .iter()
                     .map(|b| {
-                        format!("⚠  Allowing known broken ref: {}:{}  (acked)", b.file, b.line)
+                        format!(
+                            "⚠  Allowing known broken ref: {}:{}  (acked)",
+                            b.file, b.line
+                        )
                     })
                     .collect()
             }
@@ -1320,8 +1323,14 @@ dst = "b.md"
             output.contains("⚠  Allowing known broken ref: b.md:1  (acked)"),
             "acked warning must appear in output; got:\n{output}"
         );
-        assert!(ws.path().join("b.md").exists(), "b.md must exist after apply");
-        assert!(!ws.path().join("a.md").exists(), "a.md must be gone after apply");
+        assert!(
+            ws.path().join("b.md").exists(),
+            "b.md must exist after apply"
+        );
+        assert!(
+            !ws.path().join("a.md").exists(),
+            "a.md must be gone after apply"
+        );
     }
 
     /// Apply with 1 broken ref but wrong file:line → rollback not suppressed.

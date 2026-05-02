@@ -163,10 +163,21 @@ pub(crate) fn run_impl<W: Write>(
 ///
 /// Mirrors the scan in `apply::rewrite_non_md_occurrences` without performing any writes.
 /// `plan_abs` is the canonicalized plan file path — excluded from results (matches apply behaviour).
-fn preview_non_md_rewrites(workspace_root: &Path, src: &str, plan_abs: Option<&Path>) -> Vec<String> {
+fn preview_non_md_rewrites(
+    workspace_root: &Path,
+    src: &str,
+    plan_abs: Option<&Path>,
+) -> Vec<String> {
     const EXTENSIONS: &[&str] = &["json", "yaml", "yml", "toml", "ts", "js", "py"];
     let mut results = Vec::new();
-    preview_non_md_in_dir(workspace_root, workspace_root, src, EXTENSIONS, plan_abs, &mut results);
+    preview_non_md_in_dir(
+        workspace_root,
+        workspace_root,
+        src,
+        EXTENSIONS,
+        plan_abs,
+        &mut results,
+    );
     results
 }
 
