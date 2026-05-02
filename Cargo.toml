@@ -1,6 +1,6 @@
 [package]
 name = "accelmars-anchor"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Reference-safe file operations for Markdown workspaces"
 license = "Apache-2.0"
