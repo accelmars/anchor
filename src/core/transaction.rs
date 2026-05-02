@@ -2017,18 +2017,17 @@ mod tests {
         let tmp = make_workspace();
         let root = tmp.path();
 
-        let src = "accelmars-workspace/FRONTMATTER.schema.json".to_string();
-        let dst =
-            ".accelmars/canon/templates/accelmars-standard/frontmatter.schema.json".to_string();
+        let src = "foundations/old-engine/schema.json".to_string();
+        let dst = "foundations/new-engine/schema.json".to_string();
 
         // The src doesn't need to be a .md file; it just needs to exist for the move
-        write_file(root, "accelmars-workspace/FRONTMATTER.schema.json", "{}");
+        write_file(root, "foundations/old-engine/schema.json", "{}");
 
         // state_log line in a contract — describes the past move historically
         write_file(
             root,
             "contracts/AN-042.md",
-            "state_log:\n  - \"2026-04-29: moved from `accelmars-workspace/FRONTMATTER.schema.json` to `.accelmars/canon/templates/`\"\n",
+            "state_log:\n  - \"2026-04-29: moved from `foundations/old-engine/schema.json` to `foundations/new-engine/schema.json`\"\n",
         );
 
         let workspace_files = vec!["contracts/AN-042.md".to_string()];
@@ -2048,7 +2047,7 @@ mod tests {
         assert!(
             plan.prose_skips[0]
                 .old_text
-                .contains("FRONTMATTER.schema.json"),
+                .contains("old-engine/schema.json"),
             "prose_skip old_text must contain the old path"
         );
     }
