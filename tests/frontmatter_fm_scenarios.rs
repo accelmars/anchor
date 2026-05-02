@@ -52,9 +52,10 @@ fn load_schema(root: &Path) -> SchemaRules {
 
 // ─── FM-001 ──────────────────────────────────────────────────────────────────
 
-/// FM-001: File with no frontmatter → audit reports it; migrate --to 1 does NOT insert FM.
+/// FM-001 / AENG-006-scaffold: File with no frontmatter → audit reports it; migrate --to 1
+/// scaffolds a minimal frontmatter block (schema_version: 1, title inferred from heading).
 #[test]
-fn fm001_no_frontmatter_audit_reports_migrate_skips() {
+fn fm001_no_frontmatter_audit_reports_migrate_scaffolds() {
     let ws = make_workspace();
     write_test_schema(ws.path());
 
@@ -74,7 +75,7 @@ fn fm001_no_frontmatter_audit_reports_migrate_skips() {
         "FM-001: must have NoFrontmatter finding; got: {findings:?}"
     );
 
-    // migrate --to 1 must NOT insert frontmatter into files that have none
+    // AENG-006-scaffold: migrate --to 1 now scaffolds a minimal block instead of skipping
     let exit_code = migrate::run(
         Some("no-fm.md"),
         1,
@@ -84,12 +85,25 @@ fn fm001_no_frontmatter_audit_reports_migrate_skips() {
     );
     assert_eq!(
         exit_code, 0,
-        "FM-001: migrate on no-FM file must exit 0 (no-op)"
+        "AENG-006-scaffold: migrate on no-FM file must exit 0"
     );
     let after = read_md(ws.path(), "no-fm.md");
     assert!(
-        !after.starts_with("---\n"),
-        "FM-001: migrate must not insert frontmatter into a file that had none; content: {after}"
+        after.starts_with("---\n"),
+        "AENG-006-scaffold: migrate must insert frontmatter block; content: {after}"
+    );
+    assert!(
+        after.contains("schema_version: 1"),
+        "AENG-006-scaffold: scaffolded block must contain schema_version: 1; content: {after}"
+    );
+    assert!(
+        after.contains("title: \"Title\""),
+        "AENG-006-scaffold: title must be inferred from # heading; content: {after}"
+    );
+    // Original body must be preserved after the frontmatter block
+    assert!(
+        after.contains("# Title\nBody text\n"),
+        "AENG-006-scaffold: original body must be preserved; content: {after}"
     );
 }
 

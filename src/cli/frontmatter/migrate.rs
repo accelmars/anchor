@@ -18,6 +18,8 @@ struct Transform {
     path: PathBuf,
     new_raw_fm: String,
     body: String,
+    /// Some(title) for scaffold transforms; None for migrations.
+    inferred_title: Option<String>,
 }
 
 /// Run `anchor frontmatter migrate --to N [PATH] [--apply]`. Returns exit code.
@@ -50,18 +52,29 @@ pub fn run(
             }
         };
 
-        // Only act on files that have frontmatter
-        let raw_fm = match parsed.raw_fm {
-            Some(ref s) => s.clone(),
-            None => continue, // FM-001: no frontmatter → migrate does not insert one
-        };
-
-        if let Some(new_fm) = compute_migration(&raw_fm, &parsed.frontmatter, to_version) {
-            transforms.push(Transform {
-                path: file_path.clone(),
-                new_raw_fm: new_fm,
-                body: parsed.body.clone(),
-            });
+        match parsed.raw_fm {
+            Some(ref raw_fm) => {
+                if let Some(new_fm) = compute_migration(raw_fm, &parsed.frontmatter, to_version) {
+                    transforms.push(Transform {
+                        path: file_path.clone(),
+                        new_raw_fm: new_fm,
+                        body: parsed.body.clone(),
+                        inferred_title: None,
+                    });
+                }
+            }
+            None => {
+                // FM-001: no frontmatter → scaffold inserted for --to 1; skip otherwise
+                if to_version == 1 {
+                    let title = infer_title(file_path, &parsed.body);
+                    transforms.push(Transform {
+                        path: file_path.clone(),
+                        new_raw_fm: scaffold_frontmatter(file_path, &parsed.body),
+                        body: parsed.body.clone(),
+                        inferred_title: Some(title),
+                    });
+                }
+            }
         }
     }
 
@@ -83,7 +96,14 @@ pub fn run(
         );
         println!("(run with --apply to write changes)");
         for t in &transforms {
-            println!("  {}", t.path.display());
+            if let Some(ref title) = t.inferred_title {
+                println!(
+                    "  [scaffold] {}  →  schema_version: 1, title: \"{title}\"",
+                    t.path.display()
+                );
+            } else {
+                println!("  {}", t.path.display());
+            }
         }
         return 0;
     }
@@ -174,6 +194,46 @@ fn insert_schema_version(raw_fm: &str, version: u32) -> String {
     result.join("\n")
 }
 
+/// Infer a display title from the file body or filename stem.
+///
+/// Extracts the first `# Heading`; falls back to filename stem (dashes → spaces, title-cased).
+fn infer_title(file_path: &Path, body: &str) -> String {
+    for line in body.lines() {
+        if let Some(heading) = line.strip_prefix("# ") {
+            let title = heading.trim();
+            if !title.is_empty() {
+                return title.to_string();
+            }
+        }
+    }
+    let stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled");
+    to_title_case(&stem.replace('-', " "))
+}
+
+/// Capitalize the first letter of each whitespace-delimited word.
+fn to_title_case(s: &str) -> String {
+    s.split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build the raw YAML scaffold block (no --- delimiters) for a file with no frontmatter.
+fn scaffold_frontmatter(file_path: &Path, body: &str) -> String {
+    let title = infer_title(file_path, body);
+    let escaped = title.replace('"', "\\\"");
+    format!("schema_version: 1\ntitle: \"{escaped}\"\n")
+}
+
 fn resolve_path(path: Option<&str>, cwd: &Path, workspace_root: &Path) -> PathBuf {
     match path {
         None => cwd.to_path_buf(),
@@ -245,5 +305,62 @@ mod tests {
             !result.contains("schema_version: 0"),
             "old version must be replaced; result: {result}"
         );
+    }
+
+    #[test]
+    fn scaffold_frontmatter_heading_present() {
+        let body = "# My Gap Document\n\nSome content here.\n";
+        let result = scaffold_frontmatter(Path::new("some-file.md"), body);
+        assert!(result.contains("schema_version: 1"), "result: {result}");
+        assert!(
+            result.contains("title: \"My Gap Document\""),
+            "result: {result}"
+        );
+        assert!(
+            !result.contains("---"),
+            "raw_fm must not contain delimiters; result: {result}"
+        );
+    }
+
+    #[test]
+    fn scaffold_frontmatter_no_heading_filename_fallback() {
+        let body = "Some content without a heading.\n";
+        let result = scaffold_frontmatter(Path::new("my-gap-file.md"), body);
+        assert!(result.contains("schema_version: 1"), "result: {result}");
+        assert!(
+            result.contains("title: \"My Gap File\""),
+            "result: {result}"
+        );
+    }
+
+    #[test]
+    fn existing_v0_frontmatter_migrates_not_scaffolded() {
+        let raw_fm = "title: Test\ntype: gap\n";
+        let fm: serde_yaml::Value = serde_yaml::from_str(raw_fm).unwrap();
+        let result = compute_migration(raw_fm, &Some(fm), 1);
+        assert!(
+            result.is_some(),
+            "v0 frontmatter should produce a migration"
+        );
+        let new_fm = result.unwrap();
+        assert!(new_fm.contains("schema_version: 1"), "new_fm: {new_fm}");
+        assert!(
+            !new_fm.contains("---"),
+            "raw_fm should not contain delimiters; new_fm: {new_fm}"
+        );
+    }
+
+    #[test]
+    fn dry_run_does_not_write_unfrontmattered_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.md");
+        let original = "# Test\n\nBody content.\n";
+        std::fs::write(&file_path, original).unwrap();
+
+        let exit_code = run(Some("test.md"), 1, false, dir.path(), dir.path());
+
+        assert_eq!(exit_code, 0);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, original, "dry-run must not modify files");
     }
 }
