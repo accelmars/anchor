@@ -2,7 +2,8 @@ use accelmars_anchor::cli;
 use accelmars_anchor::cli::file::refs::OutputFormat;
 use accelmars_anchor::cli::frontmatter::audit::AuditFormat;
 use accelmars_anchor::cli::frontmatter::{
-    run_add_required, run_audit, run_check_schema, run_migrate, run_normalize, FmOutputFormat,
+    run_add_required, run_audit, run_check_schema, run_migrate, run_migrate_plan, run_normalize,
+    FmOutputFormat,
 };
 
 use clap::{Parser, Subcommand};
@@ -98,13 +99,13 @@ enum FrontmatterCommands {
         #[arg(long)]
         schema: Option<String>,
     },
-    /// Apply schema_version migrations
+    /// Apply schema_version migrations or a TOML plan file
     Migrate {
-        /// Path to migrate (default: current directory)
+        /// Path to migrate or TOML plan file (default: current directory)
         path: Option<String>,
-        /// Target schema version
+        /// Target schema version (omit to use a plan file)
         #[arg(long = "to")]
-        to: u32,
+        to: Option<u32>,
         /// Apply changes (default: dry-run)
         #[arg(long)]
         apply: bool,
@@ -239,9 +240,18 @@ fn main() {
                 let fmt: AuditFormat = format.into();
                 run_audit(path.as_deref(), fmt, schema.as_deref(), strict)
             }
-            FrontmatterCommands::Migrate { path, to, apply } => {
-                run_migrate(path.as_deref(), to, apply)
-            }
+            FrontmatterCommands::Migrate { path, to, apply } => match (path.as_deref(), to) {
+                (Some(p), None) if p.ends_with(".toml") => run_migrate_plan(p, apply),
+                (_, Some(n)) => run_migrate(path.as_deref(), n, apply),
+                (Some(_), None) => {
+                    eprintln!("error: --to <VERSION> required for non-plan paths");
+                    1
+                }
+                (None, None) => {
+                    eprintln!("error: --to <VERSION> required");
+                    1
+                }
+            },
             FrontmatterCommands::Normalize {
                 path,
                 apply,

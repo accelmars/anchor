@@ -26,6 +26,7 @@ pub use add_required::run_from_env as run_add_required;
 pub use audit::run_from_env as run_audit;
 pub use check_schema::run_from_env as run_check_schema;
 pub use migrate::run_from_env as run_migrate;
+pub use migrate::run_plan_from_env as run_migrate_plan;
 pub use normalize::run_from_env as run_normalize;
 
 /// Output format shared across subcommands that support JSON output.
