@@ -95,7 +95,7 @@ pub(crate) fn run_impl<W: Write>(
 
                 // PLAN phase only — no apply/validate/commit
                 let rewrite_plan =
-                    match transaction::plan(workspace_root, src, dst, &workspace_files) {
+                    match transaction::plan(workspace_root, src, dst, &workspace_files, false) {
                         Ok(p) => p,
                         Err(e) => {
                             eprintln!("error: {e}");
@@ -110,15 +110,24 @@ pub(crate) fn run_impl<W: Write>(
                     .map(|e| e.file.as_str())
                     .collect::<HashSet<_>>()
                     .len();
+                let prose_count = rewrite_plan.prose_skips.len();
 
                 total_refs += ref_count;
                 total_files += file_count;
 
-                writeln!(
-                    out,
-                    "  move     {src} \u{2192} {dst}  ({ref_count} refs in {file_count} files)"
-                )
-                .ok();
+                if prose_count > 0 {
+                    writeln!(
+                        out,
+                        "  move     {src} \u{2192} {dst}  ({ref_count} refs in {file_count} files, +{prose_count} prose? skipped)"
+                    )
+                    .ok();
+                } else {
+                    writeln!(
+                        out,
+                        "  move     {src} \u{2192} {dst}  ({ref_count} refs in {file_count} files)"
+                    )
+                    .ok();
+                }
 
                 if verbose {
                     for entry in &rewrite_plan.entries {
@@ -128,6 +137,22 @@ pub(crate) fn run_impl<W: Write>(
                             entry.file, entry.old_text, entry.new_text
                         )
                         .ok();
+                    }
+                    if !rewrite_plan.prose_skips.is_empty() {
+                        writeln!(
+                            out,
+                            "    ## Prose-mention candidates ({} \u{2014} not rewritten)",
+                            prose_count
+                        )
+                        .ok();
+                        for skip in &rewrite_plan.prose_skips {
+                            writeln!(
+                                out,
+                                "    [prose?]  {}:{}  {}",
+                                skip.file, skip.line, skip.old_text
+                            )
+                            .ok();
+                        }
                     }
                     let non_md_paths =
                         preview_non_md_rewrites(workspace_root, src, plan_abs.as_deref());

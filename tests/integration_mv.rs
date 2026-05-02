@@ -68,7 +68,13 @@ fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
         }
     };
 
-    let plan = match transaction::plan(root, &src_canonical, &dst_canonical, &workspace_files) {
+    let plan = match transaction::plan(
+        root,
+        &src_canonical,
+        &dst_canonical,
+        &workspace_files,
+        false,
+    ) {
         Ok(p) => p,
         Err(e) => {
             drop(lock_guard);
@@ -267,7 +273,7 @@ fn test_apply_originals_not_touched() {
 
     let lock_guard = lock::acquire_lock(root, "file mv b.md subdir/b.md").unwrap();
     let workspace_files = scanner::scan_workspace(root).unwrap();
-    let plan = transaction::plan(root, &src, &dst, &workspace_files).unwrap();
+    let plan = transaction::plan(root, &src, &dst, &workspace_files, false).unwrap();
 
     let op_dir = temp::create_op_dir(root).unwrap();
     let mut manifest = Manifest {

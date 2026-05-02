@@ -258,6 +258,7 @@ fn execute_move(
         &src_canonical,
         &dst_canonical,
         &workspace_files,
+        false, // apply always uses prose heuristic (AENG-010)
     ) {
         Ok(p) => p,
         Err(e) => {

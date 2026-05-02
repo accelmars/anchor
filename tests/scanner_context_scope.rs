@@ -91,7 +91,7 @@ fn test_cross_repo_workflows_boundary_md_not_rewritten() {
         "accelmars-workspace/CONSTELLATION.md".to_string(),
     ];
 
-    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
     // BOUNDARY.md must produce no rewrite entries — out-of-scope bare-name match
     let boundary_entries: Vec<_> = rewrite_plan
@@ -352,7 +352,7 @@ fn test_inward_ref_from_out_of_scope_file_is_rewritten() {
         "accelmars-codex/BOUNDARY.md".to_string(),
     ];
 
-    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
     // CONTRACTS.md must receive a rewrite entry (inward ref via $(anchor root)/ path)
     let contract_entries: Vec<_> = rewrite_plan
@@ -560,7 +560,7 @@ fn test_anchorscope_cross_foundation_prose_not_rewritten() {
         "accelmars-workspace/foundations/gateway-engine/CLAUDE.md".to_string(),
     ];
 
-    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
     // Sibling-foundation gap doc must produce no rewrite entries
     let gap_entries: Vec<_> = rewrite_plan
@@ -629,7 +629,7 @@ fn test_no_anchorscope_falls_back_to_v060_repo_scope() {
         "accelmars-workspace/foundations/anchor-engine/CLAUDE.md".to_string(),
     ];
 
-    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 
     // The full-path ref to gateway-engine's workflows is a legitimate rewrite even from
     // a sibling foundation (it directly points at the moved location).
