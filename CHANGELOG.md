@@ -1,6 +1,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-03
+
 ### Added
 - (**AENG-010**) `anchor file mv` now detects backtick path refs in prose context (arrow lines `→`/`->`, `state_log` entries, moved/renamed/previously keywords) and skips them; skipped candidates shown as `[prose?]` entries in `anchor diff --verbose` and counted `(+N prose? skipped)` in non-verbose output; `--allow-prose-rewrites` flag reverts to previous behavior (rewrite all backtick refs).
 - (**AENG-012**) `anchor frontmatter add-required --batch` reads `inference-rules.toml` from the active template and auto-fills engine-class fields by folder position (`provider: <stem>` in `15-providers/`, `type: eval` + `pass_status: NOT_RUN` from constants in `31-evals/`). Fill-if-absent only — existing values are never overwritten. Template absent or unparseable: inference silently skipped.
