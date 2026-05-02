@@ -34,6 +34,12 @@ enum Commands {
     Apply {
         /// Path to the plan file (.toml)
         plan: String,
+        /// Acknowledge a known broken ref: <file>:<line> (repeatable)
+        #[arg(long = "allow-broken", value_name = "FILE:LINE")]
+        allow_broken: Vec<String>,
+        /// Acknowledge broken refs from a file containing one FILE:LINE per line
+        #[arg(long = "allow-broken-from", value_name = "PATH")]
+        allow_broken_from: Option<String>,
     },
     /// Preview what a plan file will do — no changes made
     Diff {
@@ -202,7 +208,15 @@ fn main() {
                 1
             }
         },
-        Commands::Apply { plan } => process::exit(cli::apply::run(&plan)),
+        Commands::Apply {
+            plan,
+            allow_broken,
+            allow_broken_from,
+        } => process::exit(cli::apply::run(
+            &plan,
+            &allow_broken,
+            allow_broken_from.as_deref(),
+        )),
         Commands::Diff { plan, verbose } => process::exit(cli::diff::run(&plan, verbose)),
         Commands::Recover => process::exit(cli::recover::run()),
         Commands::Root => cli::root::run(),
