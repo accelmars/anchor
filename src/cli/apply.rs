@@ -5,7 +5,10 @@
 // Per-op lock — same as file mv. Already-committed moves are NOT rolled back on failure.
 
 use crate::apply::post_apply_scan::{format_plain_text_warning, scan_partial_plain_text};
-use crate::core::{scanner, transaction};
+use crate::core::{
+    acked::{parse_ref_line, AckedRefs},
+    scanner, transaction,
+};
 use crate::infra::{lock, temp, workspace};
 use crate::model::{
     manifest::Manifest,
@@ -16,9 +19,9 @@ use std::path::Path;
 
 /// Execute `anchor apply <plan.toml>`.
 ///
-/// Discovers workspace root, then delegates to `run_impl`.
+/// Discovers workspace root, builds acked set from disk + flags, delegates to `run_impl`.
 /// Returns exit code: 0 = success, 1 = plan/preflight/op error, 2 = workspace/infra error.
-pub fn run(plan_path: &str) -> i32 {
+pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&str>) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -26,14 +29,61 @@ pub fn run(plan_path: &str) -> i32 {
             return 2;
         }
     };
-    run_impl(plan_path, &workspace_root, &mut std::io::stdout())
+
+    // Load acked refs from disk, then extend with explicitly specified refs.
+    let mut acked = AckedRefs::load(&workspace_root);
+    let mut newly_specified: Vec<(String, usize)> = Vec::new();
+
+    for s in allow_broken {
+        match parse_ref_line(s) {
+            Some((f, l)) => {
+                acked.add(&f, l);
+                newly_specified.push((f, l));
+            }
+            None => {
+                eprintln!("warning: invalid --allow-broken value: {s} (expected file:line)");
+            }
+        }
+    }
+
+    // --allow-broken-from resolves via std::fs::read_to_string — CWD-relative by default.
+    if let Some(from_path) = allow_broken_from {
+        match std::fs::read_to_string(from_path) {
+            Ok(content) => {
+                for line in content.lines() {
+                    if let Some((f, l)) = parse_ref_line(line) {
+                        acked.add(&f, l);
+                        newly_specified.push((f, l));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error reading --allow-broken-from {from_path}: {e}");
+                return 1;
+            }
+        }
+    }
+
+    let exit_code = run_impl(plan_path, &workspace_root, &mut std::io::stdout(), &acked);
+
+    // Persist newly specified refs only on success.
+    if exit_code == 0 && !newly_specified.is_empty() {
+        AckedRefs::save(&workspace_root, &newly_specified);
+    }
+
+    exit_code
 }
 
 /// Core implementation — takes explicit workspace root and writer for testability.
 ///
 /// Read: parse plan, scan workspace, pre-flight all Move ops, then execute sequentially.
 /// On op failure: print stopped message and return 1 — do NOT roll back already-committed moves.
-pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &mut W) -> i32 {
+pub(crate) fn run_impl<W: Write>(
+    plan_path: &str,
+    workspace_root: &Path,
+    out: &mut W,
+    acked: &AckedRefs,
+) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
     let plan = match plan::load_plan(path) {
@@ -88,9 +138,12 @@ pub(crate) fn run_impl<W: Write>(plan_path: &str, workspace_root: &Path, out: &m
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
             Op::Move { src, dst } => {
-                match execute_move(workspace_root, src, dst, plan_file_abs.as_deref()) {
-                    Ok((refs_rewritten, files_touched)) => {
+                match execute_move(workspace_root, src, dst, plan_file_abs.as_deref(), acked) {
+                    Ok((refs_rewritten, files_touched, acked_warnings)) => {
                         completed += 1;
+                        for w in &acked_warnings {
+                            writeln!(out, "{w}").ok();
+                        }
                         writeln!(
                             out,
                             "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
@@ -175,7 +228,8 @@ fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
 
 /// Execute a single Move operation via full PLAN → APPLY → VALIDATE → COMMIT transaction.
 ///
-/// Returns (refs_rewritten, files_touched) on success.
+/// Returns `(refs_rewritten, files_touched, acked_warnings)` on success.
+/// `acked_warnings` contains `⚠  Allowing…` lines for broken refs suppressed by the acked set.
 ///
 /// IMPORTANT: Does NOT call `cli::file::mv::run` — that function uses `process::exit`
 /// internally, which would terminate the entire apply loop. Transaction functions are
@@ -185,7 +239,8 @@ fn execute_move(
     src: &str,
     dst: &str,
     plan_file_abs: Option<&std::path::Path>,
-) -> Result<(usize, usize), String> {
+    acked: &AckedRefs,
+) -> Result<(usize, usize, Vec<String>), String> {
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
     let lock_guard =
@@ -266,27 +321,44 @@ fn execute_move(
         return Err(format!("apply error: {e}"));
     }
 
-    // VALIDATE
-    match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
-        Ok(()) => {}
-        Err(transaction::ValidationError::BrokenRefs(broken)) => {
-            let capped = &workspace_files[..200.min(workspace_files.len())];
-            eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", broken.len());
-            eprintln!();
-            for b in &broken {
-                eprint!(
-                    "{}",
-                    crate::core::diagnostics::format_broken_ref(&b.file, b.line, &b.target, capped,)
-                );
+    // VALIDATE — filter broken refs against acked set.
+    let acked_warnings: Vec<String> =
+        match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
+            Ok(()) => vec![],
+            Err(transaction::ValidationError::BrokenRefs(broken)) => {
+                let (acked_refs, unacked_refs): (Vec<_>, Vec<_>) = broken
+                    .into_iter()
+                    .partition(|b| acked.contains(&b.file, b.line));
+
+                if !unacked_refs.is_empty() {
+                    let capped = &workspace_files[..200.min(workspace_files.len())];
+                    eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", unacked_refs.len());
+                    eprintln!();
+                    for b in &unacked_refs {
+                        eprint!(
+                            "{}",
+                            crate::core::diagnostics::format_broken_ref(
+                                &b.file, b.line, &b.target, capped,
+                            )
+                        );
+                    }
+                    transaction::rollback(&op_dir, lock_guard);
+                    return Err("rolled back.".to_string());
+                }
+
+                // All broken refs are acked — collect warnings and proceed to COMMIT.
+                acked_refs
+                    .iter()
+                    .map(|b| {
+                        format!("⚠  Allowing known broken ref: {}:{}  (acked)", b.file, b.line)
+                    })
+                    .collect()
             }
-            transaction::rollback(&op_dir, lock_guard);
-            return Err("rolled back.".to_string());
-        }
-        Err(transaction::ValidationError::Io(e)) => {
-            transaction::rollback(&op_dir, lock_guard);
-            return Err(format!("validate error: {e}"));
-        }
-    }
+            Err(transaction::ValidationError::Io(e)) => {
+                transaction::rollback(&op_dir, lock_guard);
+                return Err(format!("validate error: {e}"));
+            }
+        };
 
     // COMMIT — lock_guard consumed here (released via Drop)
     transaction::commit(
@@ -337,7 +409,7 @@ fn execute_move(
         eprintln!("{warning}");
     }
 
-    Ok((refs_rewritten, files_touched))
+    Ok((refs_rewritten, files_touched, acked_warnings))
 }
 
 /// Walk `workspace_root` and count text occurrences of `needle` in non-.md files.
@@ -548,6 +620,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::acked::AckedRefs;
     use std::fs;
     use tempfile::TempDir;
 
@@ -590,7 +663,7 @@ dst = "foundations/moved.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_ne!(code, 0, "missing src must return non-zero exit code");
 
         // Workspace must be unchanged: dst not created, original file still exists
@@ -657,7 +730,7 @@ dst = "src/b.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_ne!(code, 0, "dst-exists must return non-zero exit code");
 
         // src must still exist — no ops executed
@@ -685,7 +758,7 @@ path = "existing-dir"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(
             code, 0,
             "CreateDir with existing path must exit 0 (idempotent)"
@@ -722,7 +795,7 @@ dst = "c.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_ne!(code, 0, "second op must fail — non-zero exit code");
 
         let output = String::from_utf8(out).unwrap();
@@ -766,7 +839,7 @@ dst = "docs/destination.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(code, 0, "successful plan must exit 0");
 
         let output = String::from_utf8(out).unwrap();
@@ -797,7 +870,7 @@ dst = "src/renamed.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(code, 0, "must succeed");
 
         let output = String::from_utf8(out).unwrap();
@@ -854,7 +927,7 @@ dst = "src/renamed.md"
 "#,
         );
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(code, 0, "move with refs must succeed");
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -980,7 +1053,7 @@ dst = "foundations/beta-engine"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(
             code,
             0,
@@ -1024,7 +1097,7 @@ dst = "other/b"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(
             code,
             0,
@@ -1068,7 +1141,7 @@ dst = "projects/renamed.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(code, 0, "must succeed");
 
         // src must be gone; dst must exist
@@ -1113,7 +1186,7 @@ dst = "docs/destination.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out);
+        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
         assert_eq!(code, 1, "re-apply must return exit 1");
 
         // stderr capture: use a buffer-based approach via is_already_applied helper directly
@@ -1162,7 +1235,12 @@ dst = "docs/destination.md"
         fs::write(&plan_path, plan_content).unwrap();
 
         let mut out = Vec::new();
-        let code = run_impl(plan_path.to_str().unwrap(), ws.path(), &mut out);
+        let code = run_impl(
+            plan_path.to_str().unwrap(),
+            ws.path(),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "plan must succeed");
 
         let plan_after = fs::read_to_string(&plan_path).unwrap();
@@ -1185,7 +1263,12 @@ dst = "docs/destination.md"
         fs::write(&plan_path, plan_content).unwrap();
 
         let mut out = Vec::new();
-        let code = run_impl(plan_path.to_str().unwrap(), ws.path(), &mut out);
+        let code = run_impl(
+            plan_path.to_str().unwrap(),
+            ws.path(),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "plan must succeed");
 
         // plan file is unchanged
@@ -1201,6 +1284,148 @@ dst = "docs/destination.md"
         assert!(
             !config_after.contains("a.md"),
             "old path must be gone from config.toml; got:\n{config_after}"
+        );
+    }
+
+    // ── AENG-003 — --allow-broken acked-refs tests ────────────────────────────
+
+    /// Apply with 1 broken ref + matching acked entry → apply succeeds, warning in output.
+    ///
+    /// a.md references nonexistent.md (broken). Moving a.md → b.md triggers Case B rewrite;
+    /// validate finds b.md:1 → nonexistent.md broken. Acking b.md:1 suppresses the rollback.
+    #[test]
+    fn test_allow_broken_acked_suppresses_rollback() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a.md", "[broken](nonexistent.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "a.md"
+dst = "b.md"
+"#,
+        );
+
+        let mut acked = AckedRefs::empty();
+        acked.add("b.md", 1);
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        assert_eq!(code, 0, "acked broken ref must not cause rollback");
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("⚠  Allowing known broken ref: b.md:1  (acked)"),
+            "acked warning must appear in output; got:\n{output}"
+        );
+        assert!(ws.path().join("b.md").exists(), "b.md must exist after apply");
+        assert!(!ws.path().join("a.md").exists(), "a.md must be gone after apply");
+    }
+
+    /// Apply with 1 broken ref but wrong file:line → rollback not suppressed.
+    #[test]
+    fn test_allow_broken_wrong_ref_still_rolls_back() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a.md", "[broken](nonexistent.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "a.md"
+dst = "b.md"
+"#,
+        );
+
+        let mut acked = AckedRefs::empty();
+        acked.add("b.md", 999); // wrong line number — does not match b.md:1
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        assert_ne!(code, 0, "wrong file:line must not suppress rollback");
+        assert!(
+            !ws.path().join("b.md").exists(),
+            "rollback must have occurred — b.md must not exist"
+        );
+        assert!(
+            ws.path().join("a.md").exists(),
+            "rollback must restore a.md"
+        );
+    }
+
+    /// Persistence: acked ref saved to disk then loaded on second run → apply succeeds without flag.
+    #[test]
+    fn test_allow_broken_persisted_applies_on_reload() {
+        let ws = make_workspace();
+        write_file(ws.path(), "a.md", "[broken](nonexistent.md)\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "a.md"
+dst = "b.md"
+"#,
+        );
+
+        // Simulate a prior --allow-broken run that persisted the acked ref to disk.
+        AckedRefs::save(ws.path(), &[("b.md".to_string(), 1)]);
+
+        // Second run: no flags — load acked refs from disk only.
+        let acked = AckedRefs::load(ws.path());
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        assert_eq!(code, 0, "acked ref loaded from disk must suppress rollback");
+        assert!(
+            ws.path().join("b.md").exists(),
+            "b.md must exist after apply"
+        );
+        assert!(
+            !ws.path().join("a.md").exists(),
+            "a.md must be gone after apply"
+        );
+    }
+
+    /// Partial ack: 2 broken refs, only 1 acked → rollback (partial ack does not suppress).
+    #[test]
+    fn test_allow_broken_partial_ack_still_rolls_back() {
+        let ws = make_workspace();
+        // Two broken refs on lines 1 and 2
+        write_file(
+            ws.path(),
+            "a.md",
+            "[broken1](nonexistent1.md)\n[broken2](nonexistent2.md)\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "a.md"
+dst = "b.md"
+"#,
+        );
+
+        // Only ack line 1 — line 2 remains unacked.
+        let mut acked = AckedRefs::empty();
+        acked.add("b.md", 1);
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        assert_ne!(code, 0, "partial ack must not suppress rollback");
+        assert!(
+            !ws.path().join("b.md").exists(),
+            "rollback must have occurred — b.md must not exist"
+        );
+        assert!(
+            ws.path().join("a.md").exists(),
+            "rollback must restore a.md"
         );
     }
 }

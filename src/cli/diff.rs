@@ -7,6 +7,7 @@ use crate::core::{scanner, transaction};
 use crate::infra::workspace;
 use crate::model::plan::{self, Op};
 use std::collections::HashSet;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 
@@ -60,6 +61,9 @@ pub(crate) fn run_impl<W: Write>(
         writeln!(out, "{desc}").ok();
         writeln!(out).ok();
     }
+
+    // Canonicalize once — used to exclude the plan file from non-MD preview (mirrors apply).
+    let plan_abs = std::fs::canonicalize(Path::new(plan_path)).ok();
 
     let mut total_refs = 0usize;
     let mut total_files = 0usize;
@@ -116,7 +120,7 @@ pub(crate) fn run_impl<W: Write>(
                 )
                 .ok();
 
-                if verbose && ref_count > 0 {
+                if verbose {
                     for entry in &rewrite_plan.entries {
                         writeln!(
                             out,
@@ -124,6 +128,19 @@ pub(crate) fn run_impl<W: Write>(
                             entry.file, entry.old_text, entry.new_text
                         )
                         .ok();
+                    }
+                    let non_md_paths =
+                        preview_non_md_rewrites(workspace_root, src, plan_abs.as_deref());
+                    if !non_md_paths.is_empty() {
+                        writeln!(
+                            out,
+                            "    ## Non-markdown rewrites ({} file(s))",
+                            non_md_paths.len()
+                        )
+                        .ok();
+                        for path in &non_md_paths {
+                            writeln!(out, "    {path}  `{src}` \u{2192} `{dst}`").ok();
+                        }
                     }
                 }
             }
@@ -140,6 +157,63 @@ pub(crate) fn run_impl<W: Write>(
     writeln!(out, "Run `anchor apply {plan_path}` to execute.").ok();
 
     0
+}
+
+/// Read-only preview of non-MD files that would be rewritten if `src` were moved to `dst`.
+///
+/// Mirrors the scan in `apply::rewrite_non_md_occurrences` without performing any writes.
+/// `plan_abs` is the canonicalized plan file path — excluded from results (matches apply behaviour).
+fn preview_non_md_rewrites(workspace_root: &Path, src: &str, plan_abs: Option<&Path>) -> Vec<String> {
+    const EXTENSIONS: &[&str] = &["json", "yaml", "yml", "toml", "ts", "js", "py"];
+    let mut results = Vec::new();
+    preview_non_md_in_dir(workspace_root, workspace_root, src, EXTENSIONS, plan_abs, &mut results);
+    results
+}
+
+fn preview_non_md_in_dir(
+    workspace_root: &Path,
+    dir: &Path,
+    src: &str,
+    extensions: &[&str],
+    plan_abs: Option<&Path>,
+    results: &mut Vec<String>,
+) {
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.components().any(|c| c.as_os_str() == ".accelmars") {
+            continue;
+        }
+        // Use entry.file_type() to avoid following symlinks (Rule 12)
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            preview_non_md_in_dir(workspace_root, &path, src, extensions, plan_abs, results);
+            continue;
+        }
+        if let Some(plan_path) = plan_abs {
+            if let Ok(canonical) = fs::canonicalize(&path) {
+                if canonical == plan_path {
+                    continue;
+                }
+            }
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !extensions.contains(&ext) {
+            continue;
+        }
+        if ext == "toml" && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if content.contains(src) {
+            if let Ok(rel) = path.strip_prefix(workspace_root) {
+                results.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
 }
 
 /// Return the top matching path from `candidates` for the given `missing` path.
@@ -507,6 +581,85 @@ path = "new-dir"
         assert!(
             output.contains("anchor apply"),
             "hint line must contain 'anchor apply'; got:\n{output}"
+        );
+    }
+
+    // ── AENG-004: non-MD rewrites in --verbose (AMU-003) ────────────────────
+
+    /// --verbose lists non-MD files that would be rewritten, with path and old/new detail.
+    #[test]
+    fn test_diff_verbose_non_md_rewrite_listed() {
+        let ws = make_workspace();
+        write_file(ws.path(), "src/target.md", "# Target\n");
+        // A TOML config referencing the path being moved
+        write_file(
+            ws.path(),
+            "config/settings.toml",
+            "engine = \"src/target.md\"\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/target.md"
+dst = "src/renamed.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, true);
+        assert_eq!(code, 0);
+        let output = String::from_utf8(out).unwrap();
+
+        assert!(
+            output.contains("config/settings.toml"),
+            "--verbose must list the TOML file in non-MD section; got:\n{output}"
+        );
+        assert!(
+            output.contains("Non-markdown rewrites"),
+            "--verbose must show 'Non-markdown rewrites' section header; got:\n{output}"
+        );
+        assert!(
+            output.contains("`src/target.md`") && output.contains("`src/renamed.md`"),
+            "--verbose must show old/new path detail for non-MD file; got:\n{output}"
+        );
+    }
+
+    /// Without --verbose, the non-MD section does not appear (non-verbose output unchanged).
+    #[test]
+    fn test_diff_non_verbose_no_non_md_section() {
+        let ws = make_workspace();
+        write_file(ws.path(), "src/target.md", "# Target\n");
+        write_file(
+            ws.path(),
+            "config/settings.toml",
+            "engine = \"src/target.md\"\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "src/target.md"
+dst = "src/renamed.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(&plan_path, ws.path(), &mut out, false);
+        assert_eq!(code, 0);
+        let output = String::from_utf8(out).unwrap();
+
+        assert!(
+            !output.contains("Non-markdown rewrites"),
+            "non-verbose must not show Non-markdown rewrites section; got:\n{output}"
+        );
+        assert!(
+            !output.contains("config/settings.toml"),
+            "non-verbose must not list non-MD files; got:\n{output}"
         );
     }
 

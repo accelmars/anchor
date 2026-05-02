@@ -2,6 +2,8 @@
 ## [Unreleased]
 
 ### Added
+- (**AENG-003**) `anchor apply --allow-broken=<file>:<line>` (repeatable) and `--allow-broken-from=<path>` suppress acknowledged false-positive rollbacks; acked refs persist to `.accelmars/anchor/acked` on success.
+- (**AENG-004**) `anchor diff --verbose` now lists non-MD file rewrites with file path and detail (`path/to/config.toml  \`old\` → \`new\``), grouped under a `## Non-markdown rewrites (N file(s))` section after MD entries. Non-verbose output unchanged.
 - (**AENG-006-scaffold**) `anchor frontmatter migrate --to 1` now scaffolds files with no frontmatter; title inferred from first `# Heading` or filename stem.
 
 ### Bug Fixes
