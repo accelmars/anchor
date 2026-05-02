@@ -13,6 +13,7 @@
 pub mod add_required;
 pub mod audit;
 pub mod check_schema;
+pub(crate) mod inference;
 pub mod migrate;
 pub mod normalize;
 pub(crate) mod parser;
