@@ -113,7 +113,12 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn rule(folder_prefix: &str, field: &str, strategy: &str, value: Option<&str>) -> InferenceRule {
+    fn rule(
+        folder_prefix: &str,
+        field: &str,
+        strategy: &str,
+        value: Option<&str>,
+    ) -> InferenceRule {
         InferenceRule {
             folder_prefix: folder_prefix.to_string(),
             field: field.to_string(),
@@ -153,7 +158,12 @@ mod tests {
 
     #[test]
     fn constant_rule_fills_absent_field() {
-        let r = rules(vec![rule("31-evals", "pass_status", "constant", Some("NOT_RUN"))]);
+        let r = rules(vec![rule(
+            "31-evals",
+            "pass_status",
+            "constant",
+            Some("NOT_RUN"),
+        )]);
         let path = PathBuf::from("31-evals/eval-001.md");
         let result = r.apply(empty_fm(), &path);
         assert_eq!(result["pass_status"].as_str(), Some("NOT_RUN"));
