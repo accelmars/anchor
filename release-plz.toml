@@ -7,3 +7,13 @@ publish = false
 git_release_enable = false
 # Enforce package-prefixed tags: accelmars-anchor-v{version}
 git_tag_name = "{{ package }}-v{{ version }}"
+
+# Per-package overrides
+# changelog_update = false: cliff (root CHANGELOG.md) is the single source of truth.
+# Without this override, release-plz manages a per-package CHANGELOG separately
+# from cliff's root CHANGELOG.md; auto-merge triggers another release-plz scan,
+# which finds the per-package file out of sync, creates another release PR — infinite loop.
+# Decision: 260501-public-repo-release-pipeline.md
+[[package]]
+name = "accelmars-anchor"
+changelog_update = false
