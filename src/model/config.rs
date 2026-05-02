@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub schema_version: String,
+    /// Glob patterns declaring scope boundaries for reference rewrites.
+    /// Supports `prefix/*` (direct children) and literal paths. Absent key → `None` → Repo fallback.
+    #[serde(default)]
+    pub scope_boundaries: Option<Vec<String>>,
 }
 
 impl WorkspaceConfig {
@@ -15,6 +19,7 @@ impl WorkspaceConfig {
     pub fn phase1() -> Self {
         Self {
             schema_version: "1".to_string(),
+            scope_boundaries: None,
         }
     }
 }

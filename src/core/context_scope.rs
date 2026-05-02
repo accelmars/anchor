@@ -6,8 +6,8 @@
 // mentions in unrelated repos like `org-sibling-repo/`.
 //
 // Domain hierarchy (deepest match wins):
-//   1. `.anchorscope` boundaries — directories containing a `.anchorscope` marker file
-//      (e.g. each foundation root inside a multi-foundation monorepo)
+//   1. `scope_boundaries` from `.accelmars/anchor/config.json` — workspace-declared boundary
+//      paths (e.g. `["foundations/*"]` expands to each foundation root in a monorepo)
 //   2. Repo roots — directories at depth 1 under workspace_root that contain `.git`
 //   3. Workspace root (fallback when neither applies)
 //
@@ -16,6 +16,7 @@
 // These are rewritten regardless of scope. Short suffix matches (e.g. bare `workflows`) from
 // out-of-scope files are the false-positive class this module prevents.
 
+use crate::model::config::WorkspaceConfig;
 use crate::model::CanonicalPath;
 use std::path::Path;
 
@@ -26,7 +27,7 @@ pub(crate) enum RewriteDomain {
     Workspace,
     /// A git repository root at depth 1 under the workspace root.
     Repo(CanonicalPath),
-    /// A workspace-defined sub-boundary, discovered via a `.anchorscope` marker file.
+    /// A workspace-declared sub-boundary from `scope_boundaries` in config.json.
     Defined(CanonicalPath),
 }
 
@@ -38,24 +39,24 @@ pub(crate) struct Scope {
     pub root: CanonicalPath,
 }
 
-/// Caches repo-root and `.anchorscope` topology for one `plan()` call.
+/// Caches repo-root and scope-boundary topology for one `plan()` call.
 ///
 /// Created once per `plan()` invocation (before the `workspace_files` loop) so that
 /// `scope_for_move` and `is_in_scope` don't re-scan the filesystem per reference.
 pub(crate) struct ScopeResolver {
     repo_roots: Vec<CanonicalPath>,
-    /// Workspace-relative canonical paths of directories containing `.anchorscope`,
+    /// Workspace-relative canonical paths of declared scope boundaries,
     /// sorted by descending length so the deepest (most specific) ancestor matches first.
     scope_boundaries: Vec<CanonicalPath>,
 }
 
 impl ScopeResolver {
     /// Build a resolver by scanning depth-1 subdirectories of `workspace_root` for `.git`,
-    /// and recursively discovering `.anchorscope` markers.
+    /// and loading scope boundaries from `.accelmars/anchor/config.json`.
     pub(crate) fn new(workspace_root: &Path) -> Self {
         Self {
             repo_roots: discover_repo_roots(workspace_root),
-            scope_boundaries: discover_scope_boundaries(workspace_root),
+            scope_boundaries: load_boundaries_from_config(workspace_root),
         }
     }
 }
@@ -82,54 +83,74 @@ fn discover_repo_roots(workspace_root: &Path) -> Vec<CanonicalPath> {
     roots
 }
 
-/// Recursively scan `workspace_root` for `.anchorscope` marker files.
-/// Returns workspace-relative canonical paths of their parent directories, sorted by
-/// descending length (deepest first) so prefix-matching in `scope_for_move` finds the
-/// most-specific boundary.
+/// Expand a single glob pattern into workspace-relative canonical paths.
 ///
-/// Skips well-known high-fanout directories (`.git`, `target`, `node_modules`) that
-/// never legitimately host scope markers — these would otherwise dominate the walk
-/// cost in mixed workspaces. Uses `entry.file_type()` (Rule 12) to avoid following
-/// symlinks into ancestors.
-fn discover_scope_boundaries(workspace_root: &Path) -> Vec<CanonicalPath> {
-    let mut boundaries = Vec::new();
-    let walker = walkdir::WalkDir::new(workspace_root)
-        .into_iter()
-        .filter_entry(|entry| {
-            if entry.depth() == 0 {
-                return true;
+/// Two forms supported:
+/// - `prefix/*` — returns direct child directories of `workspace_root/prefix`,
+///   as `"prefix/{name}"` strings, sorted by descending length then ascending name.
+/// - Literal path (no `*`) — returns `[pattern]` if `workspace_root/pattern` is a
+///   directory; `[]` otherwise.
+///
+/// Uses `entry.file_type()` (Rule 12) to avoid following symlinks.
+/// No recursive descent — `prefix/*` covers direct children only.
+fn expand_glob_pattern(workspace_root: &Path, pattern: &str) -> Vec<CanonicalPath> {
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        let dir = workspace_root.join(prefix);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return vec![];
+        };
+        let mut result = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
             }
-            let name = entry.file_name();
-            name != ".git" && name != "target" && name != "node_modules"
-        });
-    for entry in walker.flatten() {
-        if !entry.file_type().is_file() {
-            continue;
+            if let Some(name) = entry.file_name().to_str() {
+                result.push(format!("{prefix}/{name}"));
+            }
         }
-        if entry.file_name() != ".anchorscope" {
-            continue;
-        }
-        let Some(parent) = entry.path().parent() else {
-            continue;
-        };
-        let Ok(rel) = parent.strip_prefix(workspace_root) else {
-            continue;
-        };
-        let canonical = rel.to_string_lossy().replace('\\', "/");
-        if canonical.is_empty() {
-            // Marker at the workspace root itself is meaningless — equals Workspace scope.
-            continue;
-        }
-        boundaries.push(canonical);
+        result.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        result
+    } else if workspace_root.join(pattern).is_dir() {
+        vec![pattern.to_string()]
+    } else {
+        vec![]
     }
-    boundaries.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    boundaries
+}
+
+/// Load scope boundaries from `.accelmars/anchor/config.json`.
+///
+/// On any I/O or parse error, returns `vec![]` — `ScopeResolver` with empty boundaries
+/// falls through to Repo scope (v0.6.0 behavior). Missing `scope_boundaries` key also
+/// yields `vec![]`.
+///
+/// Returns deduplicated paths sorted by descending length then ascending name (deepest first),
+/// matching the ordering expected by `scope_for_move`.
+fn load_boundaries_from_config(workspace_root: &Path) -> Vec<CanonicalPath> {
+    let config_path = workspace_root
+        .join(".accelmars")
+        .join("anchor")
+        .join("config.json");
+    let Ok(content) = std::fs::read_to_string(&config_path) else {
+        return vec![];
+    };
+    let Ok(config) = serde_json::from_str::<WorkspaceConfig>(&content) else {
+        return vec![];
+    };
+    let patterns = config.scope_boundaries.unwrap_or_default();
+    let mut all = Vec::new();
+    for pattern in &patterns {
+        all.extend(expand_glob_pattern(workspace_root, pattern));
+    }
+    all.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    all.dedup();
+    all
 }
 
 /// Return the deepest-domain scope for a move op whose source is at `src`.
 ///
 /// Resolution order:
-///   1. The deepest `.anchorscope` boundary that is `src` or an ancestor of `src` (`Defined`)
+///   1. The deepest scope boundary that is `src` or an ancestor of `src` (`Defined`)
 ///   2. Repo root containing `src` (`Repo`) — backward compat with v0.6.0
 ///   3. `Workspace` fallback
 pub(crate) fn scope_for_move(resolver: &ScopeResolver, src: &CanonicalPath) -> Scope {
@@ -203,11 +224,16 @@ mod tests {
         dir
     }
 
-    /// Place an empty `.anchorscope` marker at `relative_dir` under the workspace root.
-    fn add_anchorscope(ws: &TempDir, relative_dir: &str) {
-        let dir = ws.path().join(relative_dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(".anchorscope"), "").unwrap();
+    /// Write a scope_boundaries config to `.accelmars/anchor/config.json`.
+    fn write_scope_boundaries(ws: &TempDir, patterns: &[&str]) {
+        let config_dir = ws.path().join(".accelmars").join("anchor");
+        fs::create_dir_all(&config_dir).unwrap();
+        let patterns_json: Vec<String> = patterns.iter().map(|p| format!("\"{p}\"")).collect();
+        let json = format!(
+            r#"{{"schema_version":"1","scope_boundaries":[{}]}}"#,
+            patterns_json.join(",")
+        );
+        fs::write(config_dir.join("config.json"), json).unwrap();
     }
 
     // ── scope_for_move ────────────────────────────────────────────────────────
@@ -375,16 +401,23 @@ mod tests {
         assert!(!is_inward_ref("a/workflowsExtra/foo.md", &src));
     }
 
-    // ── .anchorscope discovery (AENG-001 complete) ────────────────────────────
+    // ── scope_boundaries (AENG-001 complete; config-driven) ───────────────────
 
-    /// `.anchorscope` boundary takes precedence over the enclosing repo root.
+    /// scope_boundaries boundary takes precedence over the enclosing repo root.
     /// A move inside foundations/gateway-engine/ scopes to that foundation, not the
     /// whole test-workspace repo.
     #[test]
-    fn test_scope_for_move_anchorscope_beats_repo() {
+    fn test_scope_for_move_boundary_beats_repo() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
-        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
-        add_anchorscope(&ws, "test-workspace/foundations/anchor-engine");
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/anchor-engine")).unwrap();
+        write_scope_boundaries(
+            &ws,
+            &[
+                "test-workspace/foundations/gateway-engine",
+                "test-workspace/foundations/anchor-engine",
+            ],
+        );
         let resolver = ScopeResolver::new(ws.path());
 
         let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
@@ -397,12 +430,19 @@ mod tests {
         assert_eq!(scope.root, "test-workspace/foundations/gateway-engine");
     }
 
-    /// Deepest `.anchorscope` wins when multiple ancestors carry markers.
+    /// Deepest scope boundary wins when multiple ancestors are declared.
     #[test]
-    fn test_scope_for_move_deepest_anchorscope_wins() {
+    fn test_scope_for_move_deepest_boundary_wins() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
-        add_anchorscope(&ws, "test-workspace/foundations");
-        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
+        fs::create_dir_all(ws.path().join("test-workspace/foundations")).unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
+        write_scope_boundaries(
+            &ws,
+            &[
+                "test-workspace/foundations",
+                "test-workspace/foundations/gateway-engine",
+            ],
+        );
         let resolver = ScopeResolver::new(ws.path());
 
         let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
@@ -414,15 +454,16 @@ mod tests {
         );
     }
 
-    /// `.anchorscope` exists elsewhere in the workspace but not as an ancestor of `src`
+    /// Boundary exists elsewhere in the workspace but not as an ancestor of `src`
     /// → fall back to repo-root scope (backward compat with v0.6.0).
     #[test]
-    fn test_scope_for_move_anchorscope_not_ancestor_falls_through() {
+    fn test_scope_for_move_boundary_not_ancestor_falls_through() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
-        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
+        write_scope_boundaries(&ws, &["test-workspace/foundations/gateway-engine"]);
         let resolver = ScopeResolver::new(ws.path());
 
-        // src is in test-workspace but NOT inside any .anchorscope ancestor
+        // src is in test-workspace but NOT inside any declared boundary ancestor
         let src = "test-workspace/docs/some-folder".to_string();
         let scope = scope_for_move(&resolver, &src);
 
@@ -432,10 +473,11 @@ mod tests {
         );
     }
 
-    /// No `.anchorscope` markers anywhere → behavior identical to v0.6.0 (Repo scope).
+    /// No scope_boundaries in config → behavior identical to v0.6.0 (Repo scope).
     #[test]
-    fn test_scope_for_move_no_anchorscope_repo_fallback() {
+    fn test_scope_for_move_no_boundaries_in_config_repo_fallback() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
+        // No write_scope_boundaries call — config.json has no scope_boundaries key
         let resolver = ScopeResolver::new(ws.path());
 
         let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
@@ -470,25 +512,50 @@ mod tests {
         assert!(!is_in_scope(&"test-codex/BOUNDARY.md".to_string(), &scope));
     }
 
-    /// Discovery skips well-known high-fanout dirs (`.git`, `target`, `node_modules`).
-    /// A `.anchorscope` planted inside any of these must not become a boundary.
+    /// `scope_boundaries: ["foundations/*"]` expands to all direct child directories.
     #[test]
-    fn test_discover_scope_boundaries_skips_irrelevant_dirs() {
-        let ws = make_workspace_with_repos(&["repo"]);
-        // Legitimate marker
-        add_anchorscope(&ws, "repo/foundations/engine");
-        // Decoy markers that must be ignored
-        for ignored in &[
-            "repo/.git/hooks",
-            "repo/target/debug",
-            "repo/node_modules/x",
-        ] {
-            let dir = ws.path().join(ignored);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(".anchorscope"), "").unwrap();
-        }
+    fn test_scope_boundaries_glob_expands_direct_children() {
+        let ws = make_workspace_with_repos(&["test-workspace"]);
+        fs::create_dir_all(ws.path().join("foundations/engine-a")).unwrap();
+        fs::create_dir_all(ws.path().join("foundations/engine-b")).unwrap();
+        write_scope_boundaries(&ws, &["foundations/*"]);
 
-        let boundaries = discover_scope_boundaries(ws.path());
-        assert_eq!(boundaries, vec!["repo/foundations/engine".to_string()]);
+        let resolver = ScopeResolver::new(ws.path());
+
+        // Both foundations must appear in scope_boundaries
+        let src_a = "foundations/engine-a/workflows".to_string();
+        let scope_a = scope_for_move(&resolver, &src_a);
+        assert_eq!(
+            scope_a.domain,
+            RewriteDomain::Defined("foundations/engine-a".to_string())
+        );
+
+        let src_b = "foundations/engine-b/docs".to_string();
+        let scope_b = scope_for_move(&resolver, &src_b);
+        assert_eq!(
+            scope_b.domain,
+            RewriteDomain::Defined("foundations/engine-b".to_string())
+        );
+    }
+
+    /// A literal path pointing to a file (not a directory) is excluded from scope_boundaries.
+    #[test]
+    fn test_scope_boundaries_literal_path_is_file_excluded() {
+        let ws = make_workspace_with_repos(&["test-workspace"]);
+        // Write a regular file at the literal path — not a directory
+        let file_path = ws.path().join("test-workspace/not-a-dir.md");
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, "# content").unwrap();
+        write_scope_boundaries(&ws, &["test-workspace/not-a-dir.md"]);
+
+        let resolver = ScopeResolver::new(ws.path());
+
+        // The file path is not a valid scope boundary — must fall through to Repo scope
+        let src = "test-workspace/foundations/engine/workflows".to_string();
+        let scope = scope_for_move(&resolver, &src);
+        assert_eq!(
+            scope.domain,
+            RewriteDomain::Repo("test-workspace".to_string())
+        );
     }
 }

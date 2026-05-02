@@ -504,30 +504,35 @@ dst = "accelmars-workspace/foundations/anchor-engine/23-workflows"
     );
 }
 
-// ─── (g) Cross-foundation `.anchorscope` ──────────────────────────────────────
+// ─── (g) Cross-foundation scope_boundaries ────────────────────────────────────
 //
 // The 2026-05-01 gateway-engine Pass 1 corruption pattern: moving
 // `accelmars-workspace/foundations/gateway-engine/workflows` rewrote prose mentions
 // of `workflows/` in sibling foundation `accelmars-workspace/foundations/anchor-engine/`
 // — including the AENG-001 gap doc that describes this exact bug.
 //
-// With `.anchorscope` markers at each foundation root, the move's scope is the
-// gateway-engine foundation only; sibling-foundation prose is left untouched.
+// With `scope_boundaries: ["accelmars-workspace/foundations/*"]` in config.json, the
+// move's scope is the gateway-engine foundation only; sibling-foundation prose is left
+// untouched.
 
 #[test]
 fn test_anchorscope_cross_foundation_prose_not_rewritten() {
     let ws = make_workspace(&["accelmars-workspace"]);
     let root = ws.path();
 
-    // Plant `.anchorscope` markers at each foundation root
+    // Create foundation directories and declare scope_boundaries in config.json
     let foundations = [
         "accelmars-workspace/foundations/gateway-engine",
         "accelmars-workspace/foundations/anchor-engine",
     ];
     for f in &foundations {
         fs::create_dir_all(root.join(f)).unwrap();
-        fs::write(root.join(f).join(".anchorscope"), "").unwrap();
     }
+    fs::write(
+        root.join(".accelmars").join("anchor").join("config.json"),
+        r#"{"schema_version":"1","scope_boundaries":["accelmars-workspace/foundations/*"]}"#,
+    )
+    .unwrap();
 
     // Source folder being moved (inside gateway-engine)
     write_file(
@@ -594,18 +599,18 @@ fn test_anchorscope_cross_foundation_prose_not_rewritten() {
 
 // ─── (h) Backward compatibility ───────────────────────────────────────────────
 //
-// Workspaces that do not place `.anchorscope` markers must behave identically to
+// Workspaces without `scope_boundaries` in config.json must behave identically to
 // v0.6.0 — the move scope falls through to repo-root (`Repo` scope), and bare-name
 // matches inside the same repo are still rewritten (the v0.6.0 limitation).
 //
 // This test guards against an inadvertent change in the fall-through chain.
 
 #[test]
-fn test_no_anchorscope_falls_back_to_v060_repo_scope() {
+fn test_no_scope_boundaries_falls_back_to_v060_repo_scope() {
     let ws = make_workspace(&["accelmars-workspace"]);
     let root = ws.path();
 
-    // No `.anchorscope` files anywhere
+    // No scope_boundaries key in config.json — make_workspace writes {"schema_version":"1"}
 
     write_file(
         root,
