@@ -398,9 +398,7 @@ pub fn plan(
                 // AENG-010: prose heuristic — classify backtick refs on prose-signal lines
                 // as candidates, exclude from rewriting, report as [prose?] in diff --verbose.
                 if !allow_prose_rewrites {
-                    let line_start = content[..reference.span.0]
-                        .rfind('\n')
-                        .map_or(0, |p| p + 1);
+                    let line_start = content[..reference.span.0].rfind('\n').map_or(0, |p| p + 1);
                     let line_end = content[reference.span.0..]
                         .find('\n')
                         .map_or(content.len(), |p| reference.span.0 + p);
@@ -1933,10 +1931,7 @@ mod tests {
             1,
             "'previously' keyword line must produce 1 prose_skip"
         );
-        assert_eq!(
-            plan.prose_skips[0].old_text,
-            "`projects/legacy-engine`"
-        );
+        assert_eq!(plan.prose_skips[0].old_text, "`projects/legacy-engine`");
     }
 
     /// Backtick path in a `| Location | \`path\` |` table row is NOT prose.
@@ -1975,10 +1970,7 @@ mod tests {
             "table row backtick ref must be a live rewrite entry"
         );
         assert_eq!(plan.entries[0].old_text, "`projects/anchor-engine`");
-        assert_eq!(
-            plan.entries[0].new_text,
-            "`foundations/anchor-engine`"
-        );
+        assert_eq!(plan.entries[0].new_text, "`foundations/anchor-engine`");
     }
 
     /// With `allow_prose_rewrites=true`, an arrow-line backtick ref is treated as a live
@@ -2026,8 +2018,8 @@ mod tests {
         let root = tmp.path();
 
         let src = "accelmars-workspace/FRONTMATTER.schema.json".to_string();
-        let dst = ".accelmars/canon/templates/accelmars-standard/frontmatter.schema.json"
-            .to_string();
+        let dst =
+            ".accelmars/canon/templates/accelmars-standard/frontmatter.schema.json".to_string();
 
         // The src doesn't need to be a .md file; it just needs to exist for the move
         write_file(root, "accelmars-workspace/FRONTMATTER.schema.json", "{}");
@@ -2039,9 +2031,7 @@ mod tests {
             "state_log:\n  - \"2026-04-29: moved from `accelmars-workspace/FRONTMATTER.schema.json` to `.accelmars/canon/templates/`\"\n",
         );
 
-        let workspace_files = vec![
-            "contracts/AN-042.md".to_string(),
-        ];
+        let workspace_files = vec!["contracts/AN-042.md".to_string()];
 
         let plan = plan(root, &src, &dst, &workspace_files, false).unwrap();
 

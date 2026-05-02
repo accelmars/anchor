@@ -68,7 +68,13 @@ fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
         }
     };
 
-    let plan = match transaction::plan(root, &src_canonical, &dst_canonical, &workspace_files, false) {
+    let plan = match transaction::plan(
+        root,
+        &src_canonical,
+        &dst_canonical,
+        &workspace_files,
+        false,
+    ) {
         Ok(p) => p,
         Err(e) => {
             drop(lock_guard);

@@ -534,7 +534,13 @@ mod tests {
     /// `--verbose` and `--format json` together return an error before any filesystem operations.
     #[test]
     fn test_mv_verbose_and_json_errors() {
-        let result = run("anything", "anywhere", true, Some(OutputFormat::Json), false);
+        let result = run(
+            "anything",
+            "anywhere",
+            true,
+            Some(OutputFormat::Json),
+            false,
+        );
         assert!(
             matches!(result, Err(MvError::ConflictingFlags(_))),
             "both flags must return ConflictingFlags error"
