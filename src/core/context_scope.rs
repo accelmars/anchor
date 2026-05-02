@@ -452,9 +452,7 @@ mod tests {
     #[test]
     fn test_is_in_scope_defined_admits_inside_rejects_sibling() {
         let scope = Scope {
-            domain: RewriteDomain::Defined(
-                "test-workspace/foundations/gateway-engine".to_string(),
-            ),
+            domain: RewriteDomain::Defined("test-workspace/foundations/gateway-engine".to_string()),
             root: "test-workspace/foundations/gateway-engine".to_string(),
         };
 
@@ -469,10 +467,7 @@ mod tests {
             &scope
         ));
         // File outside test-workspace entirely — out of scope
-        assert!(!is_in_scope(
-            &"accelmars-codex/BOUNDARY.md".to_string(),
-            &scope
-        ));
+        assert!(!is_in_scope(&"test-codex/BOUNDARY.md".to_string(), &scope));
     }
 
     /// Discovery skips well-known high-fanout dirs (`.git`, `target`, `node_modules`).
