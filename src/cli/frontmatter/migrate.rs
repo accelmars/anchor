@@ -336,8 +336,15 @@ pub fn run_plan_impl(plan_path: &str, apply: bool, workspace_root: &Path, cwd: &
         println!("(run with --apply to write changes)");
         for (file_path_str, ops) in &groups {
             for op in ops {
-                let verb = if op.op_type == "add_field" { "add" } else { "set" };
-                println!("  {file_path_str}: {verb} {} \u{2192} {}", op.field, op.value);
+                let verb = if op.op_type == "add_field" {
+                    "add"
+                } else {
+                    "set"
+                };
+                println!(
+                    "  {file_path_str}: {verb} {} \u{2192} {}",
+                    op.field, op.value
+                );
             }
         }
         return 0;
@@ -357,7 +364,10 @@ pub fn run_plan_impl(plan_path: &str, apply: bool, workspace_root: &Path, cwd: &
         return 1;
     }
 
-    println!("\u{2713} Applied {} file(s) from plan: {plan_path}.", transforms.len());
+    println!(
+        "\u{2713} Applied {} file(s) from plan: {plan_path}.",
+        transforms.len()
+    );
     0
 }
 
@@ -591,7 +601,10 @@ mod tests {
         assert_eq!(exit, 0);
         let content = std::fs::read_to_string(&md).unwrap();
         assert!(content.contains("status: active"), "content: {content}");
-        assert!(!content.contains("status: draft"), "old value must be gone: {content}");
+        assert!(
+            !content.contains("status: draft"),
+            "old value must be gone: {content}"
+        );
     }
 
     #[test]
@@ -672,8 +685,7 @@ mod tests {
         let subdir = dir.path().join("sub");
         std::fs::create_dir(&subdir).unwrap();
         // plan path is absolute — resolves regardless of cwd
-        let exit =
-            run_plan_impl(&plan_path.to_string_lossy(), true, dir.path(), &subdir);
+        let exit = run_plan_impl(&plan_path.to_string_lossy(), true, dir.path(), &subdir);
         assert_eq!(exit, 0);
         let content = std::fs::read_to_string(&md).unwrap();
         assert!(content.contains("engine: gateway"), "content: {content}");
