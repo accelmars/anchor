@@ -379,38 +379,38 @@ mod tests {
 
     /// `.anchorscope` boundary takes precedence over the enclosing repo root.
     /// A move inside foundations/gateway-engine/ scopes to that foundation, not the
-    /// whole accelmars-workspace repo.
+    /// whole test-workspace repo.
     #[test]
     fn test_scope_for_move_anchorscope_beats_repo() {
-        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
-        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
-        add_anchorscope(&ws, "accelmars-workspace/foundations/anchor-engine");
+        let ws = make_workspace_with_repos(&["test-workspace"]);
+        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
+        add_anchorscope(&ws, "test-workspace/foundations/anchor-engine");
         let resolver = ScopeResolver::new(ws.path());
 
-        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
         let scope = scope_for_move(&resolver, &src);
 
         assert_eq!(
             scope.domain,
-            RewriteDomain::Defined("accelmars-workspace/foundations/gateway-engine".to_string())
+            RewriteDomain::Defined("test-workspace/foundations/gateway-engine".to_string())
         );
-        assert_eq!(scope.root, "accelmars-workspace/foundations/gateway-engine");
+        assert_eq!(scope.root, "test-workspace/foundations/gateway-engine");
     }
 
     /// Deepest `.anchorscope` wins when multiple ancestors carry markers.
     #[test]
     fn test_scope_for_move_deepest_anchorscope_wins() {
-        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
-        add_anchorscope(&ws, "accelmars-workspace/foundations");
-        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
+        let ws = make_workspace_with_repos(&["test-workspace"]);
+        add_anchorscope(&ws, "test-workspace/foundations");
+        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
         let resolver = ScopeResolver::new(ws.path());
 
-        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
         let scope = scope_for_move(&resolver, &src);
 
         assert_eq!(
             scope.domain,
-            RewriteDomain::Defined("accelmars-workspace/foundations/gateway-engine".to_string())
+            RewriteDomain::Defined("test-workspace/foundations/gateway-engine".to_string())
         );
     }
 
@@ -418,32 +418,32 @@ mod tests {
     /// → fall back to repo-root scope (backward compat with v0.6.0).
     #[test]
     fn test_scope_for_move_anchorscope_not_ancestor_falls_through() {
-        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
-        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
+        let ws = make_workspace_with_repos(&["test-workspace"]);
+        add_anchorscope(&ws, "test-workspace/foundations/gateway-engine");
         let resolver = ScopeResolver::new(ws.path());
 
-        // src is in accelmars-workspace but NOT inside any .anchorscope ancestor
-        let src = "accelmars-workspace/docs/some-folder".to_string();
+        // src is in test-workspace but NOT inside any .anchorscope ancestor
+        let src = "test-workspace/docs/some-folder".to_string();
         let scope = scope_for_move(&resolver, &src);
 
         assert_eq!(
             scope.domain,
-            RewriteDomain::Repo("accelmars-workspace".to_string())
+            RewriteDomain::Repo("test-workspace".to_string())
         );
     }
 
     /// No `.anchorscope` markers anywhere → behavior identical to v0.6.0 (Repo scope).
     #[test]
     fn test_scope_for_move_no_anchorscope_repo_fallback() {
-        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
+        let ws = make_workspace_with_repos(&["test-workspace"]);
         let resolver = ScopeResolver::new(ws.path());
 
-        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let src = "test-workspace/foundations/gateway-engine/workflows".to_string();
         let scope = scope_for_move(&resolver, &src);
 
         assert_eq!(
             scope.domain,
-            RewriteDomain::Repo("accelmars-workspace".to_string())
+            RewriteDomain::Repo("test-workspace".to_string())
         );
     }
 
@@ -453,22 +453,22 @@ mod tests {
     fn test_is_in_scope_defined_admits_inside_rejects_sibling() {
         let scope = Scope {
             domain: RewriteDomain::Defined(
-                "accelmars-workspace/foundations/gateway-engine".to_string(),
+                "test-workspace/foundations/gateway-engine".to_string(),
             ),
-            root: "accelmars-workspace/foundations/gateway-engine".to_string(),
+            root: "test-workspace/foundations/gateway-engine".to_string(),
         };
 
         // In-scope file inside the foundation
         assert!(is_in_scope(
-            &"accelmars-workspace/foundations/gateway-engine/workflows/foo.md".to_string(),
+            &"test-workspace/foundations/gateway-engine/workflows/foo.md".to_string(),
             &scope
         ));
         // Sibling foundation — out of scope (this is the AENG-001 fix)
         assert!(!is_in_scope(
-            &"accelmars-workspace/foundations/anchor-engine/41-gaps/AENG-001.md".to_string(),
+            &"test-workspace/foundations/anchor-engine/41-gaps/AENG-001.md".to_string(),
             &scope
         ));
-        // File outside accelmars-workspace entirely — out of scope
+        // File outside test-workspace entirely — out of scope
         assert!(!is_in_scope(
             &"accelmars-codex/BOUNDARY.md".to_string(),
             &scope
@@ -483,7 +483,11 @@ mod tests {
         // Legitimate marker
         add_anchorscope(&ws, "repo/foundations/engine");
         // Decoy markers that must be ignored
-        for ignored in &["repo/.git/hooks", "repo/target/debug", "repo/node_modules/x"] {
+        for ignored in &[
+            "repo/.git/hooks",
+            "repo/target/debug",
+            "repo/node_modules/x",
+        ] {
             let dir = ws.path().join(ignored);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join(".anchorscope"), "").unwrap();

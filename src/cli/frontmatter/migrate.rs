@@ -316,7 +316,10 @@ mod tests {
             result.contains("title: \"My Gap Document\""),
             "result: {result}"
         );
-        assert!(!result.contains("---"), "raw_fm must not contain delimiters; result: {result}");
+        assert!(
+            !result.contains("---"),
+            "raw_fm must not contain delimiters; result: {result}"
+        );
     }
 
     #[test]
@@ -335,7 +338,10 @@ mod tests {
         let raw_fm = "title: Test\ntype: gap\n";
         let fm: serde_yaml::Value = serde_yaml::from_str(raw_fm).unwrap();
         let result = compute_migration(raw_fm, &Some(fm), 1);
-        assert!(result.is_some(), "v0 frontmatter should produce a migration");
+        assert!(
+            result.is_some(),
+            "v0 frontmatter should produce a migration"
+        );
         let new_fm = result.unwrap();
         assert!(new_fm.contains("schema_version: 1"), "new_fm: {new_fm}");
         assert!(
