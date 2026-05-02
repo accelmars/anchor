@@ -7,6 +7,7 @@
 //
 // Rule 13: run_from_env() resolves paths; run() accepts explicit roots for tests.
 
+use super::inference::InferenceRules;
 use super::parser::{
     get_str, has_key, insert_empty_array, insert_i64, insert_str, parse_file, walk_md_files,
     write_atomic,
@@ -98,6 +99,8 @@ pub fn run(
         vec![target]
     };
 
+    let rules = InferenceRules::load(workspace_root);
+
     let mut changes: Vec<(PathBuf, Value, String)> = Vec::new();
     let mut gap_reports: Vec<(PathBuf, Vec<String>)> = Vec::new();
     let mut errors = 0usize;
@@ -128,6 +131,7 @@ pub fn run(
         }
 
         let (new_fm, gaps) = apply_auto_defaults(fm, &type_val, &schema, file_path);
+        let new_fm = rules.apply(new_fm, file_path);
         if !gaps.is_empty() {
             gap_reports.push((file_path.clone(), gaps));
         }
