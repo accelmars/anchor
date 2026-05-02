@@ -1,6 +1,6 @@
 // tests/scanner_context_scope.rs — AENG-001 context-scoped reference rewrite integration tests
 //
-// Tests the fix for bare-name substring rewriting across repo boundaries.
+// Tests the fix for bare-name substring rewriting across repo and foundation boundaries.
 // Scenario index:
 //   (a) Cross-repo workflows/ — BOUNDARY.md in sibling repo is not rewritten
 //   (b) FM-001..FM-009 — covered in frontmatter_fm_scenarios.rs; verified by cargo test --workspace
@@ -8,6 +8,8 @@
 //   (d) Inward-ref negative — workspace-relative path from sibling repo still rewrites
 //   (e) AENG-007 regression — fenced code block paths still excluded from ref parsing
 //   (f) AENG-002 regression — rollback diagnostic format still emitted on failure
+//   (g) Cross-foundation `.anchorscope` — sibling foundation prose not rewritten (AENG-001 complete)
+//   (h) Backward compat — workspace without `.anchorscope` falls back to v0.6.0 Repo scope
 
 use accelmars_anchor::core::parser::parse_references;
 use accelmars_anchor::core::transaction::plan;
@@ -499,5 +501,151 @@ dst = "accelmars-workspace/foundations/anchor-engine/23-workflows"
         output.status.code().is_some(),
         "anchor apply must exit with a known code; got: {:?}",
         output.status
+    );
+}
+
+// ─── (g) Cross-foundation `.anchorscope` ──────────────────────────────────────
+//
+// The 2026-05-01 gateway-engine Pass 1 corruption pattern: moving
+// `accelmars-workspace/foundations/gateway-engine/workflows` rewrote prose mentions
+// of `workflows/` in sibling foundation `accelmars-workspace/foundations/anchor-engine/`
+// — including the AENG-001 gap doc that describes this exact bug.
+//
+// With `.anchorscope` markers at each foundation root, the move's scope is the
+// gateway-engine foundation only; sibling-foundation prose is left untouched.
+
+#[test]
+fn test_anchorscope_cross_foundation_prose_not_rewritten() {
+    let ws = make_workspace(&["accelmars-workspace"]);
+    let root = ws.path();
+
+    // Plant `.anchorscope` markers at each foundation root
+    let foundations = [
+        "accelmars-workspace/foundations/gateway-engine",
+        "accelmars-workspace/foundations/anchor-engine",
+    ];
+    for f in &foundations {
+        fs::create_dir_all(root.join(f)).unwrap();
+        fs::write(root.join(f).join(".anchorscope"), "").unwrap();
+    }
+
+    // Source folder being moved (inside gateway-engine)
+    write_file(
+        root,
+        "accelmars-workspace/foundations/gateway-engine/workflows/design.md",
+        "# Design\n",
+    );
+
+    // Sibling foundation: a gap doc with bare `workflows/` mention — must be untouched.
+    // This mirrors the actual AENG-001 corruption observed on 2026-05-01.
+    let gap_text = "Anchor was rewriting **every** plain-text occurrence of `workflows/` across the workspace.\n";
+    write_file(
+        root,
+        "accelmars-workspace/foundations/anchor-engine/41-gaps/AENG-001.md",
+        gap_text,
+    );
+
+    // In-scope file (same foundation): partial-path backtick ref must still rewrite
+    write_file(
+        root,
+        "accelmars-workspace/foundations/gateway-engine/CLAUDE.md",
+        "Workflows live at `accelmars-workspace/foundations/gateway-engine/workflows/`.\n",
+    );
+
+    let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+    let dst = "accelmars-workspace/foundations/gateway-engine/23-workflows".to_string();
+    let workspace_files = vec![
+        "accelmars-workspace/foundations/gateway-engine/workflows/design.md".to_string(),
+        "accelmars-workspace/foundations/anchor-engine/41-gaps/AENG-001.md".to_string(),
+        "accelmars-workspace/foundations/gateway-engine/CLAUDE.md".to_string(),
+    ];
+
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+    // Sibling-foundation gap doc must produce no rewrite entries
+    let gap_entries: Vec<_> = rewrite_plan
+        .entries
+        .iter()
+        .filter(|e| e.file.contains("foundations/anchor-engine"))
+        .collect();
+    assert!(
+        gap_entries.is_empty(),
+        "sibling foundation prose must be left untouched (out-of-scope, .anchorscope boundary); \
+         got: {gap_entries:?}"
+    );
+
+    // In-scope CLAUDE.md must receive its rewrite entry
+    let claude_entries: Vec<_> = rewrite_plan
+        .entries
+        .iter()
+        .filter(|e| e.file.contains("CLAUDE"))
+        .collect();
+    assert_eq!(
+        claude_entries.len(),
+        1,
+        "in-scope file must still receive partial-path rewrite; got: {claude_entries:?}"
+    );
+    assert!(
+        claude_entries[0].new_text.contains("23-workflows"),
+        "rewrite must update to 23-workflows; got: {}",
+        claude_entries[0].new_text
+    );
+}
+
+// ─── (h) Backward compatibility ───────────────────────────────────────────────
+//
+// Workspaces that do not place `.anchorscope` markers must behave identically to
+// v0.6.0 — the move scope falls through to repo-root (`Repo` scope), and bare-name
+// matches inside the same repo are still rewritten (the v0.6.0 limitation).
+//
+// This test guards against an inadvertent change in the fall-through chain.
+
+#[test]
+fn test_no_anchorscope_falls_back_to_v060_repo_scope() {
+    let ws = make_workspace(&["accelmars-workspace"]);
+    let root = ws.path();
+
+    // No `.anchorscope` files anywhere
+
+    write_file(
+        root,
+        "accelmars-workspace/foundations/gateway-engine/workflows/design.md",
+        "# Design\n",
+    );
+
+    // Inside the same repo, but in a sibling foundation. With v0.6.0 (Repo scope),
+    // a bare-name backtick ref is still rewritten — that's the limitation `.anchorscope`
+    // addresses. This test confirms the fallback path is still active when no marker exists.
+    write_file(
+        root,
+        "accelmars-workspace/foundations/anchor-engine/CLAUDE.md",
+        "Look in `accelmars-workspace/foundations/gateway-engine/workflows/` for design.\n",
+    );
+
+    let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+    let dst = "accelmars-workspace/foundations/gateway-engine/23-workflows".to_string();
+    let workspace_files = vec![
+        "accelmars-workspace/foundations/gateway-engine/workflows/design.md".to_string(),
+        "accelmars-workspace/foundations/anchor-engine/CLAUDE.md".to_string(),
+    ];
+
+    let rewrite_plan = plan(root, &src, &dst, &workspace_files).unwrap();
+
+    // The full-path ref to gateway-engine's workflows is a legitimate rewrite even from
+    // a sibling foundation (it directly points at the moved location).
+    let claude_entries: Vec<_> = rewrite_plan
+        .entries
+        .iter()
+        .filter(|e| e.file.contains("CLAUDE"))
+        .collect();
+    assert_eq!(
+        claude_entries.len(),
+        1,
+        "v0.6.0 Repo scope: in-repo full-path ref must still rewrite; got: {claude_entries:?}"
+    );
+    assert!(
+        claude_entries[0].new_text.contains("23-workflows"),
+        "rewrite must update to 23-workflows; got: {}",
+        claude_entries[0].new_text
     );
 }

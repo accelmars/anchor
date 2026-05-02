@@ -5,10 +5,11 @@
 // `org-workspace/foundations/engine/workflows` must not rewrite `workflows/`
 // mentions in unrelated repos like `org-sibling-repo/`.
 //
-// Domain hierarchy:
-//   1. Workspace root (fallback when no repo root contains the source)
+// Domain hierarchy (deepest match wins):
+//   1. `.anchorscope` boundaries — directories containing a `.anchorscope` marker file
+//      (e.g. each foundation root inside a multi-foundation monorepo)
 //   2. Repo roots — directories at depth 1 under workspace_root that contain `.git`
-//   3. Workspace-defined sub-boundaries (future: from WorkspaceConfig.scopes)
+//   3. Workspace root (fallback when neither applies)
 //
 // The "inward ref" rule: out-of-scope files may still hold workspace-relative paths that
 // directly address the moved location (e.g. `$(anchor root)/org-workspace/.../workflows`).
@@ -25,9 +26,8 @@ pub(crate) enum RewriteDomain {
     Workspace,
     /// A git repository root at depth 1 under the workspace root.
     Repo(CanonicalPath),
-    /// A workspace-defined sub-boundary (future use; from config).
-    #[allow(dead_code)]
-    Defined(String),
+    /// A workspace-defined sub-boundary, discovered via a `.anchorscope` marker file.
+    Defined(CanonicalPath),
 }
 
 /// The computed scope for a single move op.
@@ -38,19 +38,24 @@ pub(crate) struct Scope {
     pub root: CanonicalPath,
 }
 
-/// Caches repo-root topology for one `plan()` call.
+/// Caches repo-root and `.anchorscope` topology for one `plan()` call.
 ///
 /// Created once per `plan()` invocation (before the `workspace_files` loop) so that
 /// `scope_for_move` and `is_in_scope` don't re-scan the filesystem per reference.
 pub(crate) struct ScopeResolver {
     repo_roots: Vec<CanonicalPath>,
+    /// Workspace-relative canonical paths of directories containing `.anchorscope`,
+    /// sorted by descending length so the deepest (most specific) ancestor matches first.
+    scope_boundaries: Vec<CanonicalPath>,
 }
 
 impl ScopeResolver {
-    /// Build a resolver by scanning depth-1 subdirectories of `workspace_root` for `.git`.
+    /// Build a resolver by scanning depth-1 subdirectories of `workspace_root` for `.git`,
+    /// and recursively discovering `.anchorscope` markers.
     pub(crate) fn new(workspace_root: &Path) -> Self {
         Self {
             repo_roots: discover_repo_roots(workspace_root),
+            scope_boundaries: discover_scope_boundaries(workspace_root),
         }
     }
 }
@@ -77,13 +82,66 @@ fn discover_repo_roots(workspace_root: &Path) -> Vec<CanonicalPath> {
     roots
 }
 
+/// Recursively scan `workspace_root` for `.anchorscope` marker files.
+/// Returns workspace-relative canonical paths of their parent directories, sorted by
+/// descending length (deepest first) so prefix-matching in `scope_for_move` finds the
+/// most-specific boundary.
+///
+/// Skips well-known high-fanout directories (`.git`, `target`, `node_modules`) that
+/// never legitimately host scope markers — these would otherwise dominate the walk
+/// cost in mixed workspaces. Uses `entry.file_type()` (Rule 12) to avoid following
+/// symlinks into ancestors.
+fn discover_scope_boundaries(workspace_root: &Path) -> Vec<CanonicalPath> {
+    let mut boundaries = Vec::new();
+    let walker = walkdir::WalkDir::new(workspace_root)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            let name = entry.file_name();
+            name != ".git" && name != "target" && name != "node_modules"
+        });
+    for entry in walker.flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name() != ".anchorscope" {
+            continue;
+        }
+        let Some(parent) = entry.path().parent() else {
+            continue;
+        };
+        let Ok(rel) = parent.strip_prefix(workspace_root) else {
+            continue;
+        };
+        let canonical = rel.to_string_lossy().replace('\\', "/");
+        if canonical.is_empty() {
+            // Marker at the workspace root itself is meaningless — equals Workspace scope.
+            continue;
+        }
+        boundaries.push(canonical);
+    }
+    boundaries.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    boundaries
+}
+
 /// Return the deepest-domain scope for a move op whose source is at `src`.
 ///
-/// Walks up the components of `src` and returns the first matching repo root.
-/// Falls back to `Workspace` if no repo root contains `src`.
+/// Resolution order:
+///   1. The deepest `.anchorscope` boundary that is `src` or an ancestor of `src` (`Defined`)
+///   2. Repo root containing `src` (`Repo`) — backward compat with v0.6.0
+///   3. `Workspace` fallback
 pub(crate) fn scope_for_move(resolver: &ScopeResolver, src: &CanonicalPath) -> Scope {
+    for boundary in &resolver.scope_boundaries {
+        if src == boundary || src.starts_with(&format!("{boundary}/")) {
+            return Scope {
+                domain: RewriteDomain::Defined(boundary.clone()),
+                root: boundary.clone(),
+            };
+        }
+    }
     let parts: Vec<&str> = src.split('/').collect();
-    // Walk from most-specific ancestor up to the top-level component.
     for depth in (1..=parts.len()).rev() {
         let candidate = parts[..depth].join("/");
         if resolver.repo_roots.contains(&candidate) {
@@ -143,6 +201,13 @@ mod tests {
             fs::create_dir_all(repo.join(".git")).unwrap();
         }
         dir
+    }
+
+    /// Place an empty `.anchorscope` marker at `relative_dir` under the workspace root.
+    fn add_anchorscope(ws: &TempDir, relative_dir: &str) {
+        let dir = ws.path().join(relative_dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(".anchorscope"), "").unwrap();
     }
 
     // ── scope_for_move ────────────────────────────────────────────────────────
@@ -308,5 +373,123 @@ mod tests {
         let src = "a/workflows".to_string();
         assert!(!is_inward_ref("a/workflowsExtra", &src));
         assert!(!is_inward_ref("a/workflowsExtra/foo.md", &src));
+    }
+
+    // ── .anchorscope discovery (AENG-001 complete) ────────────────────────────
+
+    /// `.anchorscope` boundary takes precedence over the enclosing repo root.
+    /// A move inside foundations/gateway-engine/ scopes to that foundation, not the
+    /// whole accelmars-workspace repo.
+    #[test]
+    fn test_scope_for_move_anchorscope_beats_repo() {
+        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
+        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
+        add_anchorscope(&ws, "accelmars-workspace/foundations/anchor-engine");
+        let resolver = ScopeResolver::new(ws.path());
+
+        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let scope = scope_for_move(&resolver, &src);
+
+        assert_eq!(
+            scope.domain,
+            RewriteDomain::Defined("accelmars-workspace/foundations/gateway-engine".to_string())
+        );
+        assert_eq!(scope.root, "accelmars-workspace/foundations/gateway-engine");
+    }
+
+    /// Deepest `.anchorscope` wins when multiple ancestors carry markers.
+    #[test]
+    fn test_scope_for_move_deepest_anchorscope_wins() {
+        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
+        add_anchorscope(&ws, "accelmars-workspace/foundations");
+        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
+        let resolver = ScopeResolver::new(ws.path());
+
+        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let scope = scope_for_move(&resolver, &src);
+
+        assert_eq!(
+            scope.domain,
+            RewriteDomain::Defined("accelmars-workspace/foundations/gateway-engine".to_string())
+        );
+    }
+
+    /// `.anchorscope` exists elsewhere in the workspace but not as an ancestor of `src`
+    /// → fall back to repo-root scope (backward compat with v0.6.0).
+    #[test]
+    fn test_scope_for_move_anchorscope_not_ancestor_falls_through() {
+        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
+        add_anchorscope(&ws, "accelmars-workspace/foundations/gateway-engine");
+        let resolver = ScopeResolver::new(ws.path());
+
+        // src is in accelmars-workspace but NOT inside any .anchorscope ancestor
+        let src = "accelmars-workspace/docs/some-folder".to_string();
+        let scope = scope_for_move(&resolver, &src);
+
+        assert_eq!(
+            scope.domain,
+            RewriteDomain::Repo("accelmars-workspace".to_string())
+        );
+    }
+
+    /// No `.anchorscope` markers anywhere → behavior identical to v0.6.0 (Repo scope).
+    #[test]
+    fn test_scope_for_move_no_anchorscope_repo_fallback() {
+        let ws = make_workspace_with_repos(&["accelmars-workspace"]);
+        let resolver = ScopeResolver::new(ws.path());
+
+        let src = "accelmars-workspace/foundations/gateway-engine/workflows".to_string();
+        let scope = scope_for_move(&resolver, &src);
+
+        assert_eq!(
+            scope.domain,
+            RewriteDomain::Repo("accelmars-workspace".to_string())
+        );
+    }
+
+    /// `is_in_scope` correctly admits files inside a `Defined` boundary and rejects
+    /// sibling-foundation files (the v0.6.0 false-positive class).
+    #[test]
+    fn test_is_in_scope_defined_admits_inside_rejects_sibling() {
+        let scope = Scope {
+            domain: RewriteDomain::Defined(
+                "accelmars-workspace/foundations/gateway-engine".to_string(),
+            ),
+            root: "accelmars-workspace/foundations/gateway-engine".to_string(),
+        };
+
+        // In-scope file inside the foundation
+        assert!(is_in_scope(
+            &"accelmars-workspace/foundations/gateway-engine/workflows/foo.md".to_string(),
+            &scope
+        ));
+        // Sibling foundation — out of scope (this is the AENG-001 fix)
+        assert!(!is_in_scope(
+            &"accelmars-workspace/foundations/anchor-engine/41-gaps/AENG-001.md".to_string(),
+            &scope
+        ));
+        // File outside accelmars-workspace entirely — out of scope
+        assert!(!is_in_scope(
+            &"accelmars-codex/BOUNDARY.md".to_string(),
+            &scope
+        ));
+    }
+
+    /// Discovery skips well-known high-fanout dirs (`.git`, `target`, `node_modules`).
+    /// A `.anchorscope` planted inside any of these must not become a boundary.
+    #[test]
+    fn test_discover_scope_boundaries_skips_irrelevant_dirs() {
+        let ws = make_workspace_with_repos(&["repo"]);
+        // Legitimate marker
+        add_anchorscope(&ws, "repo/foundations/engine");
+        // Decoy markers that must be ignored
+        for ignored in &["repo/.git/hooks", "repo/target/debug", "repo/node_modules/x"] {
+            let dir = ws.path().join(ignored);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(".anchorscope"), "").unwrap();
+        }
+
+        let boundaries = discover_scope_boundaries(ws.path());
+        assert_eq!(boundaries, vec!["repo/foundations/engine".to_string()]);
     }
 }

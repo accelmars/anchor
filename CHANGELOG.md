@@ -1,7 +1,11 @@
 
 ## [Unreleased]
 
+### Added
+- (**AENG-006-scaffold**) `anchor frontmatter migrate --to 1` now scaffolds files with no frontmatter; title inferred from first `# Heading` or filename stem.
+
 ### Bug Fixes
+- (**refs**) AENG-001 (complete) — foundation-scoped rewrites via `.anchorscope`. `ScopeResolver` now discovers `.anchorscope` marker files recursively under the workspace root and `scope_for_move()` returns `RewriteDomain::Defined(<deepest .anchorscope ancestor>)` when one contains the move source. This eliminates the cross-foundation prose corruption observed in the gateway-engine Pass 1 run (2026-05-01, v0.6.0): sibling foundations are now out of scope unless they hold a workspace-relative inward ref. Workspaces without `.anchorscope` markers fall back to v0.6.0 `Repo` scope — fully backward compatible.
 - Anchor frontmatter no longer hardcodes accelmars-workspace/ defaults — schema resolution uses .accelmars/anchor/frontmatter-schema.json fallback with explicit error; test fixtures genericized; CI boundary guard added (#72) ([#72](https://github.com/accelmars/anchor/pull/72))
 
 
