@@ -409,16 +409,8 @@ mod tests {
     #[test]
     fn test_scope_for_move_boundary_beats_repo() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
-        fs::create_dir_all(
-            ws.path()
-                .join("test-workspace/foundations/gateway-engine"),
-        )
-        .unwrap();
-        fs::create_dir_all(
-            ws.path()
-                .join("test-workspace/foundations/anchor-engine"),
-        )
-        .unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/anchor-engine")).unwrap();
         write_scope_boundaries(
             &ws,
             &[
@@ -443,11 +435,7 @@ mod tests {
     fn test_scope_for_move_deepest_boundary_wins() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
         fs::create_dir_all(ws.path().join("test-workspace/foundations")).unwrap();
-        fs::create_dir_all(
-            ws.path()
-                .join("test-workspace/foundations/gateway-engine"),
-        )
-        .unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
         write_scope_boundaries(
             &ws,
             &[
@@ -471,11 +459,7 @@ mod tests {
     #[test]
     fn test_scope_for_move_boundary_not_ancestor_falls_through() {
         let ws = make_workspace_with_repos(&["test-workspace"]);
-        fs::create_dir_all(
-            ws.path()
-                .join("test-workspace/foundations/gateway-engine"),
-        )
-        .unwrap();
+        fs::create_dir_all(ws.path().join("test-workspace/foundations/gateway-engine")).unwrap();
         write_scope_boundaries(&ws, &["test-workspace/foundations/gateway-engine"]);
         let resolver = ScopeResolver::new(ws.path());
 
