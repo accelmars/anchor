@@ -87,10 +87,16 @@ impl From<AtomicWriteError> for LockError {
 /// Returns `true` if alive, `false` if dead (ESRCH — no such process).
 ///
 /// Anti-pattern from HANDOVER.md: signal None (0) ≠ SIGKILL. This check only tests existence.
+#[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
     kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Read `.accelmars/anchor/tmp/` and return the id suffix of the first op directory found.
