@@ -137,10 +137,18 @@ fn maybe_release_stale_lock(lock_path: &Path) {
 }
 
 // Uses kill(pid, 0) — signal 0 does not kill the process; returns whether it exists.
+// On non-Unix platforms (Windows), PID liveness check is unavailable; stubs as false
+// (treats all PIDs as dead, which safely produces StaleLock rather than AlreadyRunning).
+#[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
     kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
