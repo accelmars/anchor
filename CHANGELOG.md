@@ -1,6 +1,15 @@
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-05-03
+
+### Bug Fixes
+- (**windows**) Gate `nix`-crate imports behind `#[cfg(unix)]` in `recover.rs` and `lock.rs` — anchor now compiles on Windows; cargo-dist can build all 5 platform binaries.
+
+## [0.7.1] - 2026-05-03
+
+No functional changes — release-plz version bump only.
+
 ## [0.7.0] - 2026-05-03
 
 ### Added
