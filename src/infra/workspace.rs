@@ -1,6 +1,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use accelmars_resolver_env::{ResolveResult, ResolverMode};
+
 use crate::model::config::WorkspaceConfig;
 
 /// Errors returned by workspace discovery and config loading.
@@ -16,6 +18,10 @@ pub enum WorkspaceError {
     /// The workspace config.json could not be parsed.
     #[allow(dead_code)]
     InvalidConfig(serde_json::Error),
+    /// Integrated mode, multiple tenants exist, and no slug could be determined.
+    AmbiguousTenant(Vec<String>),
+    /// A slug was specified (via flag or env var) but does not exist in `.accelmars/`.
+    TenantNotFound(String),
 }
 
 impl std::fmt::Display for WorkspaceError {
@@ -33,6 +39,144 @@ impl std::fmt::Display for WorkspaceError {
                 )
             }
             WorkspaceError::InvalidConfig(e) => write!(f, "invalid config.json: {}", e),
+            WorkspaceError::AmbiguousTenant(slugs) => write!(
+                f,
+                "multiple tenants exist ({}); specify --tenant=<slug> or cd into one",
+                slugs.join(", ")
+            ),
+            WorkspaceError::TenantNotFound(slug) => {
+                write!(f, "tenant \"{}\" not found in .accelmars/", slug)
+            }
+        }
+    }
+}
+
+/// Hints that influence slug selection in integrated mode.
+pub struct ResolveHints {
+    /// Value of `--tenant=<slug>` CLI flag, if provided.
+    pub tenant_flag: Option<String>,
+}
+
+/// Detect whether a `.accelmars/` directory contains integrated-mode tenants.
+/// Returns the mode and the list of slug names found (empty in standalone).
+fn detect_mode(dot_accelmars: &Path) -> (ResolverMode, Vec<String>) {
+    let mut slugs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dot_accelmars) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("MANIFEST.toml").exists() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    slugs.push(name.to_string());
+                }
+            }
+        }
+    }
+    slugs.sort(); // deterministic ordering
+    if !slugs.is_empty() {
+        (ResolverMode::Integrated, slugs)
+    } else {
+        (ResolverMode::Standalone, slugs)
+    }
+}
+
+/// Resolve the active tenant slug using the 5-priority precedence ladder.
+fn resolve_slug(
+    hints: &ResolveHints,
+    slugs: &[String],
+    dot_accelmars: &Path,
+    cwd: &Path,
+) -> Result<String, WorkspaceError> {
+    // Priority 1: --tenant flag
+    if let Some(flag) = &hints.tenant_flag {
+        if slugs.contains(flag) {
+            return Ok(flag.clone());
+        } else {
+            return Err(WorkspaceError::TenantNotFound(flag.clone()));
+        }
+    }
+
+    // Priority 2: ACCELMARS_TENANT env var
+    if let Ok(env_slug) = std::env::var("ACCELMARS_TENANT") {
+        if !env_slug.is_empty() {
+            if slugs.contains(&env_slug) {
+                return Ok(env_slug);
+            } else {
+                return Err(WorkspaceError::TenantNotFound(env_slug));
+            }
+        }
+    }
+
+    // Priority 3: cwd is inside .accelmars/<slug>/
+    for slug in slugs {
+        let slug_root = dot_accelmars.join(slug);
+        if cwd.starts_with(&slug_root) {
+            return Ok(slug.clone());
+        }
+    }
+
+    // Priority 4: outer .accelmars/MANIFEST.toml declares default_tenant
+    let outer_manifest = dot_accelmars.join("MANIFEST.toml");
+    if outer_manifest.exists() {
+        if let Ok(content) = std::fs::read_to_string(&outer_manifest) {
+            if let Ok(table) = content.parse::<toml::Table>() {
+                if let Some(toml::Value::String(default)) = table.get("default_tenant") {
+                    if slugs.contains(default) {
+                        return Ok(default.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Priority 5: single-tenant shortcut — one slug, no ambiguity
+    if slugs.len() == 1 {
+        return Ok(slugs[0].clone());
+    }
+
+    Err(WorkspaceError::AmbiguousTenant(slugs.to_vec()))
+}
+
+/// Resolve the workspace root from `start`, honoring multi-tenant slug selection.
+///
+/// In standalone mode, `tenant_root` is the `.accelmars/` directory itself.
+/// In integrated mode, `tenant_root` is `.accelmars/<slug>/`.
+pub fn resolve(start: &Path, hints: ResolveHints) -> Result<ResolveResult, WorkspaceError> {
+    let dot_accelmars = find_dot_accelmars(start)?;
+    let (mode, slugs) = detect_mode(&dot_accelmars);
+
+    match mode {
+        ResolverMode::Standalone => Ok(ResolveResult {
+            tenant_root: dot_accelmars.clone(),
+            tenant_slug: "standalone".to_string(),
+            engine_home: dot_accelmars,
+            mode: ResolverMode::Standalone,
+            spec_version: 1,
+        }),
+        ResolverMode::Integrated => {
+            let slug = resolve_slug(&hints, &slugs, &dot_accelmars, start)?;
+            let tenant_root = dot_accelmars.join(&slug);
+            Ok(ResolveResult {
+                engine_home: tenant_root.clone(),
+                tenant_root,
+                tenant_slug: slug,
+                mode: ResolverMode::Integrated,
+                spec_version: 1,
+            })
+        }
+    }
+}
+
+/// Walk up from `start` and return the `.accelmars/` directory path (not its parent).
+fn find_dot_accelmars(start: &Path) -> Result<PathBuf, WorkspaceError> {
+    let mut current = start.to_path_buf();
+    loop {
+        let marker = current.join(".accelmars");
+        if marker.is_dir() {
+            return Ok(marker);
+        }
+        match current.parent().map(|p| p.to_path_buf()) {
+            Some(p) if p != current => current = p,
+            _ => return Err(WorkspaceError::NotFound),
         }
     }
 }
@@ -194,6 +338,121 @@ mod tests {
                 );
             }
             other => panic!("expected UnsupportedSchemaVersion, got: {:?}", other),
+        }
+    }
+
+    // --- resolve() tests ---
+
+    fn make_standalone_workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Flat engine dirs, no slug subdirs with MANIFEST.toml
+        fs::create_dir_all(dir.path().join(".accelmars").join("anchor")).unwrap();
+        fs::create_dir_all(dir.path().join(".accelmars").join("canon")).unwrap();
+        dir
+    }
+
+    fn make_integrated_workspace(slugs: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for slug in slugs {
+            let slug_dir = dir.path().join(".accelmars").join(slug);
+            fs::create_dir_all(&slug_dir).unwrap();
+            fs::write(slug_dir.join("MANIFEST.toml"), format!("slug = \"{}\"", slug)).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn resolve_standalone_compat() {
+        let dir = make_standalone_workspace();
+        let hints = ResolveHints { tenant_flag: None };
+        let result = resolve(dir.path(), hints).expect("should resolve");
+        assert_eq!(result.mode, accelmars_resolver_env::ResolverMode::Standalone);
+        assert_eq!(result.tenant_slug, "standalone");
+        // tenant_root should be the .accelmars/ dir
+        assert!(result.tenant_root.ends_with(".accelmars"));
+        // backward-compat check: parent of tenant_root == dir.path()
+        assert_eq!(
+            result.tenant_root.parent().unwrap().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_integrated_happy_path() {
+        let dir = make_integrated_workspace(&["AOS"]);
+        let hints = ResolveHints { tenant_flag: None };
+        let result = resolve(dir.path(), hints).expect("should resolve");
+        assert_eq!(result.mode, accelmars_resolver_env::ResolverMode::Integrated);
+        assert_eq!(result.tenant_slug, "AOS");
+        assert!(
+            result.tenant_root.ends_with(".accelmars/AOS"),
+            "tenant_root should end with .accelmars/AOS, got {:?}",
+            result.tenant_root
+        );
+    }
+
+    #[test]
+    fn resolve_slug_via_tenant_flag() {
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        let hints = ResolveHints { tenant_flag: Some("AOS".to_string()) };
+        let result = resolve(dir.path(), hints).expect("should resolve");
+        assert_eq!(result.tenant_slug, "AOS");
+    }
+
+    #[test]
+    fn resolve_slug_via_env_var() {
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        std::env::set_var("ACCELMARS_TENANT", "acme");
+        let hints = ResolveHints { tenant_flag: None };
+        let result = resolve(dir.path(), hints).expect("should resolve");
+        std::env::remove_var("ACCELMARS_TENANT");
+        assert_eq!(result.tenant_slug, "acme");
+    }
+
+    #[test]
+    fn resolve_slug_via_cwd_context() {
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        // cwd is inside .accelmars/AOS/anchor/
+        let inner = dir.path().join(".accelmars").join("AOS").join("anchor");
+        fs::create_dir_all(&inner).unwrap();
+        let hints = ResolveHints { tenant_flag: None };
+        let result = resolve(&inner, hints).expect("should resolve");
+        assert_eq!(result.tenant_slug, "AOS");
+    }
+
+    #[test]
+    fn resolve_slug_via_default_manifest() {
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        // Outer .accelmars/MANIFEST.toml with default_tenant
+        let outer = dir.path().join(".accelmars").join("MANIFEST.toml");
+        fs::write(outer, "default_tenant = \"acme\"\n").unwrap();
+        let hints = ResolveHints { tenant_flag: None };
+        let result = resolve(dir.path(), hints).expect("should resolve");
+        assert_eq!(result.tenant_slug, "acme");
+    }
+
+    #[test]
+    fn resolve_ambiguous_error() {
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        let hints = ResolveHints { tenant_flag: None };
+        let err = resolve(dir.path(), hints).expect_err("should fail — ambiguous");
+        match err {
+            WorkspaceError::AmbiguousTenant(slugs) => {
+                assert!(slugs.contains(&"AOS".to_string()));
+                assert!(slugs.contains(&"acme".to_string()));
+            }
+            other => panic!("expected AmbiguousTenant, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_tenant_not_found() {
+        let dir = make_integrated_workspace(&["AOS"]);
+        let hints = ResolveHints { tenant_flag: Some("missing".to_string()) };
+        let err = resolve(dir.path(), hints).expect_err("should fail — tenant not found");
+        match err {
+            WorkspaceError::TenantNotFound(slug) => assert_eq!(slug, "missing"),
+            other => panic!("expected TenantNotFound, got: {:?}", other),
         }
     }
 }

@@ -8,3 +8,4 @@ pub mod model;
 pub mod refs;
 pub mod server;
 pub use server::{build_state, routes, AnchorState};
+pub use accelmars_resolver_env::{ResolveResult, ResolverMode};

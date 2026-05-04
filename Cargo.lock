@@ -4,8 +4,9 @@ version = 4
 
 [[package]]
 name = "accelmars-anchor"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
+ "accelmars-resolver-env",
  "axum",
  "clap",
  "http-body-util",
@@ -23,6 +24,13 @@ dependencies = [
  "tower 0.4.13",
  "tower-http",
  "walkdir",
+]
+
+[[package]]
+name = "accelmars-resolver-env"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

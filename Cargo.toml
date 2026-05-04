@@ -1,6 +1,6 @@
 [package]
 name = "accelmars-anchor"
-version = "0.7.3"
+version = "0.8.0"
 edition = "2021"
 description = "Reference-safe file operations for Markdown workspaces"
 license = "Apache-2.0"
@@ -15,6 +15,7 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
+accelmars-resolver-env = { path = "../resolver-env" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"

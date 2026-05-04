@@ -53,7 +53,14 @@ enum Commands {
     /// Recover from a crashed operation
     Recover,
     /// Print the workspace root path
-    Root,
+    Root {
+        /// Override the starting directory for workspace discovery
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Select a specific tenant slug (integrated mode only)
+        #[arg(long)]
+        tenant: Option<String>,
+    },
     /// Detect all broken references in the workspace (alias for 'anchor file validate')
     Validate {
         /// Output format (default: human-readable)
@@ -223,7 +230,7 @@ fn main() {
         )),
         Commands::Diff { plan, verbose } => process::exit(cli::diff::run(&plan, verbose)),
         Commands::Recover => process::exit(cli::recover::run()),
-        Commands::Root => cli::root::run(),
+        Commands::Root { cwd, tenant } => cli::root::run(cwd.as_deref(), tenant.as_deref()),
         Commands::Validate { format } => cli::file::validate::run(format),
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output, template } => {
