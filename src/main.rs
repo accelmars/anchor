@@ -53,7 +53,34 @@ enum Commands {
     /// Recover from a crashed operation
     Recover,
     /// Print the workspace root path
-    Root,
+    Root {
+        /// Override the starting directory for workspace discovery
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Select a specific tenant slug (integrated mode only)
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Print the workspace mode: standalone, integrated, or none
+    Mode {
+        /// Override the starting directory for workspace discovery
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// List all tenant slugs in .accelmars/
+    Tenants {
+        /// Override the starting directory for workspace discovery
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// Print the root path for a specific tenant
+    Tenant {
+        /// The tenant slug to look up
+        slug: String,
+        /// Override the starting directory for workspace discovery
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     /// Detect all broken references in the workspace (alias for 'anchor file validate')
     Validate {
         /// Output format (default: human-readable)
@@ -223,7 +250,10 @@ fn main() {
         )),
         Commands::Diff { plan, verbose } => process::exit(cli::diff::run(&plan, verbose)),
         Commands::Recover => process::exit(cli::recover::run()),
-        Commands::Root => cli::root::run(),
+        Commands::Root { cwd, tenant } => cli::root::run(cwd.as_deref(), tenant.as_deref()),
+        Commands::Mode { cwd } => cli::mode::run(cwd.as_deref()),
+        Commands::Tenants { cwd } => cli::tenants::run(cwd.as_deref()),
+        Commands::Tenant { slug, cwd } => cli::tenant::run(&slug, cwd.as_deref()),
         Commands::Validate { format } => cli::file::validate::run(format),
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output, template } => {
