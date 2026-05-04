@@ -166,6 +166,19 @@ pub fn resolve(start: &Path, hints: ResolveHints) -> Result<ResolveResult, Works
     }
 }
 
+/// List all tenant slugs found in the `.accelmars/` directory nearest to `start`.
+/// Returns an empty vec if the workspace is standalone or no workspace exists.
+pub fn list_tenants(start: &Path) -> Result<Vec<String>, WorkspaceError> {
+    match find_dot_accelmars(start) {
+        Ok(dot_accelmars) => {
+            let (_, slugs) = detect_mode(&dot_accelmars);
+            Ok(slugs)
+        }
+        Err(WorkspaceError::NotFound) => Ok(vec![]),
+        Err(e) => Err(e),
+    }
+}
+
 /// Walk up from `start` and return the `.accelmars/` directory path (not its parent).
 fn find_dot_accelmars(start: &Path) -> Result<PathBuf, WorkspaceError> {
     let mut current = start.to_path_buf();
