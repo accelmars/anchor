@@ -369,7 +369,11 @@ mod tests {
         for slug in slugs {
             let slug_dir = dir.path().join(".accelmars").join(slug);
             fs::create_dir_all(&slug_dir).unwrap();
-            fs::write(slug_dir.join("MANIFEST.toml"), format!("slug = \"{}\"", slug)).unwrap();
+            fs::write(
+                slug_dir.join("MANIFEST.toml"),
+                format!("slug = \"{}\"", slug),
+            )
+            .unwrap();
         }
         dir
     }
@@ -379,7 +383,10 @@ mod tests {
         let dir = make_standalone_workspace();
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
-        assert_eq!(result.mode, accelmars_resolver_env::ResolverMode::Standalone);
+        assert_eq!(
+            result.mode,
+            accelmars_resolver_env::ResolverMode::Standalone
+        );
         assert_eq!(result.tenant_slug, "standalone");
         // tenant_root should be the .accelmars/ dir
         assert!(result.tenant_root.ends_with(".accelmars"));
@@ -395,7 +402,10 @@ mod tests {
         let dir = make_integrated_workspace(&["AOS"]);
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
-        assert_eq!(result.mode, accelmars_resolver_env::ResolverMode::Integrated);
+        assert_eq!(
+            result.mode,
+            accelmars_resolver_env::ResolverMode::Integrated
+        );
         assert_eq!(result.tenant_slug, "AOS");
         assert!(
             result.tenant_root.ends_with(".accelmars/AOS"),
@@ -407,7 +417,9 @@ mod tests {
     #[test]
     fn resolve_slug_via_tenant_flag() {
         let dir = make_integrated_workspace(&["AOS", "acme"]);
-        let hints = ResolveHints { tenant_flag: Some("AOS".to_string()) };
+        let hints = ResolveHints {
+            tenant_flag: Some("AOS".to_string()),
+        };
         let result = resolve(dir.path(), hints).expect("should resolve");
         assert_eq!(result.tenant_slug, "AOS");
     }
@@ -461,7 +473,9 @@ mod tests {
     #[test]
     fn resolve_tenant_not_found() {
         let dir = make_integrated_workspace(&["AOS"]);
-        let hints = ResolveHints { tenant_flag: Some("missing".to_string()) };
+        let hints = ResolveHints {
+            tenant_flag: Some("missing".to_string()),
+        };
         let err = resolve(dir.path(), hints).expect_err("should fail — tenant not found");
         match err {
             WorkspaceError::TenantNotFound(slug) => assert_eq!(slug, "missing"),
