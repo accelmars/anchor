@@ -40,6 +40,9 @@ tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
 
+[package.metadata.dist]
+dist = true
+
 [profile.dist]
 inherits = "release"
 lto = "thin"
