@@ -628,13 +628,14 @@ fn find_forward_entry(
 }
 
 /// Try `rewrite_partial_backtick` for each forward_map entry; return first match.
-fn batch_partial_backtick(
+/// Returns `(new_text, old_prefix)` so callers can apply the context-scope filter.
+fn batch_partial_backtick<'a>(
     target_raw: &str,
-    forward_map: &HashMap<CanonicalPath, CanonicalPath>,
-) -> Option<String> {
+    forward_map: &'a HashMap<CanonicalPath, CanonicalPath>,
+) -> Option<(String, &'a CanonicalPath)> {
     for (old_prefix, new_prefix) in forward_map {
         if let Some(new) = rewrite_partial_backtick(target_raw, old_prefix, new_prefix) {
-            return Some(new);
+            return Some((new, old_prefix));
         }
     }
     None
@@ -718,8 +719,15 @@ pub fn batch_plan(
                         }
 
                         remap_path(&target_to_match, &old_prefix, &new_prefix)
-                    } else if let Some(new) = batch_partial_backtick(&target_to_match, forward_map)
+                    } else if let Some((new, old_prefix)) =
+                        batch_partial_backtick(&target_to_match, forward_map)
                     {
+                        let scope = scope_for_move(&scope_resolver, old_prefix);
+                        if !is_in_scope(&file_old, &scope)
+                            && !is_inward_ref(&target_to_match, old_prefix)
+                        {
+                            continue;
+                        }
                         new
                     } else {
                         continue;
