@@ -1,5 +1,5 @@
 [package]
-name = "accelmars-resolver-env"
+name = "accelmars-os-env"
 version = "0.1.0"
 edition = "2021"
 publish = false

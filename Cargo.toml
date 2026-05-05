@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/resolver-env"]
+members = ["crates/os-env"]
 resolver = "2"
 
 [package]
@@ -19,7 +19,7 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
-accelmars-resolver-env = { path = "crates/resolver-env", version = "0.1.0" }
+accelmars-os-env = { path = "crates/os-env", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"

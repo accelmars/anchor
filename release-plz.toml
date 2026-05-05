@@ -26,5 +26,5 @@ changelog_update = false
 # release-plz must be told explicitly to skip it; otherwise it tries to
 # compute an "initial release" and cargo package fails on path-dep version check.
 [[package]]
-name = "accelmars-resolver-env"
+name = "accelmars-os-env"
 release = false
