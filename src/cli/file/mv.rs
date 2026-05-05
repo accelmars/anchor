@@ -114,6 +114,7 @@ pub fn run(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_impl(
     src: &str,
     dst: &str,
