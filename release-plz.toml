@@ -21,3 +21,10 @@ git_tag_name = "{{ package }}-v{{ version }}"
 [[package]]
 name = "accelmars-anchor"
 changelog_update = false
+
+# Private workspace member — not published to crates.io, not released.
+# release-plz must be told explicitly to skip it; otherwise it tries to
+# compute an "initial release" and cargo package fails on path-dep version check.
+[[package]]
+name = "accelmars-resolver-env"
+release = false
