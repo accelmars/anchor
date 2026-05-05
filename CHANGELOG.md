@@ -1,6 +1,12 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+- (**AENG-017**) `anchor file mv` and `anchor apply` no longer rewrite backtick refs whose target does not exist in the workspace. Previously, any directory name that matched a GitHub org, package prefix, or other external namespace (e.g. `accelmars/gateway` when moving `accelmars/` → `company/`) triggered 100% false-positive rewrites across every file containing that shorthand. Fix: existence guard in `transaction::plan()` (pre-move filesystem check) and `transaction::batch_plan()` (pre-move path set built from Phase A scan). Internal refs — a file inside the moved source pointing to another path inside the same source — are always updated regardless of whether the target subdirectory exists on disk.
+
+### Configuration
+- `scope_boundaries` in `.accelmars/anchor/config.json` activates cross-foundation scoping. Example: `{ "schema_version": "1", "scope_boundaries": ["foundations/*"] }`. Without this setting, all files under `accelmars-workspace/` are treated as in scope for any intra-workspace move. The existence guard (AENG-017) is required independently — `scope_boundaries` alone does not prevent external-namespace false positives.
+
 ## [0.7.2] - 2026-05-03
 
 ### Bug Fixes
