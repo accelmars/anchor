@@ -15,7 +15,7 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
-accelmars-resolver-env = { git = "https://github.com/accelmars/resolver-env", rev = "94f5dd1" }
+accelmars-resolver-env = { version = "0.1.0", git = "https://github.com/accelmars/resolver-env", rev = "94f5dd1" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"
