@@ -25,12 +25,11 @@ changelog_update = false
 # not on crates.io; the verify build would try to download it and fail.
 publish_no_verify = true
 
-# Private workspace member (publish = false) — excluded from release-plz.
-# release-plz auto-discovers workspace members; without `release = false` it
-# treats accelmars-os-env as an "initial release" package and runs cargo package
-# on it. Explicit exclusion keeps release-plz scoped to accelmars-anchor only.
-# Note: dep in anchor's Cargo.toml must declare version = "0.1.0" so cargo
-# package manifest validation passes (path dep stripped → registry fallback).
+# Private workspace member (publish = false in Cargo.toml).
+# No `release = false` here: release-plz must track accelmars-os-env as a managed
+# workspace member so the PR #2629 fallback (git_only + local dep failure → file
+# comparison) can activate for accelmars-anchor.
 [[package]]
 name = "accelmars-os-env"
-release = false
+changelog_update = false
+publish_no_verify = true
