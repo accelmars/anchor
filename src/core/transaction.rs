@@ -23,7 +23,7 @@ use crate::model::{
     rewrite::{ProseSkip, RewriteEntry, RewritePlan},
     CanonicalPath,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Error returned by transaction operations.
@@ -370,6 +370,15 @@ pub fn plan(
                 };
 
                 let new_normalized = if inside_src(&target_to_match, src) {
+                    // Existence guard: only for refs from files outside the moved source.
+                    // Files inside src trust their own internal refs regardless of whether
+                    // the target subdirectory exists. Prevents external-namespace strings
+                    // (GitHub org/repo shorthands) from being rewritten. See AENG-017.
+                    if !inside_src(file_canonical, src)
+                        && !workspace_root.join(target_to_match.as_str()).exists()
+                    {
+                        continue;
+                    }
                     remap_path(&target_to_match, src, dst)
                 } else {
                     match rewrite_partial_backtick(&target_to_match, src, dst) {
@@ -659,6 +668,7 @@ pub fn batch_plan(
     forward_map: &HashMap<CanonicalPath, CanonicalPath>,
     reverse_map: &HashMap<CanonicalPath, CanonicalPath>,
     allow_prose_rewrites: bool,
+    pre_move_paths: &HashSet<CanonicalPath>,
 ) -> Result<Vec<RewriteEntry>, TransactionError> {
     let mut entries: Vec<RewriteEntry> = Vec::new();
     let scope_resolver = ScopeResolver::new(workspace_root);
@@ -706,6 +716,14 @@ pub fn batch_plan(
                         if !has_anchor_prefix
                             && find_forward_entry(&file_old, forward_map).map(|(op, _)| op)
                                 == Some(old_prefix.clone())
+                        {
+                            continue;
+                        }
+
+                        // Existence guard: only for refs from files not being moved. Files
+                        // inside a moved op trust their internal refs. See AENG-017.
+                        if find_forward_entry(&file_old, forward_map).is_none()
+                            && !pre_move_paths.contains(&target_to_match)
                         {
                             continue;
                         }
@@ -2415,7 +2433,9 @@ mod tests {
             ("beta", "foundations/beta-engine"),
         ]);
 
-        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
+                .unwrap();
 
         // The ref in foundations/alpha-engine/index.md must be updated
         let alpha_entries: Vec<_> = entries
@@ -2458,7 +2478,9 @@ mod tests {
         let forward = make_forward(&[("projects/foo", "archive/foo")]);
         let reverse = make_reverse(&[("projects/foo", "archive/foo")]);
 
-        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
+                .unwrap();
 
         let readme_entries: Vec<_> = entries
             .iter()
@@ -2499,7 +2521,9 @@ mod tests {
         let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
         let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
 
-        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
+                .unwrap();
 
         let notes_entries: Vec<_> = entries
             .iter()
@@ -2537,7 +2561,9 @@ mod tests {
         let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
         let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
 
-        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
+                .unwrap();
 
         let b_entries: Vec<_> = entries
             .iter()
@@ -2547,6 +2573,163 @@ mod tests {
             b_entries.is_empty(),
             "Case C same-op ref must not produce entry; got: {:?}",
             b_entries
+        );
+    }
+
+    // ── AENG-017: existence guard tests ────────────────────────────────────────
+
+    /// plan() must skip a backtick ref whose target does not exist on disk.
+    /// Prevents GitHub org/repo shorthands like `accelmars/gateway` from being
+    /// treated as workspace references. See AENG-017.
+    #[test]
+    fn plan_skips_nonexistent_github_shorthand() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        // File contains a backtick ref to a path that does NOT exist in the workspace.
+        write_file(
+            root,
+            "docs/README.md",
+            "See `accelmars/gateway` for the API.\n",
+        );
+
+        let workspace_files = vec!["docs/README.md".to_string()];
+        let src = "accelmars".to_string();
+        let dst = "company".to_string();
+
+        // accelmars/ does not exist on disk — existence guard must fire.
+        let result = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        assert!(
+            result.entries.is_empty(),
+            "no rewrites expected for non-existent path; got: {:?}",
+            result.entries
+        );
+    }
+
+    /// plan() must rewrite a backtick ref whose target exists on disk.
+    /// Confirms existence guard does not suppress legitimate references. See AENG-017.
+    #[test]
+    fn plan_rewrites_real_workspace_backtick_path() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        write_file(root, "accelmars/91-intake/README.md", "# Intake\n");
+        write_file(
+            root,
+            "docs/README.md",
+            "See `accelmars/91-intake/README.md`.\n",
+        );
+
+        let workspace_files = vec![
+            "accelmars/91-intake/README.md".to_string(),
+            "docs/README.md".to_string(),
+        ];
+        let src = "accelmars".to_string();
+        let dst = "company".to_string();
+
+        let result = plan(root, &src, &dst, &workspace_files, false).unwrap();
+
+        let doc_entries: Vec<_> = result
+            .entries
+            .iter()
+            .filter(|e| e.file == "docs/README.md")
+            .collect();
+        assert_eq!(doc_entries.len(), 1, "one rewrite entry expected");
+        assert!(
+            doc_entries[0].new_text.contains("company/91-intake/README.md"),
+            "new_text must reference new path; got: {}",
+            doc_entries[0].new_text
+        );
+    }
+
+    /// build_pre_move_paths must include the file itself and every directory ancestor.
+    #[test]
+    fn build_pre_move_paths_includes_ancestors() {
+        use crate::cli::apply::build_pre_move_paths;
+
+        let files = vec!["a/b/c.md".to_string(), "a/b/d.md".to_string()];
+        let set = build_pre_move_paths(&files);
+
+        assert!(set.contains("a/b/c.md"), "must contain file a/b/c.md");
+        assert!(set.contains("a/b/d.md"), "must contain file a/b/d.md");
+        assert!(set.contains("a/b"), "must contain directory a/b");
+        assert!(set.contains("a"), "must contain root ancestor a");
+    }
+
+    /// batch_plan() must skip a backtick ref not in pre_move_paths.
+    /// Prevents GitHub org shorthands from being rewritten post-move. See AENG-017.
+    #[test]
+    fn batch_plan_skips_nonexistent_github_shorthand() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        // File contains a backtick ref to a path never in the workspace.
+        write_file(
+            root,
+            "docs/README.md",
+            "See `accelmars/gateway` for the API.\n",
+        );
+
+        let workspace_files = vec!["docs/README.md".to_string()];
+        let forward = make_forward(&[("accelmars", "company")]);
+        let reverse = make_reverse(&[("accelmars", "company")]);
+
+        // pre_move_paths does NOT include "accelmars/gateway"
+        let pre_move_paths: HashSet<String> = HashSet::new();
+
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &pre_move_paths)
+                .unwrap();
+
+        assert!(
+            entries.is_empty(),
+            "no rewrites expected for non-existent path; got: {:?}",
+            entries
+        );
+    }
+
+    /// batch_plan() must rewrite a backtick ref that IS in pre_move_paths.
+    /// Confirms the guard does not suppress legitimate post-move rewrites. See AENG-017.
+    #[test]
+    fn batch_plan_rewrites_real_pre_move_path() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        // Post-move state: file has moved to company/91-intake/README.md
+        write_file(root, "company/91-intake/README.md", "# Intake\n");
+        write_file(
+            root,
+            "docs/README.md",
+            "See `accelmars/91-intake/README.md`.\n",
+        );
+
+        let workspace_files = vec![
+            "company/91-intake/README.md".to_string(),
+            "docs/README.md".to_string(),
+        ];
+        let forward = make_forward(&[("accelmars", "company")]);
+        let reverse = make_reverse(&[("accelmars", "company")]);
+
+        // pre_move_paths contains the pre-move path of the file being referenced
+        let mut pre_move_paths: HashSet<String> = HashSet::new();
+        pre_move_paths.insert("accelmars/91-intake/README.md".to_string());
+        pre_move_paths.insert("accelmars/91-intake".to_string());
+        pre_move_paths.insert("accelmars".to_string());
+
+        let entries =
+            batch_plan(root, &workspace_files, &forward, &reverse, false, &pre_move_paths)
+                .unwrap();
+
+        let doc_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file == "docs/README.md")
+            .collect();
+        assert_eq!(doc_entries.len(), 1, "one rewrite entry expected");
+        assert!(
+            doc_entries[0].new_text.contains("company/91-intake/README.md"),
+            "new_text must reference new path; got: {}",
+            doc_entries[0].new_text
         );
     }
 }

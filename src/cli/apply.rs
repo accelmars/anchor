@@ -221,6 +221,10 @@ pub(crate) fn run_impl<W: Write>(
     // Phase 4: build virtual maps from Move ops.
     let (forward_map, reverse_map) = build_virtual_maps(&plan.ops);
 
+    // Build pre-move path set from Phase A scan — passed to batch_plan() so it can
+    // distinguish real workspace paths from external-namespace strings. See AENG-017.
+    let pre_move_paths = build_pre_move_paths(&preflight_files);
+
     // Phase 5: compute all ref rewrites in a single virtual-workspace pass.
     let entries = match transaction::batch_plan(
         workspace_root,
@@ -228,6 +232,7 @@ pub(crate) fn run_impl<W: Write>(
         &forward_map,
         &reverse_map,
         false,
+        &pre_move_paths,
     ) {
         Ok(e) => e,
         Err(e) => {
@@ -377,6 +382,22 @@ fn build_virtual_maps(ops: &[Op]) -> (HashMap<String, String>, HashMap<String, S
         }
     }
     (forward_map, reverse_map)
+}
+
+/// Build a set of all pre-move workspace paths (files + every directory ancestor).
+/// Used by batch_plan() to distinguish real workspace paths from external-namespace
+/// strings (GitHub org/repo shorthands, package prefixes, etc.). See AENG-017.
+pub(crate) fn build_pre_move_paths(files: &[String]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for f in files {
+        set.insert(f.clone());
+        let mut p: &str = f.as_str();
+        while let Some(idx) = p.rfind('/') {
+            p = &p[..idx];
+            set.insert(p.to_string());
+        }
+    }
+    set
 }
 
 /// Phase 6: for each unique file in entries, apply rewrites and write to staging area.
