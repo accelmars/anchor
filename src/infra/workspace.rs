@@ -268,6 +268,11 @@ pub fn load_and_check_config(engine_home: &Path) -> Result<WorkspaceConfig, Work
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+
+    // Serialises tests that set or are sensitive to ACCELMARS_TENANT.
+    // std::env is process-global; without this, parallel tests race on the env var.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Happy path: `.accelmars/` directory exists in the start directory.
     /// Verifies: returns Ok(path) matching the temp dir, no trailing slash.
@@ -378,6 +383,7 @@ mod tests {
 
     #[test]
     fn resolve_standalone_compat() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_standalone_workspace();
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
@@ -397,6 +403,7 @@ mod tests {
 
     #[test]
     fn resolve_integrated_happy_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_integrated_workspace(&["AOS"]);
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
@@ -424,6 +431,7 @@ mod tests {
 
     #[test]
     fn resolve_slug_via_env_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         std::env::set_var("ACCELMARS_TENANT", "acme");
         let hints = ResolveHints { tenant_flag: None };
@@ -434,6 +442,7 @@ mod tests {
 
     #[test]
     fn resolve_slug_via_cwd_context() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         // cwd is inside .accelmars/AOS/anchor/
         let inner = dir.path().join(".accelmars").join("AOS").join("anchor");
@@ -445,6 +454,7 @@ mod tests {
 
     #[test]
     fn resolve_slug_via_default_manifest() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         // Outer .accelmars/MANIFEST.toml with default_tenant
         let outer = dir.path().join(".accelmars").join("MANIFEST.toml");
@@ -456,6 +466,7 @@ mod tests {
 
     #[test]
     fn resolve_ambiguous_error() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         let hints = ResolveHints { tenant_flag: None };
         let err = resolve(dir.path(), hints).expect_err("should fail — ambiguous");

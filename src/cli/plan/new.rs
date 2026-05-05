@@ -34,12 +34,12 @@ pub(crate) fn run_with_template(template_id: &str, out_path: Option<&str>) -> i3
         }
     };
     let path_str = out_path.unwrap_or("anchor-plan.toml");
-    if let Err(e) = std::fs::write(path_str, template.content.as_bytes()) {
+    if let Err(e) = std::fs::write(path_str, template.skeleton.as_bytes()) {
         eprintln!("error: could not write {path_str}: {e}");
         return 1;
     }
     println!("Written:  {path_str}");
-    println!("Tip:      edit {path_str} directly for complex plans");
+    println!("Tip:      replace FILL_ME values, then: anchor plan validate {path_str}");
     println!("Validate: anchor plan validate {path_str}");
     println!("Preview:  anchor diff {path_str}");
     println!("Execute:  anchor apply {path_str}");
@@ -608,21 +608,80 @@ mod tests {
         );
     }
 
-    // ── run_with_template (AR-012) ────────────────────────────────────────────
+    // ── run_with_template skeletons (AENG-015) ───────────────────────────────
 
-    /// --template batch-move: writes file with batch-move TOML content, returns 0.
-    #[test]
-    fn test_run_with_template_batch_move_writes_file() {
+    fn skeleton_plan(template_id: &str) -> (i32, Plan) {
         let tmp = TempDir::new().unwrap();
         let out = tmp.path().join("out.toml");
-        let out_str = out.to_str().unwrap();
-        let code = run_with_template("batch-move", Some(out_str));
+        let code = run_with_template(template_id, Some(out.to_str().unwrap()));
+        let plan = load_plan(&out)
+            .unwrap_or_else(|e| panic!("template '{}' skeleton not parseable: {}", template_id, e));
+        (code, plan)
+    }
+
+    /// --template batch-move: writes a parseable plan with Move ops, returns 0.
+    #[test]
+    fn test_run_with_template_batch_move_writes_file() {
+        let (code, plan) = skeleton_plan("batch-move");
         assert_eq!(code, 0);
-        assert!(out.exists(), "file should exist at out.toml");
-        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(!plan.ops.is_empty(), "batch-move skeleton must have ops");
         assert!(
-            content.contains("[meta]"),
-            "content should contain [meta] TOML marker; got:\n{content}"
+            plan.ops.iter().all(|op| matches!(op, Op::Move { .. })),
+            "batch-move skeleton ops must all be Move"
+        );
+    }
+
+    /// --template categorize: CreateDir first, then Move ops.
+    #[test]
+    fn test_run_with_template_categorize_skeleton() {
+        let (code, plan) = skeleton_plan("categorize");
+        assert_eq!(code, 0);
+        assert!(
+            matches!(plan.ops[0], Op::CreateDir { .. }),
+            "categorize skeleton must start with CreateDir"
+        );
+        assert!(
+            plan.ops[1..].iter().all(|op| matches!(op, Op::Move { .. })),
+            "categorize skeleton remaining ops must be Move"
+        );
+    }
+
+    /// --template archive: CreateDir first, then Move ops.
+    #[test]
+    fn test_run_with_template_archive_skeleton() {
+        let (code, plan) = skeleton_plan("archive");
+        assert_eq!(code, 0);
+        assert!(
+            matches!(plan.ops[0], Op::CreateDir { .. }),
+            "archive skeleton must start with CreateDir"
+        );
+        assert!(
+            plan.ops[1..].iter().all(|op| matches!(op, Op::Move { .. })),
+            "archive skeleton remaining ops must be Move"
+        );
+    }
+
+    /// --template rename: all Move ops.
+    #[test]
+    fn test_run_with_template_rename_skeleton() {
+        let (code, plan) = skeleton_plan("rename");
+        assert_eq!(code, 0);
+        assert!(!plan.ops.is_empty(), "rename skeleton must have ops");
+        assert!(
+            plan.ops.iter().all(|op| matches!(op, Op::Move { .. })),
+            "rename skeleton ops must all be Move"
+        );
+    }
+
+    /// --template scaffold: all CreateDir ops.
+    #[test]
+    fn test_run_with_template_scaffold_skeleton() {
+        let (code, plan) = skeleton_plan("scaffold");
+        assert_eq!(code, 0);
+        assert!(!plan.ops.is_empty(), "scaffold skeleton must have ops");
+        assert!(
+            plan.ops.iter().all(|op| matches!(op, Op::CreateDir { .. })),
+            "scaffold skeleton ops must all be CreateDir"
         );
     }
 
