@@ -84,7 +84,7 @@ The command above moves the archive folder. No live path ref appears outside the
 ";
 
     let ws = workspace(&[("TEST-GUIDE.md", content)]);
-    let exit_code = run_on_root(ws.path(), None);
+    let exit_code = run_on_root(ws.path(), &ws.path().join(".accelmars"), None);
     assert_eq!(
         exit_code, 0,
         "workspace with fenced backtick paths must validate clean (exit 0)"
@@ -122,7 +122,7 @@ See [config guide](foundations/gateway-engine/config/environment.md) for real us
     // The foundations/gateway-engine/config/environment.md does not exist —
     // but only the Form 1 link is a live ref; the code-block occurrences are not.
     let ws = workspace(&[("BLUEPRINT.md", content)]);
-    let result = run_on_root(ws.path(), None);
+    let result = run_on_root(ws.path(), &ws.path().join(".accelmars"), None);
     // The workspace has one broken Form 1 link and no false positive from fenced blocks.
     // We assert that the broken refs count is exactly 1 (the Form 1 link, not fenced paths).
     let src2 = "BLUEPRINT.md".to_string();
@@ -180,7 +180,7 @@ echo `../../nonexistent/deep/target.md`
     let ws = workspace(&[("projects/sub/SOURCE.md", content)]);
     // The relative ref ../../nonexistent/deep/target.md from projects/sub/ → resolves to
     // nonexistent/deep/target.md — which does not exist.
-    let exit_code = run_on_root(ws.path(), None);
+    let exit_code = run_on_root(ws.path(), &ws.path().join(".accelmars"), None);
     assert_eq!(
         exit_code, 1,
         "broken backtick ref outside fence must make validator exit 1"
@@ -222,7 +222,7 @@ anchor file mv old/path new/path
 ";
 
     let ws = workspace(&[("GUIDE.md", content)]);
-    let exit_code = run_on_root(ws.path(), None);
+    let exit_code = run_on_root(ws.path(), &ws.path().join(".accelmars"), None);
     assert_eq!(
         exit_code, 0,
         "workspace with tilde-fenced backtick paths must validate clean"

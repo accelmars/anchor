@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AnchorState {
     pub workspace_root: Arc<PathBuf>,
+    pub engine_home: Arc<PathBuf>,
 }
 
 /// Build the axum router with all anchor HTTP endpoints.
@@ -29,9 +30,10 @@ pub fn routes(state: AnchorState) -> Router {
 }
 
 /// Platform composition interface: build AnchorState from a workspace root path.
-pub fn build_state(workspace_root: &Path) -> AnchorState {
+pub fn build_state(workspace_root: &Path, engine_home: &Path) -> AnchorState {
     AnchorState {
         workspace_root: Arc::new(workspace_root.to_path_buf()),
+        engine_home: Arc::new(engine_home.to_path_buf()),
     }
 }
 
@@ -57,9 +59,11 @@ struct ValidateResponse {
 
 async fn handle_file_validate(State(state): State<AnchorState>) -> impl IntoResponse {
     let root = state.workspace_root.as_ref().clone();
-    let result =
-        tokio::task::spawn_blocking(move || crate::cli::file::validate::validate_workspace(&root))
-            .await;
+    let engine = state.engine_home.as_ref().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::cli::file::validate::validate_workspace(&root, &engine)
+    })
+    .await;
 
     match result {
         Ok(Ok(broken)) => {
@@ -99,14 +103,16 @@ mod tests {
     #[test]
     fn test_build_state_from_path() {
         let tmp = TempDir::new().unwrap();
-        let state = build_state(tmp.path());
+        let engine_home = tmp.path().join(".accelmars");
+        let state = build_state(tmp.path(), &engine_home);
         assert_eq!(*state.workspace_root, tmp.path().to_path_buf());
     }
 
     #[tokio::test]
     async fn test_routes_returns_router() {
         let tmp = TempDir::new().unwrap();
-        let router: Router = routes(build_state(tmp.path()));
+        let engine_home = tmp.path().join(".accelmars");
+        let router: Router = routes(build_state(tmp.path(), &engine_home));
         let response = router
             .oneshot(Request::get("/health").body(Body::empty()).unwrap())
             .await
@@ -119,6 +125,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = AnchorState {
             workspace_root: Arc::new(tmp.path().to_path_buf()),
+            engine_home: Arc::new(tmp.path().join(".accelmars")),
         };
         let app = build_router(state);
         let response = app
@@ -138,6 +145,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = AnchorState {
             workspace_root: Arc::new(tmp.path().to_path_buf()),
+            engine_home: Arc::new(tmp.path().join(".accelmars")),
         };
         let app = build_router(state);
         let response = app

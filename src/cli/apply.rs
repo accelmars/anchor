@@ -29,9 +29,13 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
             return 2;
         }
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
+    let engine_home = workspace::resolve(&cwd, workspace::ResolveHints { tenant_flag: None })
+        .map(|r| r.engine_home)
+        .unwrap_or_else(|_| workspace_root.join(".accelmars"));
 
     // Load acked refs from disk, then extend with explicitly specified refs.
-    let mut acked = AckedRefs::load(&workspace_root);
+    let mut acked = AckedRefs::load(&engine_home);
     let mut newly_specified: Vec<(String, usize)> = Vec::new();
 
     for s in allow_broken {
@@ -64,11 +68,17 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
         }
     }
 
-    let exit_code = run_impl(plan_path, &workspace_root, &mut std::io::stdout(), &acked);
+    let exit_code = run_impl(
+        plan_path,
+        &workspace_root,
+        &engine_home,
+        &mut std::io::stdout(),
+        &acked,
+    );
 
     // Persist newly specified refs only on success.
     if exit_code == 0 && !newly_specified.is_empty() {
-        AckedRefs::save(&workspace_root, &newly_specified);
+        AckedRefs::save(&engine_home, &newly_specified);
     }
 
     exit_code
@@ -81,6 +91,7 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
 pub(crate) fn run_impl<W: Write>(
     plan_path: &str,
     workspace_root: &Path,
+    engine_home: &Path,
     out: &mut W,
     acked: &AckedRefs,
 ) -> i32 {
@@ -138,7 +149,14 @@ pub(crate) fn run_impl<W: Write>(
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
             Op::Move { src, dst } => {
-                match execute_move(workspace_root, src, dst, plan_file_abs.as_deref(), acked) {
+                match execute_move(
+                    workspace_root,
+                    engine_home,
+                    src,
+                    dst,
+                    plan_file_abs.as_deref(),
+                    acked,
+                ) {
                     Ok((refs_rewritten, files_touched, acked_warnings)) => {
                         completed += 1;
                         for w in &acked_warnings {
@@ -236,6 +254,7 @@ fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
 /// called directly here, following the same orchestration pattern as mv.rs.
 fn execute_move(
     workspace_root: &Path,
+    engine_home: &Path,
     src: &str,
     dst: &str,
     plan_file_abs: Option<&std::path::Path>,
@@ -244,7 +263,7 @@ fn execute_move(
     // Acquire per-op lock
     let lock_op = format!("apply: move {src} -> {dst}");
     let lock_guard =
-        lock::acquire_lock(workspace_root, &lock_op).map_err(|e| format!("lock error: {e}"))?;
+        lock::acquire_lock(engine_home, &lock_op).map_err(|e| format!("lock error: {e}"))?;
 
     // Scan workspace fresh for this op — captures files moved by prior ops.
     let workspace_files =
@@ -278,14 +297,13 @@ fn execute_move(
     };
 
     // Verify workspace is initialized
-    let anchor_dir = workspace_root.join(".accelmars").join("anchor");
-    if !anchor_dir.exists() {
+    if !engine_home.join("anchor").exists() {
         drop(lock_guard);
         return Err("workspace not initialized. Run 'anchor init' first.".to_string());
     }
 
     // Create temp op dir
-    let op_dir = match temp::create_op_dir(workspace_root) {
+    let op_dir = match temp::create_op_dir(engine_home) {
         Ok(d) => d,
         Err(e) => {
             drop(lock_guard);
@@ -667,7 +685,13 @@ dst = "foundations/moved.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_ne!(code, 0, "missing src must return non-zero exit code");
 
         // Workspace must be unchanged: dst not created, original file still exists
@@ -734,7 +758,13 @@ dst = "src/b.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_ne!(code, 0, "dst-exists must return non-zero exit code");
 
         // src must still exist — no ops executed
@@ -762,7 +792,13 @@ path = "existing-dir"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(
             code, 0,
             "CreateDir with existing path must exit 0 (idempotent)"
@@ -799,7 +835,13 @@ dst = "c.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_ne!(code, 0, "second op must fail — non-zero exit code");
 
         let output = String::from_utf8(out).unwrap();
@@ -843,7 +885,13 @@ dst = "docs/destination.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "successful plan must exit 0");
 
         let output = String::from_utf8(out).unwrap();
@@ -874,7 +922,13 @@ dst = "src/renamed.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "must succeed");
 
         let output = String::from_utf8(out).unwrap();
@@ -931,7 +985,13 @@ dst = "src/renamed.md"
 "#,
         );
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "move with refs must succeed");
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -1057,7 +1117,13 @@ dst = "foundations/beta-engine"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(
             code,
             0,
@@ -1101,7 +1167,13 @@ dst = "other/b"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(
             code,
             0,
@@ -1145,7 +1217,13 @@ dst = "projects/renamed.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 0, "must succeed");
 
         // src must be gone; dst must exist
@@ -1190,7 +1268,13 @@ dst = "docs/destination.md"
         );
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &AckedRefs::empty());
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
         assert_eq!(code, 1, "re-apply must return exit 1");
 
         // stderr capture: use a buffer-based approach via is_already_applied helper directly
@@ -1242,6 +1326,7 @@ dst = "docs/destination.md"
         let code = run_impl(
             plan_path.to_str().unwrap(),
             ws.path(),
+            &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
         );
@@ -1270,6 +1355,7 @@ dst = "docs/destination.md"
         let code = run_impl(
             plan_path.to_str().unwrap(),
             ws.path(),
+            &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
         );
@@ -1316,7 +1402,13 @@ dst = "b.md"
         acked.add("b.md", 1);
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &acked,
+        );
         assert_eq!(code, 0, "acked broken ref must not cause rollback");
 
         let output = String::from_utf8(out).unwrap();
@@ -1354,7 +1446,13 @@ dst = "b.md"
         acked.add("b.md", 999); // wrong line number — does not match b.md:1
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &acked,
+        );
         assert_ne!(code, 0, "wrong file:line must not suppress rollback");
         assert!(
             !ws.path().join("b.md").exists(),
@@ -1383,13 +1481,19 @@ dst = "b.md"
         );
 
         // Simulate a prior --allow-broken run that persisted the acked ref to disk.
-        AckedRefs::save(ws.path(), &[("b.md".to_string(), 1)]);
+        AckedRefs::save(&ws.path().join(".accelmars"), &[("b.md".to_string(), 1)]);
 
         // Second run: no flags — load acked refs from disk only.
-        let acked = AckedRefs::load(ws.path());
+        let acked = AckedRefs::load(&ws.path().join(".accelmars"));
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &acked,
+        );
         assert_eq!(code, 0, "acked ref loaded from disk must suppress rollback");
         assert!(
             ws.path().join("b.md").exists(),
@@ -1427,7 +1531,13 @@ dst = "b.md"
         acked.add("b.md", 1);
 
         let mut out = Vec::new();
-        let code = run_impl(&plan_path, ws.path(), &mut out, &acked);
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &acked,
+        );
         assert_ne!(code, 0, "partial ack must not suppress rollback");
         assert!(
             !ws.path().join("b.md").exists(),

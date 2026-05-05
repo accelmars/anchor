@@ -144,7 +144,7 @@ dst = "foundations/src-module"
     );
 
     // validate::run_on_root exits 0: apply rewrote references, no broken refs remain
-    let validate_code = validate::run_on_root(root, None);
+    let validate_code = validate::run_on_root(root, &root.join(".accelmars"), None);
     assert_eq!(
         validate_code, 0,
         "anchor validate must exit 0 after apply — apply must rewrite all cross-references"

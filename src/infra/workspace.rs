@@ -242,7 +242,7 @@ pub fn find_workspace_root() -> Result<PathBuf, WorkspaceError> {
     find_workspace_root_from(&start)
 }
 
-/// Read `.accelmars/anchor/config.json` from the given workspace root, deserialize it,
+/// Read `anchor/config.json` from the given engine_home, deserialize it,
 /// and enforce schema version compatibility.
 #[allow(dead_code)]
 ///
@@ -251,11 +251,8 @@ pub fn find_workspace_root() -> Result<PathBuf, WorkspaceError> {
 ///
 /// Error message format (exact, per 260425-anchor-workspace-layout.md §4):
 /// `anchor workspace schema version "{v}" is not supported by this version of anchor.`
-pub fn load_and_check_config(workspace_root: &Path) -> Result<WorkspaceConfig, WorkspaceError> {
-    let config_path = workspace_root
-        .join(".accelmars")
-        .join("anchor")
-        .join("config.json");
+pub fn load_and_check_config(engine_home: &Path) -> Result<WorkspaceConfig, WorkspaceError> {
+    let config_path = engine_home.join("anchor").join("config.json");
     let content = std::fs::read_to_string(&config_path).map_err(WorkspaceError::IoError)?;
     let config: WorkspaceConfig =
         serde_json::from_str(&content).map_err(WorkspaceError::InvalidConfig)?;
@@ -330,11 +327,12 @@ mod tests {
     #[test]
     fn test_unsupported_schema_version() {
         let dir = tempfile::tempdir().unwrap();
-        let anchor_dir = dir.path().join(".accelmars").join("anchor");
+        let engine_home = dir.path().join(".accelmars");
+        let anchor_dir = engine_home.join("anchor");
         fs::create_dir_all(&anchor_dir).unwrap();
         fs::write(anchor_dir.join("config.json"), r#"{"schema_version":"99"}"#).unwrap();
 
-        let result = load_and_check_config(dir.path());
+        let result = load_and_check_config(&engine_home);
         match result {
             Err(WorkspaceError::UnsupportedSchemaVersion(v)) => {
                 assert_eq!(v, "99");
@@ -358,7 +356,7 @@ mod tests {
 
     fn make_standalone_workspace() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
-        // Flat engine dirs, no slug subdirs with MANIFEST.toml
+        // Flat engine dirs, no slug subdirs with MANIFEST.toml — standalone mode
         fs::create_dir_all(dir.path().join(".accelmars").join("anchor")).unwrap();
         fs::create_dir_all(dir.path().join(".accelmars").join("canon")).unwrap();
         dir

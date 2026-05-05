@@ -97,6 +97,11 @@ pub fn run(
 
     let workspace_root = workspace::find_workspace_root()?;
     let cwd = std::env::current_dir().ok();
+    let engine_home = cwd
+        .as_deref()
+        .and_then(|c| workspace::resolve(c, workspace::ResolveHints { tenant_flag: None }).ok())
+        .map(|r| r.engine_home)
+        .unwrap_or_else(|| workspace_root.join(".accelmars"));
     run_impl(
         src,
         dst,
@@ -104,10 +109,12 @@ pub fn run(
         format,
         allow_prose_rewrites,
         &workspace_root,
+        &engine_home,
         cwd.as_deref(),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_impl(
     src: &str,
     dst: &str,
@@ -115,6 +122,7 @@ pub(crate) fn run_impl(
     format: Option<OutputFormat>,
     allow_prose_rewrites: bool,
     workspace_root: &std::path::Path,
+    engine_home: &std::path::Path,
     cwd: Option<&std::path::Path>,
 ) -> Result<(), MvError> {
     // ── Resolve src and dst relative to workspace root ───────────────────────
@@ -168,7 +176,7 @@ pub(crate) fn run_impl(
 
     // ── Acquire lock ─────────────────────────────────────────────────────────
     let lock_op = format!("file mv {src_canonical} {dst_canonical}");
-    let lock_guard = lock::acquire_lock(workspace_root, &lock_op)?;
+    let lock_guard = lock::acquire_lock(engine_home, &lock_op)?;
 
     // ── Scan workspace ────────────────────────────────────────────────────────
     let workspace_files = scanner::scan_workspace(workspace_root)?;
@@ -208,14 +216,13 @@ pub(crate) fn run_impl(
     };
 
     // ── Create temp op dir + manifest ─────────────────────────────────────────
-    let anchor_dir = workspace_root.join(".accelmars").join("anchor");
-    if !anchor_dir.exists() {
+    if !engine_home.join("anchor").exists() {
         eprintln!("error: workspace not initialized. Run 'anchor init' first.");
         drop(lock_guard);
         process::exit(2);
     }
 
-    let op_dir = temp::create_op_dir(workspace_root)?;
+    let op_dir = temp::create_op_dir(engine_home)?;
 
     let rewrite_file_list: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
@@ -574,6 +581,7 @@ mod tests {
             None,
             false,
             root.path(),
+            &root.path().join(".accelmars"),
             Some(&subdir),
         );
 
@@ -627,6 +635,7 @@ mod tests {
             None,
             false,
             root.path(),
+            &root.path().join(".accelmars"),
             Some(root.path()),
         );
 

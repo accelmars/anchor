@@ -36,12 +36,16 @@ pub fn run(format: Option<OutputFormat>) -> i32 {
             return 2;
         }
     };
-    run_on_root(&workspace_root, format)
+    let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
+    let engine_home = workspace::resolve(&cwd, workspace::ResolveHints { tenant_flag: None })
+        .map(|r| r.engine_home)
+        .unwrap_or_else(|_| workspace_root.join(".accelmars"));
+    run_on_root(&workspace_root, &engine_home, format)
 }
 
 /// Core validate logic on an explicit workspace root. Public for integration testing.
-pub fn run_on_root(workspace_root: &Path, format: Option<OutputFormat>) -> i32 {
-    match do_validate(workspace_root) {
+pub fn run_on_root(workspace_root: &Path, engine_home: &Path, format: Option<OutputFormat>) -> i32 {
+    match do_validate(workspace_root, engine_home) {
         Ok(result) => {
             let clean = result.broken.is_empty();
             if format == Some(OutputFormat::Json) {
@@ -78,12 +82,12 @@ pub fn run_on_root(workspace_root: &Path, format: Option<OutputFormat>) -> i32 {
 }
 
 /// Scan workspace and return broken reference data. Returns Err on system errors.
-fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
+fn do_validate(workspace_root: &Path, engine_home: &Path) -> Result<ValidateResult, String> {
     let files =
         scanner::scan_workspace(workspace_root).map_err(|e| format!("scanner error: {e}"))?;
     let file_count = files.len();
 
-    let acked = AckedPatterns::load(workspace_root);
+    let acked = AckedPatterns::load(engine_home, workspace_root);
     let mut broken: Vec<(String, usize, String)> = Vec::new();
 
     for file_path in &files {
@@ -166,8 +170,11 @@ fn do_validate(workspace_root: &Path) -> Result<ValidateResult, String> {
 }
 
 /// Return broken refs as structured data for HTTP server handler (server::handle_file_validate).
-pub fn validate_workspace(workspace_root: &Path) -> Result<Vec<(String, usize, String)>, String> {
-    do_validate(workspace_root).map(|r| r.broken)
+pub fn validate_workspace(
+    workspace_root: &Path,
+    engine_home: &Path,
+) -> Result<Vec<(String, usize, String)>, String> {
+    do_validate(workspace_root, engine_home).map(|r| r.broken)
 }
 
 /// Write human-readable output to `w`.
@@ -277,7 +284,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "a.md", "[b](b.md)\n");
         write_file(tmp.path(), "b.md", "# B\n");
-        let code = run_on_root(tmp.path(), None);
+        let code = run_on_root(tmp.path(), &tmp.path().join(".accelmars"), None);
         assert_eq!(
             code, 0,
             "clean workspace must exit 0 via validate alias dispatch"
@@ -289,7 +296,7 @@ mod tests {
     fn test_no_anchor_acked_broken_refs_reported() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "source.md", "[broken](missing.md)\n");
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "broken refs must be reported when no .accelmars/anchor/acked exists"
@@ -307,7 +314,7 @@ mod tests {
             "archive/\n",
         )
         .unwrap();
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             result.broken.is_empty(),
             "broken refs from acked source must be suppressed"
@@ -326,7 +333,7 @@ mod tests {
             "archive/\n",
         )
         .unwrap();
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "broken refs from non-acked source must still be reported"
@@ -349,7 +356,7 @@ mod tests {
             "archive/\n",
         )
         .unwrap();
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(result.broken.is_empty(), "all acked → broken must be empty");
         assert_eq!(result.acknowledged, 2);
     }
@@ -370,7 +377,7 @@ mod tests {
             "archive/\n",
         )
         .unwrap();
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "unresolved refs still present → broken must be non-empty"
@@ -389,7 +396,7 @@ mod tests {
         fs::create_dir_all(tmp.path().join("anchor-foundation")).unwrap();
         write_file(tmp.path(), "anchor-foundation/file.md", "# Target\n");
 
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         let mut out = Vec::new();
         write_human_output(&mut out, tmp.path(), &result, &result.workspace_files).unwrap();
         let output = String::from_utf8(out).unwrap();
@@ -405,7 +412,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "source.md", "[broken](xyz123qwerty.md)\n");
 
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         let mut out = Vec::new();
         write_human_output(&mut out, tmp.path(), &result, &result.workspace_files).unwrap();
         let output = String::from_utf8(out).unwrap();
@@ -427,7 +434,7 @@ mod tests {
         fs::create_dir_all(tmp.path().join("anchor-foundation")).unwrap();
         write_file(tmp.path(), "anchor-foundation/file.md", "# Target\n");
 
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         let mut out = Vec::new();
         write_json_output(&mut out, &result).unwrap();
         let parsed: serde_json::Value =
@@ -450,7 +457,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "a.md", "[link](b.md)\n");
         write_file(tmp.path(), "b.md", "# B\n");
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         let mut out = Vec::new();
         write_json_output(&mut out, &result).unwrap();
         let parsed: serde_json::Value =
@@ -476,7 +483,7 @@ mod tests {
             "contract.md",
             "---\nstart_dir: \"$(anchor root)/nonexistent-path\"\n---\n# Body\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "broken YAML frontmatter path must be reported as broken ref"
@@ -500,7 +507,7 @@ mod tests {
             "contract.md",
             "---\nid: \"AP-001\"\ntitle: \"Test contract\"\nstate: READY\n---\n# Body\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             result.broken.is_empty(),
             "non-path YAML fields must not be reported as broken refs; got: {:?}",
@@ -513,7 +520,7 @@ mod tests {
     fn test_validate_format_json_broken() {
         let tmp = TempDir::new().unwrap();
         write_file(tmp.path(), "docs/index.md", "[missing](../missing.md)\n");
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         let mut out = Vec::new();
         write_json_output(&mut out, &result).unwrap();
         let parsed: serde_json::Value =
@@ -539,7 +546,7 @@ mod tests {
             "config.toml",
             "start_dir = \"$(anchor root)/nonexistent-toml-path\"\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "broken TOML path must be reported as broken ref"
@@ -572,7 +579,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/STATUS.md",
             "See `../../councils/os-council/decisions/foo.md` for context.\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             result.broken.is_empty(),
             "relative backtick resolving to existing file must not be reported as broken; got: {:?}",
@@ -590,7 +597,7 @@ mod tests {
             "accelmars-guild/projects/accelmars-gtm/STATUS.md",
             "See `../../councils/os-council/decisions/missing.md` for context.\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             !result.broken.is_empty(),
             "relative backtick resolving to missing file must be reported as broken"
@@ -611,7 +618,7 @@ mod tests {
             "proposals/MKT-144.md",
             "Path: `$(anchor root)/accelmars-guild/councils/os-council/decisions/foo.md`\n",
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             result.broken.is_empty(),
             "$(anchor root)/ backtick resolving to existing file must not be reported as broken; got: {:?}",
@@ -636,7 +643,7 @@ mod tests {
                 "dst = \"foundations/anchor-engine\"\n",
             ),
         );
-        let result = do_validate(tmp.path()).unwrap();
+        let result = do_validate(tmp.path(), &tmp.path().join(".accelmars")).unwrap();
         assert!(
             result.broken.is_empty(),
             "plan file src/dst relative paths must not be flagged as broken refs; got: {:?}",

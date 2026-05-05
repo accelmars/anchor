@@ -49,18 +49,14 @@ impl From<std::io::Error> for TempError {
 ///
 /// Note: `.accelmars/anchor/tmp/` must reside on the same filesystem as the workspace
 /// so that `rename(2)` is atomic during COMMIT. Do not relocate it.
-pub fn create_op_dir(workspace_root: &Path) -> Result<TempOpDir, TempError> {
+pub fn create_op_dir(engine_home: &Path) -> Result<TempOpDir, TempError> {
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
     let op_dir_name = format!("op-{timestamp_ms}");
-    let op_dir = workspace_root
-        .join(".accelmars")
-        .join("anchor")
-        .join("tmp")
-        .join(&op_dir_name);
+    let op_dir = engine_home.join("anchor").join("tmp").join(&op_dir_name);
 
     std::fs::create_dir_all(op_dir.join("rewrites"))?;
     std::fs::create_dir_all(op_dir.join("moved"))?;
@@ -104,14 +100,14 @@ mod tests {
     #[test]
     fn test_create_op_dir_structure() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        let engine_home = tmp.path().join(".accelmars");
+        fs::create_dir_all(engine_home.join("anchor")).unwrap();
 
-        let op = create_op_dir(root).unwrap();
+        let op = create_op_dir(&engine_home).unwrap();
 
-        // op-{timestamp_ms}/ must be inside .accelmars/anchor/tmp/
-        let tmp_dir = root.join(".accelmars").join("anchor").join("tmp");
-        assert!(tmp_dir.exists(), ".accelmars/anchor/tmp/ must exist");
+        // op-{timestamp_ms}/ must be inside anchor/tmp/
+        let tmp_dir = engine_home.join("anchor").join("tmp");
+        assert!(tmp_dir.exists(), "anchor/tmp/ must exist");
         assert!(op.path.exists(), "op dir must exist");
 
         // op dir name must start with "op-"
@@ -141,20 +137,20 @@ mod tests {
         assert_eq!(encode_path(&"README.md".to_string()), "README.md");
     }
 
-    /// Verify cleanup_op_dir removes the parent `.accelmars/anchor/tmp/` after removing the op dir.
+    /// Verify cleanup_op_dir removes the parent `anchor/tmp/` after removing the op dir.
     #[test]
     fn test_cleanup_op_dir_removes_parent() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        let engine_home = tmp.path().join(".accelmars");
+        fs::create_dir_all(engine_home.join("anchor")).unwrap();
 
-        let op = create_op_dir(root).unwrap();
+        let op = create_op_dir(&engine_home).unwrap();
         cleanup_op_dir(&op).unwrap();
 
-        let tmp_dir = root.join(".accelmars").join("anchor").join("tmp");
+        let tmp_dir = engine_home.join("anchor").join("tmp");
         assert!(
             !tmp_dir.exists(),
-            ".accelmars/anchor/tmp/ must be absent after cleanup_op_dir"
+            "anchor/tmp/ must be absent after cleanup_op_dir"
         );
     }
 
@@ -162,10 +158,10 @@ mod tests {
     #[test]
     fn test_cleanup_op_dir() {
         let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
+        let engine_home = tmp.path().join(".accelmars");
+        fs::create_dir_all(engine_home.join("anchor")).unwrap();
 
-        let op = create_op_dir(root).unwrap();
+        let op = create_op_dir(&engine_home).unwrap();
         let op_path = op.path.clone();
 
         assert!(op_path.exists(), "op dir must exist before cleanup");

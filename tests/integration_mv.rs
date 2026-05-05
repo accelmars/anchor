@@ -47,6 +47,7 @@ enum MvOutcome {
 fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
     let src_canonical = src.to_string();
     let dst_canonical = dst.to_string();
+    let engine_home = root.join(".accelmars");
 
     if !root.join(src).exists() {
         return MvOutcome::Error(format!("src not found: {src}"));
@@ -55,7 +56,7 @@ fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
         return MvOutcome::Error(format!("dst already exists: {dst}"));
     }
 
-    let lock_guard = match lock::acquire_lock(root, &format!("file mv {src} {dst}")) {
+    let lock_guard = match lock::acquire_lock(&engine_home, &format!("file mv {src} {dst}")) {
         Ok(g) => g,
         Err(e) => return MvOutcome::Error(format!("lock: {e}")),
     };
@@ -82,7 +83,7 @@ fn run_mv(root: &Path, src: &str, dst: &str) -> MvOutcome {
         }
     };
 
-    let op_dir = match temp::create_op_dir(root) {
+    let op_dir = match temp::create_op_dir(&engine_home) {
         Ok(d) => d,
         Err(e) => {
             drop(lock_guard);
@@ -271,11 +272,12 @@ fn test_apply_originals_not_touched() {
     let src = "b.md".to_string();
     let dst = "subdir/b.md".to_string();
 
-    let lock_guard = lock::acquire_lock(root, "file mv b.md subdir/b.md").unwrap();
+    let engine_home = root.join(".accelmars");
+    let lock_guard = lock::acquire_lock(&engine_home, "file mv b.md subdir/b.md").unwrap();
     let workspace_files = scanner::scan_workspace(root).unwrap();
     let plan = transaction::plan(root, &src, &dst, &workspace_files, false).unwrap();
 
-    let op_dir = temp::create_op_dir(root).unwrap();
+    let op_dir = temp::create_op_dir(&engine_home).unwrap();
     let mut manifest = Manifest {
         op: "file_mv".to_string(),
         src: src.clone(),
