@@ -103,8 +103,8 @@ fn is_pid_alive(_pid: u32) -> bool {
 /// Returns `"?"` if the directory is empty, doesn't exist, or has no `op-*` entries.
 ///
 /// PHASE-2-BRIDGE Contract 3: silently skip entries not matching the `op-*` pattern.
-fn read_op_id(workspace_root: &Path) -> String {
-    let tmp_dir = workspace_root.join(".accelmars").join("anchor").join("tmp");
+fn read_op_id(engine_home: &Path) -> String {
+    let tmp_dir = engine_home.join("anchor").join("tmp");
     let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
         return "?".to_string();
     };
@@ -128,8 +128,8 @@ fn read_op_id(workspace_root: &Path) -> String {
 /// Inspect: .accelmars/anchor/tmp/op-{id}/manifest.json
 /// When safe, delete .accelmars/anchor/tmp/ and retry.
 /// ```
-fn stale_message(workspace_root: &Path) -> String {
-    let id = read_op_id(workspace_root);
+fn stale_message(engine_home: &Path) -> String {
+    let id = read_op_id(engine_home);
     format!(
         "Found incomplete operation in .accelmars/anchor/tmp/.\n\
          This usually means anchor was killed mid-commit.\n\
@@ -184,8 +184,8 @@ pub fn unix_secs_to_iso8601(secs: u64) -> String {
 /// 3. Neither exists → create `.accelmars/anchor/lock` atomically, return `LockGuard`.
 ///
 /// The returned `LockGuard` releases the lock when dropped.
-pub fn acquire_lock(workspace_root: &Path, op: &str) -> Result<LockGuard, LockError> {
-    let anchor_dir = workspace_root.join(".accelmars").join("anchor");
+pub fn acquire_lock(engine_home: &Path, op: &str) -> Result<LockGuard, LockError> {
+    let anchor_dir = engine_home.join("anchor");
     let lock_path = anchor_dir.join("lock");
     let tmp_dir = anchor_dir.join("tmp");
 
@@ -198,7 +198,7 @@ pub fn acquire_lock(workspace_root: &Path, op: &str) -> Result<LockGuard, LockEr
             return Err(LockError::AlreadyRunning { pid: lock_file.pid });
         } else {
             return Err(LockError::StaleLock {
-                message: stale_message(workspace_root),
+                message: stale_message(engine_home),
             });
         }
     }
@@ -206,7 +206,7 @@ pub fn acquire_lock(workspace_root: &Path, op: &str) -> Result<LockGuard, LockEr
     // No lock file — check for orphan .accelmars/anchor/tmp/ (stale state without lock).
     if tmp_dir.exists() {
         return Err(LockError::StaleLock {
-            message: stale_message(workspace_root),
+            message: stale_message(engine_home),
         });
     }
 
@@ -228,10 +228,11 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Creates `.accelmars/anchor/` under root and returns `.accelmars/` as engine_home.
     fn make_anchor_dir(root: &Path) -> PathBuf {
-        let anchor = root.join(".accelmars").join("anchor");
-        fs::create_dir_all(&anchor).unwrap();
-        anchor
+        let engine_home = root.join(".accelmars");
+        fs::create_dir_all(engine_home.join("anchor")).unwrap();
+        engine_home
     }
 
     /// Test 1: Create lock — `.accelmars/anchor/lock` created with correct pid, started (ISO timestamp), op fields.
@@ -239,9 +240,9 @@ mod tests {
     fn test_create_lock_fields() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        make_anchor_dir(root);
+        let engine_home = make_anchor_dir(root);
 
-        let guard = acquire_lock(root, "file mv src dst").unwrap();
+        let guard = acquire_lock(&engine_home, "file mv src dst").unwrap();
 
         let lock_path = root.join(".accelmars").join("anchor").join("lock");
         assert!(
@@ -273,7 +274,7 @@ mod tests {
     fn test_acquire_already_running() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let anchor_dir = make_anchor_dir(root);
+        let engine_home = make_anchor_dir(root);
 
         // Write a lock file with the current process's PID (always alive during the test)
         let pid = std::process::id();
@@ -283,12 +284,12 @@ mod tests {
             op: "test".to_string(),
         };
         fs::write(
-            anchor_dir.join("lock"),
+            engine_home.join("anchor").join("lock"),
             serde_json::to_string(&lock).unwrap(),
         )
         .unwrap();
 
-        let err = acquire_lock(root, "test").unwrap_err();
+        let err = acquire_lock(&engine_home, "test").unwrap_err();
         match err {
             LockError::AlreadyRunning { pid: err_pid } => {
                 assert_eq!(err_pid, pid);
@@ -310,10 +311,10 @@ mod tests {
     fn test_acquire_stale_dead_pid() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let anchor_dir = make_anchor_dir(root);
+        let engine_home = make_anchor_dir(root);
 
         // Create .accelmars/anchor/tmp/op-99999/ so the stale message has a known id
-        fs::create_dir_all(anchor_dir.join("tmp").join("op-99999")).unwrap();
+        fs::create_dir_all(engine_home.join("anchor").join("tmp").join("op-99999")).unwrap();
 
         // Write a lock file with a definitely-dead PID
         let dead_pid: u32 = 999_999_999;
@@ -323,12 +324,12 @@ mod tests {
             op: "test".to_string(),
         };
         fs::write(
-            anchor_dir.join("lock"),
+            engine_home.join("anchor").join("lock"),
             serde_json::to_string(&lock).unwrap(),
         )
         .unwrap();
 
-        let err = acquire_lock(root, "test").unwrap_err();
+        let err = acquire_lock(&engine_home, "test").unwrap_err();
         match err {
             LockError::StaleLock { message } => {
                 // Verify verbatim stale message format
@@ -358,12 +359,12 @@ mod tests {
     fn test_acquire_tmp_without_lock() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let anchor_dir = make_anchor_dir(root);
+        let engine_home = make_anchor_dir(root);
 
         // Create .accelmars/anchor/tmp/op-12345/ but NO lock file
-        fs::create_dir_all(anchor_dir.join("tmp").join("op-12345")).unwrap();
+        fs::create_dir_all(engine_home.join("anchor").join("tmp").join("op-12345")).unwrap();
 
-        let err = acquire_lock(root, "test").unwrap_err();
+        let err = acquire_lock(&engine_home, "test").unwrap_err();
         match err {
             LockError::StaleLock { message } => {
                 assert!(
@@ -384,12 +385,12 @@ mod tests {
     fn test_lockguard_drop_releases_lock() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        make_anchor_dir(root);
+        let engine_home = make_anchor_dir(root);
 
-        let lock_path = root.join(".accelmars").join("anchor").join("lock");
+        let lock_path = engine_home.join("anchor").join("lock");
 
         {
-            let _guard = acquire_lock(root, "test").unwrap();
+            let _guard = acquire_lock(&engine_home, "test").unwrap();
             assert!(lock_path.exists(), "lock must exist while guard is held");
         } // guard dropped here
 

@@ -13,7 +13,14 @@ use std::path::Path;
 
 pub fn run() -> i32 {
     match workspace::find_workspace_root() {
-        Ok(root) => recover_workspace(&root),
+        Ok(workspace_root) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
+            let engine_home =
+                workspace::resolve(&cwd, workspace::ResolveHints { tenant_flag: None })
+                    .map(|r| r.engine_home)
+                    .unwrap_or_else(|_| workspace_root.join(".accelmars"));
+            recover_workspace(&engine_home)
+        }
         Err(e) => {
             eprintln!("error: {e}");
             1
@@ -21,8 +28,8 @@ pub fn run() -> i32 {
     }
 }
 
-fn recover_workspace(workspace_root: &Path) -> i32 {
-    let tmp_dir = workspace_root.join(".accelmars").join("anchor").join("tmp");
+fn recover_workspace(engine_home: &Path) -> i32 {
+    let tmp_dir = engine_home.join("anchor").join("tmp");
 
     if !tmp_dir.exists() {
         println!("No stale operations found.");
@@ -80,10 +87,7 @@ fn recover_workspace(workspace_root: &Path) -> i32 {
     }
 
     // Release lock file if it belongs to a dead process.
-    let lock_path = workspace_root
-        .join(".accelmars")
-        .join("anchor")
-        .join("lock");
+    let lock_path = engine_home.join("anchor").join("lock");
     if lock_path.exists() {
         maybe_release_stale_lock(&lock_path);
     }
@@ -192,7 +196,7 @@ mod tests {
         let root = make_workspace(&tmp);
         fs::create_dir_all(root.join(".accelmars").join("anchor").join("tmp")).unwrap();
 
-        let exit_code = recover_workspace(&root);
+        let exit_code = recover_workspace(&root.join(".accelmars"));
         assert_eq!(exit_code, 0, "empty tmp must return exit 0");
     }
 
@@ -204,7 +208,7 @@ mod tests {
         let op_dir = make_op_dir(&root, "op-111");
         write_phase(&op_dir, "VALIDATE");
 
-        let exit_code = recover_workspace(&root);
+        let exit_code = recover_workspace(&root.join(".accelmars"));
         assert_eq!(exit_code, 0, "pre-commit op must return exit 0");
         assert!(!op_dir.exists(), "op dir must be deleted after rollback");
     }
@@ -217,7 +221,7 @@ mod tests {
         let op_dir = make_op_dir(&root, "op-222");
         write_phase(&op_dir, "COMMIT");
 
-        let exit_code = recover_workspace(&root);
+        let exit_code = recover_workspace(&root.join(".accelmars"));
         assert_eq!(exit_code, 1, "partial commit must return exit 1");
         assert!(
             op_dir.exists(),

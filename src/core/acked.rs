@@ -21,13 +21,14 @@ pub struct AckedPatterns {
 }
 
 impl AckedPatterns {
-    /// Load `.accelmars/anchor/acked` from `workspace_root`. Returns an instance with no
-    /// patterns if the file is absent or unreadable (not an error).
-    pub fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root
-            .join(".accelmars")
-            .join("anchor")
-            .join("acked");
+    /// Load the acked file from `engine_home/anchor/acked`.
+    ///
+    /// `workspace_root` is the project root — used as the gitignore base so that patterns
+    /// in the acked file are matched against workspace-root-relative paths (as passed to
+    /// `is_acked`). `engine_home` is `.accelmars/<slug>/` in integrated mode or `.accelmars/`
+    /// in standalone mode.
+    pub fn load(engine_home: &Path, workspace_root: &Path) -> Self {
+        let path = engine_home.join("anchor").join("acked");
         if !path.exists() {
             return Self { inner: None };
         }
@@ -63,22 +64,24 @@ impl AckedPatterns {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn write_anchor_acked(root: &Path, content: &str) {
-        fs::create_dir_all(root.join(".accelmars").join("anchor")).unwrap();
-        fs::write(
-            root.join(".accelmars").join("anchor").join("acked"),
-            content,
-        )
-        .unwrap();
+    /// Creates engine_home/.accelmars/ structure and writes the acked file.
+    /// Returns (workspace_root, engine_home) where engine_home = workspace_root/.accelmars/
+    fn write_anchor_acked(tmp: &Path, content: &str) -> (PathBuf, PathBuf) {
+        let engine_home = tmp.join(".accelmars");
+        fs::create_dir_all(engine_home.join("anchor")).unwrap();
+        fs::write(engine_home.join("anchor").join("acked"), content).unwrap();
+        (tmp.to_path_buf(), engine_home)
     }
 
-    /// No .accelmars/anchor/acked file → is_acked always returns false.
+    /// No acked file → is_acked always returns false.
     #[test]
     fn test_absent_returns_false() {
         let tmp = TempDir::new().unwrap();
-        let acked = AckedPatterns::load(tmp.path());
+        let engine_home = tmp.path().join(".accelmars");
+        let acked = AckedPatterns::load(&engine_home, tmp.path());
         assert!(!acked.is_acked("my-workspace/projects/archive/foo.md"));
         assert!(!acked.is_acked("any/path.md"));
     }
@@ -87,8 +90,9 @@ mod tests {
     #[test]
     fn test_matching_pattern_returns_true() {
         let tmp = TempDir::new().unwrap();
-        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
-        let acked = AckedPatterns::load(tmp.path());
+        let (workspace_root, engine_home) =
+            write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
+        let acked = AckedPatterns::load(&engine_home, &workspace_root);
         assert!(acked.is_acked("my-workspace/projects/archive/old-contract.md"));
     }
 
@@ -96,8 +100,9 @@ mod tests {
     #[test]
     fn test_non_matching_pattern_returns_false() {
         let tmp = TempDir::new().unwrap();
-        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
-        let acked = AckedPatterns::load(tmp.path());
+        let (workspace_root, engine_home) =
+            write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\n");
+        let acked = AckedPatterns::load(&engine_home, &workspace_root);
         assert!(!acked.is_acked("my-workspace/projects/active/current.md"));
     }
 
@@ -105,28 +110,30 @@ mod tests {
     #[test]
     fn test_multiple_patterns() {
         let tmp = TempDir::new().unwrap();
-        write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\nother-repo/\n");
-        let acked = AckedPatterns::load(tmp.path());
+        let (workspace_root, engine_home) =
+            write_anchor_acked(tmp.path(), "my-workspace/projects/archive/\nother-repo/\n");
+        let acked = AckedPatterns::load(&engine_home, &workspace_root);
         assert!(acked.is_acked("my-workspace/projects/archive/foo.md"));
         assert!(acked.is_acked("other-repo/design/old.md"));
         assert!(!acked.is_acked("my-workspace/active/current.md"));
     }
 
-    /// Empty .accelmars/anchor/acked file → no patterns → is_acked always false.
+    /// Empty acked file → no patterns → is_acked always false.
     #[test]
     fn test_empty_file_no_patterns() {
         let tmp = TempDir::new().unwrap();
-        write_anchor_acked(tmp.path(), "");
-        let acked = AckedPatterns::load(tmp.path());
+        let (workspace_root, engine_home) = write_anchor_acked(tmp.path(), "");
+        let acked = AckedPatterns::load(&engine_home, &workspace_root);
         assert!(!acked.is_acked("any/path.md"));
     }
 
-    /// Comments-only .accelmars/anchor/acked file → no active patterns → is_acked false.
+    /// Comments-only acked file → no active patterns → is_acked false.
     #[test]
     fn test_comments_only() {
         let tmp = TempDir::new().unwrap();
-        write_anchor_acked(tmp.path(), "# this is a comment\n# another comment\n");
-        let acked = AckedPatterns::load(tmp.path());
+        let (workspace_root, engine_home) =
+            write_anchor_acked(tmp.path(), "# this is a comment\n# another comment\n");
+        let acked = AckedPatterns::load(&engine_home, &workspace_root);
         assert!(!acked.is_acked("any/path.md"));
     }
 }
@@ -148,12 +155,9 @@ impl AckedRefs {
         }
     }
 
-    /// Load `file:line` entries from `.accelmars/anchor/acked`. Tolerates missing file.
-    pub(crate) fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root
-            .join(".accelmars")
-            .join("anchor")
-            .join("acked");
+    /// Load `file:line` entries from `engine_home/anchor/acked`. Tolerates missing file.
+    pub(crate) fn load(engine_home: &Path) -> Self {
+        let path = engine_home.join("anchor").join("acked");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return Self::empty(),
@@ -162,12 +166,12 @@ impl AckedRefs {
         Self { entries }
     }
 
-    /// Append newly specified refs to `.accelmars/anchor/acked`. Skips existing duplicates.
-    pub(crate) fn save(workspace_root: &Path, refs: &[(String, usize)]) {
+    /// Append newly specified refs to `engine_home/anchor/acked`. Skips existing duplicates.
+    pub(crate) fn save(engine_home: &Path, refs: &[(String, usize)]) {
         if refs.is_empty() {
             return;
         }
-        let existing = Self::load(workspace_root);
+        let existing = Self::load(engine_home);
         let new_lines: Vec<String> = refs
             .iter()
             .filter(|(f, l)| !existing.contains(f, *l))
@@ -176,10 +180,7 @@ impl AckedRefs {
         if new_lines.is_empty() {
             return;
         }
-        let path = workspace_root
-            .join(".accelmars")
-            .join("anchor")
-            .join("acked");
+        let path = engine_home.join("anchor").join("acked");
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -221,20 +222,22 @@ pub(crate) fn parse_ref_line(line: &str) -> Option<(String, usize)> {
 mod acked_refs_tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
+    /// Returns TempDir; engine_home = tmp.path().join(".accelmars")
     fn make_workspace() -> TempDir {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join(".accelmars").join("anchor")).unwrap();
         tmp
     }
 
-    fn write_acked(root: &Path, content: &str) {
-        fs::write(
-            root.join(".accelmars").join("anchor").join("acked"),
-            content,
-        )
-        .unwrap();
+    fn engine_home(ws: &TempDir) -> PathBuf {
+        ws.path().join(".accelmars")
+    }
+
+    fn write_acked(ws: &TempDir, content: &str) {
+        fs::write(engine_home(ws).join("anchor").join("acked"), content).unwrap();
     }
 
     // ── parse_ref_line ────────────────────────────────────────────────────────
@@ -274,15 +277,15 @@ mod acked_refs_tests {
     #[test]
     fn test_load_absent_file_returns_empty() {
         let ws = make_workspace();
-        let acked = AckedRefs::load(ws.path());
+        let acked = AckedRefs::load(&engine_home(&ws));
         assert!(!acked.contains("any/file.md", 1));
     }
 
     #[test]
     fn test_load_parses_file_line_entries() {
         let ws = make_workspace();
-        write_acked(ws.path(), "foundations/engine.md:42\nother/file.md:7\n");
-        let acked = AckedRefs::load(ws.path());
+        write_acked(&ws, "foundations/engine.md:42\nother/file.md:7\n");
+        let acked = AckedRefs::load(&engine_home(&ws));
         assert!(acked.contains("foundations/engine.md", 42));
         assert!(acked.contains("other/file.md", 7));
         assert!(!acked.contains("foundations/engine.md", 43));
@@ -291,12 +294,11 @@ mod acked_refs_tests {
     #[test]
     fn test_load_skips_gitignore_patterns() {
         let ws = make_workspace();
-        // Mix of gitignore patterns and file:line entries
         write_acked(
-            ws.path(),
+            &ws,
             "my-workspace/archive/\nfoundations/engine.md:42\n# comment\n",
         );
-        let acked = AckedRefs::load(ws.path());
+        let acked = AckedRefs::load(&engine_home(&ws));
         assert!(acked.contains("foundations/engine.md", 42));
         assert!(!acked.contains("my-workspace/archive/", 0));
     }
@@ -306,18 +308,18 @@ mod acked_refs_tests {
     #[test]
     fn test_save_appends_new_entries() {
         let ws = make_workspace();
-        AckedRefs::save(ws.path(), &[("file.md".to_string(), 1)]);
-        let acked = AckedRefs::load(ws.path());
+        AckedRefs::save(&engine_home(&ws), &[("file.md".to_string(), 1)]);
+        let acked = AckedRefs::load(&engine_home(&ws));
         assert!(acked.contains("file.md", 1));
     }
 
     #[test]
     fn test_save_deduplicates_existing_entries() {
         let ws = make_workspace();
-        AckedRefs::save(ws.path(), &[("file.md".to_string(), 1)]);
-        AckedRefs::save(ws.path(), &[("file.md".to_string(), 1)]);
+        AckedRefs::save(&engine_home(&ws), &[("file.md".to_string(), 1)]);
+        AckedRefs::save(&engine_home(&ws), &[("file.md".to_string(), 1)]);
         let content =
-            fs::read_to_string(ws.path().join(".accelmars").join("anchor").join("acked")).unwrap();
+            fs::read_to_string(engine_home(&ws).join("anchor").join("acked")).unwrap();
         assert_eq!(
             content.lines().filter(|l| *l == "file.md:1").count(),
             1,
@@ -328,13 +330,8 @@ mod acked_refs_tests {
     #[test]
     fn test_save_creates_file_when_absent() {
         let ws = make_workspace();
-        AckedRefs::save(ws.path(), &[("new.md".to_string(), 5)]);
-        assert!(ws
-            .path()
-            .join(".accelmars")
-            .join("anchor")
-            .join("acked")
-            .exists());
+        AckedRefs::save(&engine_home(&ws), &[("new.md".to_string(), 5)]);
+        assert!(engine_home(&ws).join("anchor").join("acked").exists());
     }
 
     // ── AckedRefs::add + contains ─────────────────────────────────────────────

@@ -24,9 +24,14 @@ async fn serve_async(port: u16) -> i32 {
             return 1;
         }
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| workspace_root.clone());
+    let engine_home = workspace::resolve(&cwd, workspace::ResolveHints { tenant_flag: None })
+        .map(|r| r.engine_home)
+        .unwrap_or_else(|_| workspace_root.join(".accelmars"));
 
     let state = AnchorState {
         workspace_root: Arc::new(workspace_root),
+        engine_home: Arc::new(engine_home),
     };
     let app = build_router(state);
 
