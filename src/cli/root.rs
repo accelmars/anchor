@@ -1,4 +1,4 @@
-use accelmars_resolver_env::ResolverMode;
+use crate::infra::resolver_env::ResolverMode;
 
 use crate::infra::workspace::{resolve, ResolveHints, WorkspaceError};
 

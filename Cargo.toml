@@ -5,8 +5,6 @@ edition = "2021"
 description = "Reference-safe file operations for Markdown workspaces"
 license = "Apache-2.0"
 repository = "https://github.com/accelmars/anchor"
-# Private git dep (accelmars-resolver-env) blocks crates.io publishing until that crate is open-sourced.
-publish = false
 
 [lib]
 name = "accelmars_anchor"
@@ -17,7 +15,6 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
-accelmars-resolver-env = { git = "https://github.com/accelmars/resolver-env", rev = "94f5dd1" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"
@@ -39,9 +36,6 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
-
-[package.metadata.dist]
-dist = true
 
 [profile.dist]
 inherits = "release"
