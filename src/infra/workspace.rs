@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::infra::resolver_env::{ResolveResult, ResolverMode};
+use accelmars_resolver_env::{ResolveResult, ResolverMode};
 
 use crate::model::config::WorkspaceConfig;
 
@@ -389,7 +389,7 @@ mod tests {
         let result = resolve(dir.path(), hints).expect("should resolve");
         assert_eq!(
             result.mode,
-            crate::infra::resolver_env::ResolverMode::Standalone
+            accelmars_resolver_env::ResolverMode::Standalone
         );
         assert_eq!(result.tenant_slug, "standalone");
         // tenant_root should be the .accelmars/ dir
@@ -409,7 +409,7 @@ mod tests {
         let result = resolve(dir.path(), hints).expect("should resolve");
         assert_eq!(
             result.mode,
-            crate::infra::resolver_env::ResolverMode::Integrated
+            accelmars_resolver_env::ResolverMode::Integrated
         );
         assert_eq!(result.tenant_slug, "AOS");
         assert!(
