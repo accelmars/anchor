@@ -6,7 +6,6 @@ version = 4
 name = "accelmars-anchor"
 version = "0.8.0"
 dependencies = [
- "accelmars-resolver-env",
  "axum",
  "clap",
  "http-body-util",
@@ -24,14 +23,6 @@ dependencies = [
  "tower 0.4.13",
  "tower-http",
  "walkdir",
-]
-
-[[package]]
-name = "accelmars-resolver-env"
-version = "0.1.0"
-source = "git+https://github.com/accelmars/resolver-env?rev=94f5dd1#94f5dd195c22de0bc4d84373ab0cde4f8c5f3e5b"
-dependencies = [
- "serde",
 ]
 
 [[package]]
