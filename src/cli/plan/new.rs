@@ -614,9 +614,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let out = tmp.path().join("out.toml");
         let code = run_with_template(template_id, Some(out.to_str().unwrap()));
-        let plan = load_plan(&out).unwrap_or_else(|e| {
-            panic!("template '{}' skeleton not parseable: {}", template_id, e)
-        });
+        let plan = load_plan(&out)
+            .unwrap_or_else(|e| panic!("template '{}' skeleton not parseable: {}", template_id, e));
         (code, plan)
     }
 
