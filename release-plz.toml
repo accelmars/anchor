@@ -21,15 +21,16 @@ git_tag_name = "{{ package }}-v{{ version }}"
 [[package]]
 name = "accelmars-anchor"
 changelog_update = false
-# Skip cargo package --verify step: accelmars-os-env is a path dep (publish = false)
-# not on crates.io; the verify build would try to download it and fail.
-publish_no_verify = true
+# release = false: release-plz will not create release PRs or git tags for this package.
+# Interim fix: accelmars-os-env is a workspace path dep not on crates.io; cargo package
+# validates path dep versions against the registry and fails. release = false bypasses
+# all cargo package invocations. Re-enable when accelmars-os-env publishes to crates.io.
+# Manual release process: see company/91-intake/260506-anchor-release-plz-disable.md
+release = false
 
-# Private workspace member (publish = false in Cargo.toml).
-# No `release = false` here: release-plz must track accelmars-os-env as a managed
-# workspace member so the PR #2629 fallback (git_only + local dep failure → file
-# comparison) can activate for accelmars-anchor.
 [[package]]
 name = "accelmars-os-env"
 changelog_update = false
-publish_no_verify = true
+# release = false: accelmars-os-env is publish = false (internal path dep only).
+# Not intended for independent git-tag releases.
+release = false
