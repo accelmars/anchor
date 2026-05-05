@@ -22,9 +22,12 @@ git_tag_name = "{{ package }}-v{{ version }}"
 name = "accelmars-anchor"
 changelog_update = false
 
-# Private workspace member — not published to crates.io, not released.
-# release-plz must be told explicitly to skip it; otherwise it tries to
-# compute an "initial release" and cargo package fails on path-dep version check.
+# Private workspace member (publish = false) — excluded from release-plz.
+# release-plz auto-discovers workspace members; without `release = false` it
+# treats accelmars-os-env as an "initial release" package and runs cargo package
+# on it. Explicit exclusion keeps release-plz scoped to accelmars-anchor only.
+# Note: dep in anchor's Cargo.toml must declare version = "0.1.0" so cargo
+# package manifest validation passes (path dep stripped → registry fallback).
 [[package]]
 name = "accelmars-os-env"
 release = false
