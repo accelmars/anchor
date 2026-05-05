@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use accelmars_resolver_env::{ResolveResult, ResolverMode};
+use accelmars_os_env::{ResolveResult, ResolverMode};
 
 use crate::model::config::WorkspaceConfig;
 
@@ -387,10 +387,7 @@ mod tests {
         let dir = make_standalone_workspace();
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
-        assert_eq!(
-            result.mode,
-            accelmars_resolver_env::ResolverMode::Standalone
-        );
+        assert_eq!(result.mode, accelmars_os_env::ResolverMode::Standalone);
         assert_eq!(result.tenant_slug, "standalone");
         // tenant_root should be the .accelmars/ dir
         assert!(result.tenant_root.ends_with(".accelmars"));
@@ -407,10 +404,7 @@ mod tests {
         let dir = make_integrated_workspace(&["AOS"]);
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
-        assert_eq!(
-            result.mode,
-            accelmars_resolver_env::ResolverMode::Integrated
-        );
+        assert_eq!(result.mode, accelmars_os_env::ResolverMode::Integrated);
         assert_eq!(result.tenant_slug, "AOS");
         assert!(
             result.tenant_root.ends_with(".accelmars/AOS"),

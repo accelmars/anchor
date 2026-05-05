@@ -7,5 +7,5 @@ pub mod infra;
 pub mod model;
 pub mod refs;
 pub mod server;
-pub use accelmars_resolver_env::{ResolveResult, ResolverMode};
+pub use accelmars_os_env::{ResolveResult, ResolverMode};
 pub use server::{build_state, routes, AnchorState};
