@@ -170,7 +170,10 @@ fn do_validate(workspace_root: &Path, engine_home: &Path) -> Result<ValidateResu
 }
 
 /// Return broken refs as structured data for HTTP server handler (server::handle_file_validate).
-pub fn validate_workspace(workspace_root: &Path, engine_home: &Path) -> Result<Vec<(String, usize, String)>, String> {
+pub fn validate_workspace(
+    workspace_root: &Path,
+    engine_home: &Path,
+) -> Result<Vec<(String, usize, String)>, String> {
     do_validate(workspace_root, engine_home).map(|r| r.broken)
 }
 

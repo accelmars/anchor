@@ -318,8 +318,7 @@ mod acked_refs_tests {
         let ws = make_workspace();
         AckedRefs::save(&engine_home(&ws), &[("file.md".to_string(), 1)]);
         AckedRefs::save(&engine_home(&ws), &[("file.md".to_string(), 1)]);
-        let content =
-            fs::read_to_string(engine_home(&ws).join("anchor").join("acked")).unwrap();
+        let content = fs::read_to_string(engine_home(&ws).join("anchor").join("acked")).unwrap();
         assert_eq!(
             content.lines().filter(|l| *l == "file.md:1").count(),
             1,

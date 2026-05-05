@@ -56,10 +56,7 @@ pub fn create_op_dir(engine_home: &Path) -> Result<TempOpDir, TempError> {
         .as_millis() as u64;
 
     let op_dir_name = format!("op-{timestamp_ms}");
-    let op_dir = engine_home
-        .join("anchor")
-        .join("tmp")
-        .join(&op_dir_name);
+    let op_dir = engine_home.join("anchor").join("tmp").join(&op_dir_name);
 
     std::fs::create_dir_all(op_dir.join("rewrites"))?;
     std::fs::create_dir_all(op_dir.join("moved"))?;
