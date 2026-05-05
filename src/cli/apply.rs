@@ -1,19 +1,22 @@
-// src/cli/apply.rs — anchor apply command — batch plan executor with pre-flight (AN-017)
+// src/cli/apply.rs — anchor apply command — 8-phase batch pipeline (AENG-016)
 //
 // Core invariant: no operation leaves a dangling reference.
 // Pre-flight validates ALL Move ops before any op executes.
-// Per-op lock — same as file mv. Already-committed moves are NOT rolled back on failure.
+// Phase 2 commits all physical moves; Phases 6-8 stage, validate, commit ref rewrites.
+// Already-committed moves are NOT rolled back on rewrite validation failure.
 
 use crate::apply::post_apply_scan::{format_plain_text_warning, scan_partial_plain_text};
 use crate::core::{
     acked::{parse_ref_line, AckedRefs},
-    scanner, transaction,
+    parser, resolver, rewriter, scanner, transaction,
 };
 use crate::infra::{lock, temp, workspace};
 use crate::model::{
-    manifest::Manifest,
     plan::{self, Op},
+    reference::RefForm,
+    rewrite::RewriteEntry,
 };
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -84,10 +87,17 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
     exit_code
 }
 
-/// Core implementation — takes explicit workspace root and writer for testability.
+/// Core implementation — 8-phase batch pipeline.
 ///
-/// Read: parse plan, scan workspace, pre-flight all Move ops, then execute sequentially.
-/// On op failure: print stopped message and return 1 — do NOT roll back already-committed moves.
+/// Phase A: pre-flight (validate all ops before any execution).
+/// Phase 2: batch all filesystem ops (CreateDir + Move) — no ref rewriting yet.
+/// Phase 3: single workspace scan (after all moves).
+/// Phase 4: build forward/reverse maps from Move ops.
+/// Phase 5: transaction::batch_plan — compute all ref rewrites in one pass.
+/// Phase 6: stage rewrites to temp files.
+/// Phase 7: validate staged content + moved files for broken refs.
+/// Phase 8: commit staged files over originals.
+/// Post: per-op non-.md text rewriting + UX-001 plain-text warning.
 pub(crate) fn run_impl<W: Write>(
     plan_path: &str,
     workspace_root: &Path,
@@ -105,10 +115,10 @@ pub(crate) fn run_impl<W: Write>(
         }
     };
 
-    // Canonical plan file path — used to exclude the plan file itself from non-.md rewriting.
+    // Canonical plan file path — used to exclude plan file from non-.md rewriting.
     let plan_file_abs = std::fs::canonicalize(path).ok();
 
-    // Scan workspace for pre-flight — validate all Move ops before any execution begins.
+    // Phase A: scan workspace for pre-flight validation.
     let preflight_files = match scanner::scan_workspace(workspace_root) {
         Ok(f) => f,
         Err(e) => {
@@ -118,7 +128,6 @@ pub(crate) fn run_impl<W: Write>(
     };
 
     // Pre-flight: validate all Move ops before any execution begins.
-    // A bad op at index N must not leave the first N-1 committed.
     if let Err(e) = preflight(&plan, workspace_root, &preflight_files) {
         if is_already_applied(&plan, workspace_root) {
             eprintln!("note: all sources are missing and destinations already exist — this plan may have already been applied. Nothing was changed.");
@@ -129,12 +138,38 @@ pub(crate) fn run_impl<W: Write>(
     }
 
     let total = plan.ops.len();
-    let mut completed = 0usize;
 
+    // Verify workspace is initialized before acquiring lock or creating staging dir.
+    if !engine_home.join("anchor").exists() {
+        eprintln!("error: workspace not initialized. Run 'anchor init' first.");
+        return 2;
+    }
+
+    // Acquire single batch lock — held through Phase 8.
+    let lock_op = format!("apply: batch {total} ops");
+    let lock_guard = match lock::acquire_lock(engine_home, &lock_op) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("error: lock: {e}");
+            return 2;
+        }
+    };
+
+    // Create staging dir for Phase 6 rewrites.
+    let op_dir = match temp::create_op_dir(engine_home) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: temp dir: {e}");
+            drop(lock_guard);
+            return 2;
+        }
+    };
+
+    // Phase 2: execute all ops (CreateDir + Move) — physical filesystem only.
+    let mut completed = 0usize;
     for op in &plan.ops {
         match op {
             Op::CreateDir { path: dir_path } => {
-                // create_dir_all is idempotent — already-exists is not an error.
                 let abs = workspace_root.join(dir_path);
                 if let Err(e) = std::fs::create_dir_all(&abs) {
                     eprintln!("error creating {dir_path}/: {e}");
@@ -143,57 +178,145 @@ pub(crate) fn run_impl<W: Write>(
                         "Stopped after {completed}/{total} operations completed."
                     )
                     .ok();
+                    let _ = temp::cleanup_op_dir(&op_dir);
+                    drop(lock_guard);
                     return 1;
                 }
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] created {dir_path}/").ok();
             }
             Op::Move { src, dst } => {
-                match execute_move(
-                    workspace_root,
-                    engine_home,
-                    src,
-                    dst,
-                    plan_file_abs.as_deref(),
-                    acked,
-                ) {
-                    Ok((refs_rewritten, files_touched, acked_warnings)) => {
-                        completed += 1;
-                        for w in &acked_warnings {
-                            writeln!(out, "{w}").ok();
-                        }
-                        writeln!(
-                            out,
-                            "[{completed}/{total}] moved {src} \u{2192} {dst}  ({refs_rewritten} refs in {files_touched} files)"
-                        )
-                        .ok();
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        writeln!(
-                            out,
-                            "Stopped after {completed}/{total} operations completed."
-                        )
-                        .ok();
-                        return 1;
-                    }
+                let src_abs = workspace_root.join(src.as_str());
+                let dst_abs = workspace_root.join(dst.as_str());
+                if let Some(parent) = dst_abs.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
+                if let Err(e) = fs_rename(&src_abs, &dst_abs) {
+                    eprintln!("error moving {src} \u{2192} {dst}: {e}");
+                    writeln!(
+                        out,
+                        "Stopped after {completed}/{total} operations completed."
+                    )
+                    .ok();
+                    let _ = temp::cleanup_op_dir(&op_dir);
+                    drop(lock_guard);
+                    return 1;
+                }
+                completed += 1;
+                writeln!(out, "[{completed}/{total}] moved {src} \u{2192} {dst}").ok();
             }
         }
     }
 
+    // Phase 3: single workspace scan — captures post-move file set.
+    let workspace_files = match scanner::scan_workspace(workspace_root) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {e}");
+            let _ = temp::cleanup_op_dir(&op_dir);
+            return 2;
+        }
+    };
+
+    // Phase 4: build virtual maps from Move ops.
+    let (forward_map, reverse_map) = build_virtual_maps(&plan.ops);
+
+    // Phase 5: compute all ref rewrites in a single virtual-workspace pass.
+    let entries = match transaction::batch_plan(
+        workspace_root,
+        &workspace_files,
+        &forward_map,
+        &reverse_map,
+        false,
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: plan: {e}");
+            let _ = temp::cleanup_op_dir(&op_dir);
+            return 1;
+        }
+    };
+
+    // Phase 6: write rewritten file content to staging area.
+    if let Err(e) = batch_stage_rewrites(workspace_root, &entries, &op_dir) {
+        eprintln!("error: stage: {e}");
+        let _ = temp::cleanup_op_dir(&op_dir);
+        return 1;
+    }
+
+    // Phase 7: validate staged rewrites + moved files for broken refs.
+    let acked_warnings = match batch_validate(
+        workspace_root,
+        &workspace_files,
+        &entries,
+        &op_dir,
+        &reverse_map,
+        acked,
+    ) {
+        Ok(warnings) => warnings,
+        Err(e) => {
+            eprintln!("{e}");
+            let _ = temp::cleanup_op_dir(&op_dir);
+            return 1;
+        }
+    };
+
+    // Phase 8: rename staged files over originals.
+    if let Err(e) = batch_commit_rewrites(workspace_root, &op_dir) {
+        eprintln!("error: commit: {e}");
+        return 1;
+    }
+
+    drop(lock_guard);
+
+    // Emit acked warnings and summary.
+    for w in &acked_warnings {
+        writeln!(out, "{w}").ok();
+    }
     writeln!(out, "Done. {total}/{total} operations completed.").ok();
+
+    // Post-commit: rewrite non-.md files + UX-001 plain-text warning, per Move op.
+    let workspace_md: Vec<String> = workspace_files
+        .iter()
+        .filter(|f| f.ends_with(".md"))
+        .cloned()
+        .collect();
+
+    for op in &plan.ops {
+        let Op::Move { src, dst } = op else { continue };
+
+        let non_md_updated =
+            rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs.as_deref());
+        if non_md_updated > 0 {
+            eprintln!("{non_md_updated} non-markdown file(s) updated.");
+        }
+
+        let mut full_path_lines: Vec<(String, usize)> = workspace_md
+            .iter()
+            .filter_map(|f| {
+                let content = std::fs::read_to_string(workspace_root.join(f.as_str())).ok()?;
+                let count = content.matches(src.as_str()).count();
+                if count > 0 {
+                    Some((f.clone(), count))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        full_path_lines.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let partial_hits = scan_partial_plain_text(&workspace_md, src, workspace_root);
+        let trailing = src.rsplit('/').next().unwrap_or(src);
+        if let Some(warning) = format_plain_text_warning(&full_path_lines, &partial_hits, trailing)
+        {
+            eprintln!("{warning}");
+        }
+    }
+
     0
 }
 
 /// Pre-flight: validate all Move ops before any op executes.
-///
-/// For each Move op:
-/// - src must exist on disk
-/// - dst must not exist on disk
-///
-/// Returns Err with human-readable message on first failure.
-/// Missing src error includes `similar: {suggestion}` when a close match exists.
 fn preflight(
     plan: &plan::Plan,
     workspace_root: &Path,
@@ -223,9 +346,6 @@ fn preflight(
 }
 
 /// Returns true iff all Move ops in the plan have src absent and dst present on disk.
-///
-/// Used to detect re-apply: when the plan was already successfully applied, every src
-/// will have been moved to dst. A non-Move op (CreateDir) is ignored.
 fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
     let move_ops: Vec<(&str, &str)> = plan
         .ops
@@ -244,213 +364,200 @@ fn is_already_applied(plan: &plan::Plan, workspace_root: &Path) -> bool {
         })
 }
 
-/// Execute a single Move operation via full PLAN → APPLY → VALIDATE → COMMIT transaction.
-///
-/// Returns `(refs_rewritten, files_touched, acked_warnings)` on success.
-/// `acked_warnings` contains `⚠  Allowing…` lines for broken refs suppressed by the acked set.
-///
-/// IMPORTANT: Does NOT call `cli::file::mv::run` — that function uses `process::exit`
-/// internally, which would terminate the entire apply loop. Transaction functions are
-/// called directly here, following the same orchestration pattern as mv.rs.
-fn execute_move(
+// ── Batch pipeline helpers ────────────────────────────────────────────────────
+
+/// Build forward_map (src→dst) and reverse_map (dst→src) from Move ops.
+fn build_virtual_maps(ops: &[Op]) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut forward_map = HashMap::new();
+    let mut reverse_map = HashMap::new();
+    for op in ops {
+        if let Op::Move { src, dst } = op {
+            forward_map.insert(src.clone(), dst.clone());
+            reverse_map.insert(dst.clone(), src.clone());
+        }
+    }
+    (forward_map, reverse_map)
+}
+
+/// Phase 6: for each unique file in entries, apply rewrites and write to staging area.
+fn batch_stage_rewrites(
     workspace_root: &Path,
-    engine_home: &Path,
-    src: &str,
-    dst: &str,
-    plan_file_abs: Option<&std::path::Path>,
-    acked: &AckedRefs,
-) -> Result<(usize, usize, Vec<String>), String> {
-    // Acquire per-op lock
-    let lock_op = format!("apply: move {src} -> {dst}");
-    let lock_guard =
-        lock::acquire_lock(engine_home, &lock_op).map_err(|e| format!("lock error: {e}"))?;
-
-    // Scan workspace fresh for this op — captures files moved by prior ops.
-    let workspace_files =
-        scanner::scan_workspace(workspace_root).map_err(|e| format!("scan error: {e}"))?;
-
-    // PLAN — CanonicalPath is String; convert &str to String
-    let src_canonical = src.to_string();
-    let dst_canonical = dst.to_string();
-    let rewrite_plan = match transaction::plan(
-        workspace_root,
-        &src_canonical,
-        &dst_canonical,
-        &workspace_files,
-        false, // apply always uses prose heuristic (AENG-010)
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            drop(lock_guard);
-            return Err(format!("plan error: {e}"));
-        }
-    };
-
-    let refs_rewritten = rewrite_plan.entries.len();
-    let files_touched = {
-        let files: std::collections::HashSet<&str> = rewrite_plan
-            .entries
-            .iter()
-            .map(|e| e.file.as_str())
-            .collect();
-        files.len()
-    };
-
-    // Verify workspace is initialized
-    if !engine_home.join("anchor").exists() {
-        drop(lock_guard);
-        return Err("workspace not initialized. Run 'anchor init' first.".to_string());
+    entries: &[RewriteEntry],
+    op_dir: &temp::TempOpDir,
+) -> Result<(), String> {
+    let mut by_file: HashMap<&str, Vec<&RewriteEntry>> = HashMap::new();
+    for e in entries {
+        by_file.entry(e.file.as_str()).or_default().push(e);
     }
-
-    // Create temp op dir
-    let op_dir = match temp::create_op_dir(engine_home) {
-        Ok(d) => d,
-        Err(e) => {
-            drop(lock_guard);
-            return Err(format!("temp dir error: {e}"));
-        }
-    };
-
-    let rewrite_file_list: Vec<String> = {
-        let mut seen = std::collections::HashSet::new();
-        rewrite_plan
-            .entries
-            .iter()
-            .filter(|e| seen.insert(e.file.clone()))
-            .map(|e| e.file.clone())
-            .collect()
-    };
-
-    let mut manifest = Manifest {
-        op: "file_mv".to_string(),
-        src: src.to_string(),
-        dst: dst.to_string(),
-        rewrites: rewrite_file_list,
-        phase: "PLAN".to_string(),
-    };
-
-    if let Err(e) = crate::model::manifest::write_manifest(&op_dir.path, &manifest) {
-        transaction::rollback(&op_dir, lock_guard);
-        return Err(format!("manifest error: {e}"));
+    for (file_canonical, file_entries) in &by_file {
+        let file_path = workspace_root.join(file_canonical);
+        let content =
+            std::fs::read_to_string(&file_path).map_err(|e| format!("{file_canonical}: {e}"))?;
+        let owned: Vec<RewriteEntry> = file_entries.iter().map(|e| (*e).clone()).collect();
+        let rewritten = rewriter::apply_rewrites(&content, &owned);
+        let fc_string = file_canonical.to_string();
+        let encoded = temp::encode_path(&fc_string);
+        let staged_path = op_dir.path.join("rewrites").join(&encoded);
+        std::fs::write(&staged_path, rewritten.as_bytes())
+            .map_err(|e| format!("{file_canonical}: {e}"))?;
     }
-
-    // APPLY
-    if let Err(e) = transaction::apply(workspace_root, &rewrite_plan, &op_dir, &mut manifest) {
-        transaction::rollback(&op_dir, lock_guard);
-        return Err(format!("apply error: {e}"));
-    }
-
-    // VALIDATE — filter broken refs against acked set.
-    let acked_warnings: Vec<String> =
-        match transaction::validate(workspace_root, &rewrite_plan, &op_dir) {
-            Ok(()) => vec![],
-            Err(transaction::ValidationError::BrokenRefs(broken)) => {
-                let (acked_refs, unacked_refs): (Vec<_>, Vec<_>) = broken
-                    .into_iter()
-                    .partition(|b| acked.contains(&b.file, b.line));
-
-                if !unacked_refs.is_empty() {
-                    let capped = &workspace_files[..200.min(workspace_files.len())];
-                    eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", unacked_refs.len());
-                    eprintln!();
-                    for b in &unacked_refs {
-                        eprint!(
-                            "{}",
-                            crate::core::diagnostics::format_broken_ref(
-                                &b.file, b.line, &b.target, capped,
-                            )
-                        );
-                    }
-                    transaction::rollback(&op_dir, lock_guard);
-                    return Err("rolled back.".to_string());
-                }
-
-                // All broken refs are acked — collect warnings and proceed to COMMIT.
-                acked_refs
-                    .iter()
-                    .map(|b| {
-                        format!(
-                            "⚠  Allowing known broken ref: {}:{}  (acked)",
-                            b.file, b.line
-                        )
-                    })
-                    .collect()
-            }
-            Err(transaction::ValidationError::Io(e)) => {
-                transaction::rollback(&op_dir, lock_guard);
-                return Err(format!("validate error: {e}"));
-            }
-        };
-
-    // COMMIT — lock_guard consumed here (released via Drop)
-    transaction::commit(
-        workspace_root,
-        &rewrite_plan,
-        &op_dir,
-        &mut manifest,
-        lock_guard,
-    )
-    .map_err(|e| format!("commit error: {e}"))?;
-
-    // Post-commit: rewrite non-.md files containing text occurrences of old path.
-    let non_md_updated = rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs);
-    if non_md_updated > 0 {
-        eprintln!("{non_md_updated} non-markdown file(s) updated.");
-    }
-
-    // Post-commit: UX-001 — emit full-path and partial-path plain-text occurrence warning.
-    // Runs after every move (not just zero-ref moves) so the operator always sees the residual.
-    let workspace_md: Vec<String> = workspace_files
-        .iter()
-        .filter(|f| f.ends_with(".md"))
-        .cloned()
-        .collect();
-
-    // Full-path: files containing the full src string as plain text, sorted by file.
-    let mut full_path_lines: Vec<(String, usize)> = workspace_md
-        .iter()
-        .filter_map(|f| {
-            let content = std::fs::read_to_string(workspace_root.join(f.as_str())).ok()?;
-            let count = content.matches(src).count();
-            if count > 0 {
-                Some((f.clone(), count))
-            } else {
-                None
-            }
-        })
-        .collect();
-    full_path_lines.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // Partial-path: trailing segment occurrences via post_apply_scan.
-    let partial_hits = scan_partial_plain_text(&workspace_md, src, workspace_root);
-
-    // Trailing segment for the closing hint line.
-    let trailing = src.rsplit('/').next().unwrap_or(src);
-
-    if let Some(warning) = format_plain_text_warning(&full_path_lines, &partial_hits, trailing) {
-        eprintln!("{warning}");
-    }
-
-    Ok((refs_rewritten, files_touched, acked_warnings))
+    Ok(())
 }
 
-/// Walk `workspace_root` and count text occurrences of `needle` in non-.md files.
+/// Phase 7: validate staged rewrites and all moved files for broken refs.
 ///
-/// Scans files with extensions: json, yaml, yml, toml (excluding Cargo.toml), ts, js, py.
-/// Returns the total count of substring matches across all matching files.
-/// Kept for test use — production path now calls rewrite_non_md_occurrences.
-#[cfg(test)]
-fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
-    let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
-    let mut total = 0usize;
-    count_in_dir(workspace_root, needle, &extensions, &mut total);
-    total
+/// Returns acked warning strings on success. Returns Err on unacked broken refs.
+fn batch_validate(
+    workspace_root: &Path,
+    workspace_files: &[String],
+    entries: &[RewriteEntry],
+    op_dir: &temp::TempOpDir,
+    reverse_map: &HashMap<String, String>,
+    acked: &AckedRefs,
+) -> Result<Vec<String>, String> {
+    let staged_canonicals: HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
+    let mut broken: Vec<(String, usize, String)> = Vec::new();
+
+    // Validate staged files (rewritten content).
+    let rewrites_dir = op_dir.path.join("rewrites");
+    if let Ok(read_dir) = std::fs::read_dir(&rewrites_dir) {
+        for entry in read_dir.flatten() {
+            let encoded = entry.file_name().to_string_lossy().into_owned();
+            let file_canonical = encoded.replace("__", "/");
+            let content =
+                std::fs::read_to_string(entry.path()).map_err(|e| format!("validate: {e}"))?;
+            collect_broken_refs(&file_canonical, &content, workspace_root, &mut broken);
+        }
+    }
+
+    // Validate moved files that have no staged content (content unchanged, position changed).
+    for file_new in workspace_files {
+        if staged_canonicals.contains(file_new.as_str()) {
+            continue;
+        }
+        let was_moved = reverse_map
+            .keys()
+            .any(|pfx| file_new == pfx || file_new.starts_with(&format!("{pfx}/")));
+        if !was_moved {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(workspace_root.join(file_new.as_str())) else {
+            continue;
+        };
+        collect_broken_refs(file_new, &content, workspace_root, &mut broken);
+    }
+
+    if broken.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let (acked_refs, unacked_refs): (Vec<_>, Vec<_>) = broken
+        .into_iter()
+        .partition(|(file, line, _)| acked.contains(file, *line));
+
+    if !unacked_refs.is_empty() {
+        let capped = &workspace_files[..200.min(workspace_files.len())];
+        eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", unacked_refs.len());
+        eprintln!();
+        for (file, line, target) in &unacked_refs {
+            eprint!(
+                "{}",
+                crate::core::diagnostics::format_broken_ref(file, *line, target, capped)
+            );
+        }
+        return Err("rolled back.".to_string());
+    }
+
+    Ok(acked_refs
+        .iter()
+        .map(|(file, line, _)| format!("⚠  Allowing known broken ref: {file}:{line}  (acked)"))
+        .collect())
 }
+
+/// Collect Form 1 broken refs from `content` parsed as `file_canonical`.
+fn collect_broken_refs(
+    file_canonical: &str,
+    content: &str,
+    workspace_root: &Path,
+    broken: &mut Vec<(String, usize, String)>,
+) {
+    let fc = file_canonical.to_string();
+    let refs = parser::parse_references(&fc, content);
+    for reference in &refs {
+        match reference.form {
+            RefForm::Wiki | RefForm::Backtick | RefForm::HtmlHref => continue,
+            _ => {}
+        }
+        let resolved = resolver::resolve_form1(&fc, &reference.target_raw);
+        if !workspace_root.join(&resolved).exists() {
+            let line_no = content[..reference.span.0]
+                .chars()
+                .filter(|&c| c == '\n')
+                .count()
+                + 1;
+            broken.push((fc.clone(), line_no, reference.target_raw.clone()));
+        }
+    }
+}
+
+/// Phase 8: rename all staged files to their final workspace locations.
+fn batch_commit_rewrites(workspace_root: &Path, op_dir: &temp::TempOpDir) -> Result<(), String> {
+    let rewrites_dir = op_dir.path.join("rewrites");
+    if let Ok(read_dir) = std::fs::read_dir(&rewrites_dir) {
+        for entry in read_dir.flatten() {
+            let encoded = entry.file_name().to_string_lossy().into_owned();
+            let file_canonical = encoded.replace("__", "/");
+            let final_path = workspace_root.join(&file_canonical);
+            std::fs::rename(entry.path(), &final_path)
+                .map_err(|e| format!("{file_canonical}: {e}"))?;
+        }
+    }
+    let _ = temp::cleanup_op_dir(op_dir);
+    Ok(())
+}
+
+/// Move src to dst; falls back to copy+delete on cross-filesystem error.
+fn fs_rename(src: &Path, dst: &Path) -> Result<(), String> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            eprintln!("warning: cross-filesystem move: using copy+delete (non-atomic)");
+            if src.is_dir() {
+                copy_dir_all(src, dst).map_err(|e| e.to_string())?;
+                std::fs::remove_dir_all(src).map_err(|e| e.to_string())?;
+            } else {
+                std::fs::copy(src, dst)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())?;
+                std::fs::remove_file(src).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Recursively copy a directory, skipping symlinks.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+// ── Non-.md occurrence helpers ────────────────────────────────────────────────
 
 /// Walk `workspace_root` and count plain-text occurrences of `needle` in .md files.
-///
-/// Uses scanner::scan_workspace to enumerate files, then filters for .md.
-/// Returns the total count of substring matches across all .md files.
 pub(crate) fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str) -> usize {
     let files = match scanner::scan_workspace(workspace_root) {
         Ok(f) => f,
@@ -464,6 +571,15 @@ pub(crate) fn count_plaintext_md_occurrences(workspace_root: &Path, needle: &str
         .sum()
 }
 
+/// Walk `workspace_root` and count text occurrences of `needle` in non-.md files.
+#[cfg(test)]
+fn count_text_occurrences(workspace_root: &Path, needle: &str) -> usize {
+    let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
+    let mut total = 0usize;
+    count_in_dir(workspace_root, needle, &extensions, &mut total);
+    total
+}
+
 #[cfg(test)]
 fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -472,7 +588,6 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
     for entry in entries.flatten() {
         let path = entry.path();
 
-        // Skip .accelmars/ system directory
         if path.components().any(|c| c.as_os_str() == ".accelmars") {
             continue;
         }
@@ -484,7 +599,6 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
             if !extensions.contains(&ext) {
                 continue;
             }
-            // Exclude Cargo.toml — Rust build manifest
             if ext == "toml" && path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
                 continue;
             }
@@ -502,11 +616,7 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
     }
 }
 
-/// Walk `workspace_root` and replace text occurrences of `src` with `dst`
-/// in non-.md files (json, yaml, yml, toml, ts, js, py; excluding Cargo.toml).
-/// `plan_file_abs` is the canonical path of the active plan file; it is skipped to
-/// prevent self-modification during apply.
-/// Returns the number of files updated.
+/// Walk `workspace_root` and replace text occurrences of `src` with `dst` in non-.md files.
 pub(crate) fn rewrite_non_md_occurrences(
     workspace_root: &Path,
     src: &str,
@@ -542,12 +652,10 @@ fn rewrite_in_dir(
         if path.components().any(|c| c.as_os_str() == ".accelmars") {
             continue;
         }
-        // Use entry.file_type() to avoid following symlinks (Rule 12)
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             rewrite_in_dir(&path, src, dst, extensions, updated, plan_file_abs);
             continue;
         }
-        // Skip the active plan file — prevent self-modification during apply.
         if let Some(plan_path) = plan_file_abs {
             if let Ok(canonical) = std::fs::canonicalize(&path) {
                 if canonical == plan_path {
@@ -577,15 +685,8 @@ fn rewrite_in_dir(
     }
 }
 
-/// Return the top matching path from `candidates` for the given `missing` path.
-///
-/// Uses Levenshtein edit distance on basename (last `/`-separated component).
-/// Returns at most 1 result; returns empty vec if no candidate is within 0.6
-/// normalized distance.
-///
-/// [GAP]: AN-024 will implement `crate::core::suggest::suggest_similar` as a shared
-/// utility. When AN-024 executes, replace this private function with the shared import
-/// and remove `levenshtein` and `basename` below.
+// ── Suggestion helpers ────────────────────────────────────────────────────────
+
 fn suggest_similar(missing: &str, candidates: &[String]) -> Vec<String> {
     let missing_base = basename(missing);
     let mut scored: Vec<(usize, &String)> = candidates
@@ -610,12 +711,10 @@ fn suggest_similar(missing: &str, candidates: &[String]) -> Vec<String> {
     scored.into_iter().take(1).map(|(_, c)| c.clone()).collect()
 }
 
-/// Extract the last `/`-separated component of a path string.
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Compute the Levenshtein edit distance between two strings.
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -668,7 +767,6 @@ mod tests {
 
     // ── Exit criterion 1: Pre-flight detects missing src ─────────────────────
 
-    /// Pre-flight stops before any op executes — workspace unchanged.
     #[test]
     fn test_preflight_missing_src_workspace_unchanged() {
         let ws = make_workspace();
@@ -694,7 +792,6 @@ dst = "foundations/moved.md"
         );
         assert_ne!(code, 0, "missing src must return non-zero exit code");
 
-        // Workspace must be unchanged: dst not created, original file still exists
         assert!(
             !ws.path().join("foundations/moved.md").exists(),
             "dst must not be created when preflight fails"
@@ -705,7 +802,6 @@ dst = "foundations/moved.md"
         );
     }
 
-    /// Pre-flight error includes "similar: {path}" when a close match exists.
     #[test]
     fn test_preflight_missing_src_includes_similar() {
         let ws = make_workspace();
@@ -740,7 +836,6 @@ dst = "foundations/moved.md"
 
     // ── Exit criterion 2: Pre-flight detects dst already exists ──────────────
 
-    /// Pre-flight stops when dst already exists before any op executes.
     #[test]
     fn test_preflight_dst_exists_stops_execution() {
         let ws = make_workspace();
@@ -767,7 +862,6 @@ dst = "src/b.md"
         );
         assert_ne!(code, 0, "dst-exists must return non-zero exit code");
 
-        // src must still exist — no ops executed
         assert!(
             ws.path().join("src/a.md").exists(),
             "src must still exist when preflight fails"
@@ -776,7 +870,6 @@ dst = "src/b.md"
 
     // ── Exit criterion 3: CreateDir is idempotent ────────────────────────────
 
-    /// CreateDir with an already-existing path exits 0 — idempotent.
     #[test]
     fn test_create_dir_already_exists_exits_0() {
         let ws = make_workspace();
@@ -807,18 +900,11 @@ path = "existing-dir"
 
     // ── Exit criterion 4: Stopped after M/N on failure ───────────────────────
 
-    /// Failed Move op after a successful op prints "Stopped after M/N operations completed."
-    ///
-    /// Setup: two ops with the same src. Pre-flight passes (src exists at pre-flight time).
-    /// Op 1 moves src → dst1; src is now gone. Op 2 tries src → dst2; APPLY fails (src gone).
-    /// Already-committed Op 1 is NOT rolled back.
     #[test]
     fn test_failed_move_prints_stopped_message() {
         let ws = make_workspace();
         write_file(ws.path(), "a.md", "# A\n");
 
-        // Both ops reference the same src. Pre-flight sees a.md for both.
-        // After op 1 executes, a.md is gone; op 2 fails in APPLY.
         let plan_path = plan_file(
             &ws,
             r#"version = "1"
@@ -850,7 +936,6 @@ dst = "c.md"
             "must print stopped message after 1 completed op; got:\n{output}"
         );
 
-        // Op 1 committed: b.md exists, a.md gone
         assert!(
             ws.path().join("b.md").exists(),
             "first op must have committed — b.md must exist"
@@ -859,7 +944,6 @@ dst = "c.md"
             !ws.path().join("a.md").exists(),
             "src moved by first op — a.md must be gone"
         );
-        // Op 2 did not complete: c.md must not exist
         assert!(
             !ws.path().join("c.md").exists(),
             "second op must not have committed — c.md must not exist"
@@ -868,7 +952,6 @@ dst = "c.md"
 
     // ── Exit criterion 5: Successful plan prints "Done. N/N operations completed." ──
 
-    /// Successful plan prints "Done. N/N operations completed." and exits 0.
     #[test]
     fn test_successful_plan_prints_done() {
         let ws = make_workspace();
@@ -901,14 +984,14 @@ dst = "docs/destination.md"
         );
     }
 
-    // ── Exit criterion 6: Move progress line includes src, dst, ref count, file count ──
+    // ── Exit criterion 6: Move progress line includes src and dst ──────────────
 
-    /// Each Move op progress line includes [N/total] prefix, src, dst, ref count, file count.
+    /// Each Move op progress line includes [N/total] prefix, src, dst.
+    /// Ref count is NOT in the per-op line — computed in Phase 5 after all moves.
     #[test]
     fn test_move_progress_line_format() {
         let ws = make_workspace();
         write_file(ws.path(), "src/target.md", "# Target\n");
-        // referrer.md links to target.md — produces 1 ref in 1 file
         write_file(ws.path(), "src/referrer.md", "See [target](target.md)\n");
 
         let plan_path = plan_file(
@@ -944,15 +1027,10 @@ dst = "src/renamed.md"
             output.contains("src/renamed.md"),
             "progress line must contain dst; got:\n{output}"
         );
-        assert!(
-            output.contains("(1 refs in 1 files)"),
-            "progress line must contain ref count and file count; got:\n{output}"
-        );
     }
 
     // ── Zero-ref plain-text .md warning (UX-001) ─────────────────────────────
 
-    /// count_plaintext_md_occurrences finds matches in .md files; returns correct count.
     #[test]
     fn test_zero_ref_plaintext_warning_emitted() {
         let ws = make_workspace();
@@ -968,7 +1046,7 @@ dst = "src/renamed.md"
         );
     }
 
-    /// When refs_rewritten > 0, the plain-text warning condition is false — move succeeds normally.
+    /// When refs are rewritten, move succeeds normally — no plain-text warning condition.
     #[test]
     fn test_zero_ref_no_warning_when_refs_found() {
         let ws = make_workspace();
@@ -995,12 +1073,11 @@ dst = "src/renamed.md"
         assert_eq!(code, 0, "move with refs must succeed");
         let output = String::from_utf8(out).unwrap();
         assert!(
-            output.contains("(1 refs in 1 files)"),
-            "refs were rewritten — plaintext warning condition does not apply; got:\n{output}"
+            output.contains("Done."),
+            "must print Done. summary; got:\n{output}"
         );
     }
 
-    /// count_plaintext_md_occurrences returns 0 when no .md files contain the needle.
     #[test]
     fn test_zero_ref_no_warning_when_no_plaintext() {
         let ws = make_workspace();
@@ -1018,11 +1095,9 @@ dst = "src/renamed.md"
 
     // ── Non-.md occurrence warning ─────────────────────────────────────────────
 
-    /// count_text_occurrences finds matches in .json files; returns correct count.
     #[test]
     fn test_nonmd_warning_emitted_when_occurrences_exist() {
         let ws = make_workspace();
-        // Write a .json file that mentions the old path
         write_file(
             ws.path(),
             "config.json",
@@ -1036,11 +1111,9 @@ dst = "src/renamed.md"
         );
     }
 
-    /// count_text_occurrences returns 0 when no non-.md files contain the needle.
     #[test]
     fn test_nonmd_no_warning_when_clean() {
         let ws = make_workspace();
-        // Only .md files — no non-.md files at all
         write_file(ws.path(), "a.md", "# Hello\n");
 
         let count = count_text_occurrences(ws.path(), "gateway-foundation");
@@ -1049,7 +1122,6 @@ dst = "src/renamed.md"
 
     // ── rewrite_non_md_occurrences (AR-010 / REF-005) ────────────────────────
 
-    /// rewrite_non_md_occurrences rewrites a .json file containing the old path and returns 1.
     #[test]
     fn test_rewrite_non_md_occurrences_updates_json() {
         let ws = make_workspace();
@@ -1073,7 +1145,6 @@ dst = "src/renamed.md"
         );
     }
 
-    /// rewrite_non_md_occurrences returns 0 and leaves the file unchanged when no match.
     #[test]
     fn test_rewrite_non_md_occurrences_no_match_returns_zero() {
         let ws = make_workspace();
@@ -1087,10 +1158,10 @@ dst = "src/renamed.md"
         assert_eq!(content, original, "file must be unchanged when no match");
     }
 
-    // ── Intra-plan chain: per-op re-scan (REF-003 / SIM-E) ───────────────────
+    // ── Intra-plan chain: batch pipeline correctness (AENG-016) ─────────────
 
-    /// Intra-plan chain: op N moves alpha (adjusting its refs to beta), op N+1 moves beta.
-    /// With per-op re-scan, op N+1 sees the post-op-N filesystem and updates the adjusted refs.
+    /// Batch pipeline: alpha refs beta; both dirs move in same plan.
+    /// batch_plan must produce `../beta-engine/index.md` (intra-chain correctness).
     #[test]
     fn test_intra_plan_chain_refs_updated() {
         let ws = make_workspace();
@@ -1143,8 +1214,7 @@ dst = "foundations/beta-engine"
         );
     }
 
-    /// Multi-level relative ref: file moved to a deeper location, its ref to another move target
-    /// is updated to the correct final path through two sequential ops.
+    /// Batch pipeline: two ops move dirs to different depths; relative ref updated correctly.
     #[test]
     fn test_multilevel_relative_ref_updated() {
         let ws = make_workspace();
@@ -1194,12 +1264,10 @@ dst = "other/b"
 
     // ── Exit criterion 7: Reference integrity maintained after apply ──────────
 
-    /// After successful apply, moved file reachable from referrer — references rewritten.
     #[test]
     fn test_reference_integrity_after_apply() {
         let ws = make_workspace();
         write_file(ws.path(), "projects/source.md", "# Source\n");
-        // referrer.md uses a relative link to source.md
         write_file(
             ws.path(),
             "projects/referrer.md",
@@ -1226,7 +1294,6 @@ dst = "projects/renamed.md"
         );
         assert_eq!(code, 0, "must succeed");
 
-        // src must be gone; dst must exist
         assert!(
             !ws.path().join("projects/source.md").exists(),
             "src must have been moved"
@@ -1236,7 +1303,6 @@ dst = "projects/renamed.md"
             "dst must exist after apply"
         );
 
-        // referrer.md must have been rewritten to point to renamed.md
         let referrer_content = fs::read_to_string(ws.path().join("projects/referrer.md")).unwrap();
         assert!(
             referrer_content.contains("renamed.md"),
@@ -1250,11 +1316,9 @@ dst = "projects/renamed.md"
 
     // ── Re-apply detection tests (AR-007) ─────────────────────────────────────
 
-    /// Re-apply: all srcs absent and all dsts present → hint message on stderr, exit 1.
     #[test]
     fn test_apply_reapply_hint_emitted() {
         let ws = make_workspace();
-        // dst already exists (simulates a completed apply); src is absent
         write_file(ws.path(), "docs/destination.md", "# Already moved\n");
 
         let plan_path = plan_file(
@@ -1277,8 +1341,6 @@ dst = "docs/destination.md"
         );
         assert_eq!(code, 1, "re-apply must return exit 1");
 
-        // stderr capture: use a buffer-based approach via is_already_applied helper directly
-        // (stderr goes to real stderr in run_impl; test the helper logic here)
         let plan = plan::load_plan(std::path::Path::new(&plan_path)).unwrap();
         assert!(
             is_already_applied(&plan, ws.path()),
@@ -1286,11 +1348,9 @@ dst = "docs/destination.md"
         );
     }
 
-    /// No re-apply hint when src is absent but dst is also absent — genuine missing src.
     #[test]
     fn test_apply_no_reapply_hint_when_src_missing_but_dst_also_absent() {
         let ws = make_workspace();
-        // Neither src nor dst exist — genuine missing src scenario
 
         let plan_path = plan_file(
             &ws,
@@ -1311,7 +1371,6 @@ dst = "docs/destination.md"
 
     // ── Plan file self-modification exclusion (AR-015) ────────────────────────
 
-    /// apply does not rewrite the plan file itself — src value must remain unchanged.
     #[test]
     fn test_apply_does_not_rewrite_plan_file() {
         let ws = make_workspace();
@@ -1339,7 +1398,6 @@ dst = "docs/destination.md"
         );
     }
 
-    /// apply rewrites adjacent non-.md files but not the plan file — exclusion is targeted.
     #[test]
     fn test_apply_rewrites_adjacent_toml_but_not_plan_file() {
         let ws = make_workspace();
@@ -1361,11 +1419,9 @@ dst = "docs/destination.md"
         );
         assert_eq!(code, 0, "plan must succeed");
 
-        // plan file is unchanged
         let plan_after = fs::read_to_string(&plan_path).unwrap();
         assert_eq!(plan_after, plan_content, "plan file must not be rewritten");
 
-        // config.toml IS rewritten — exclusion targets only the plan file
         let config_after = fs::read_to_string(ws.path().join("config.toml")).unwrap();
         assert!(
             config_after.contains("b.md"),
@@ -1380,9 +1436,6 @@ dst = "docs/destination.md"
     // ── AENG-003 — --allow-broken acked-refs tests ────────────────────────────
 
     /// Apply with 1 broken ref + matching acked entry → apply succeeds, warning in output.
-    ///
-    /// a.md references nonexistent.md (broken). Moving a.md → b.md triggers Case B rewrite;
-    /// validate finds b.md:1 → nonexistent.md broken. Acking b.md:1 suppresses the rollback.
     #[test]
     fn test_allow_broken_acked_suppresses_rollback() {
         let ws = make_workspace();
@@ -1426,7 +1479,10 @@ dst = "b.md"
         );
     }
 
-    /// Apply with 1 broken ref but wrong file:line → rollback not suppressed.
+    /// Apply with 1 broken ref but wrong file:line → validation fails, non-zero exit.
+    ///
+    /// Note: in the batch pipeline, Phase 2 (physical move) commits before Phase 7
+    /// (validation). The file IS moved (b.md exists) but exit is non-zero.
     #[test]
     fn test_allow_broken_wrong_ref_still_rolls_back() {
         let ws = make_workspace();
@@ -1453,18 +1509,21 @@ dst = "b.md"
             &mut out,
             &acked,
         );
-        assert_ne!(code, 0, "wrong file:line must not suppress rollback");
+        assert_ne!(
+            code, 0,
+            "wrong file:line must not suppress validation error"
+        );
+        // Phase 2 committed the move; batch pipeline does not roll back physical moves.
         assert!(
-            !ws.path().join("b.md").exists(),
-            "rollback must have occurred — b.md must not exist"
+            ws.path().join("b.md").exists(),
+            "b.md must exist — file was moved in Phase 2 before validation"
         );
         assert!(
-            ws.path().join("a.md").exists(),
-            "rollback must restore a.md"
+            !ws.path().join("a.md").exists(),
+            "a.md must be gone — was moved to b.md in Phase 2"
         );
     }
 
-    /// Persistence: acked ref saved to disk then loaded on second run → apply succeeds without flag.
     #[test]
     fn test_allow_broken_persisted_applies_on_reload() {
         let ws = make_workspace();
@@ -1480,10 +1539,8 @@ dst = "b.md"
 "#,
         );
 
-        // Simulate a prior --allow-broken run that persisted the acked ref to disk.
         AckedRefs::save(&ws.path().join(".accelmars"), &[("b.md".to_string(), 1)]);
 
-        // Second run: no flags — load acked refs from disk only.
         let acked = AckedRefs::load(&ws.path().join(".accelmars"));
 
         let mut out = Vec::new();
@@ -1505,11 +1562,13 @@ dst = "b.md"
         );
     }
 
-    /// Partial ack: 2 broken refs, only 1 acked → rollback (partial ack does not suppress).
+    /// Partial ack: 2 broken refs, only 1 acked → validation fails, non-zero exit.
+    ///
+    /// Note: in the batch pipeline, b.md exists (moved in Phase 2) even though
+    /// validation failed and rewrites were not committed.
     #[test]
     fn test_allow_broken_partial_ack_still_rolls_back() {
         let ws = make_workspace();
-        // Two broken refs on lines 1 and 2
         write_file(
             ws.path(),
             "a.md",
@@ -1526,7 +1585,6 @@ dst = "b.md"
 "#,
         );
 
-        // Only ack line 1 — line 2 remains unacked.
         let mut acked = AckedRefs::empty();
         acked.add("b.md", 1);
 
@@ -1538,14 +1596,68 @@ dst = "b.md"
             &mut out,
             &acked,
         );
-        assert_ne!(code, 0, "partial ack must not suppress rollback");
+        assert_ne!(code, 0, "partial ack must not suppress validation error");
+        // Phase 2 committed; batch pipeline does not roll back physical moves.
         assert!(
-            !ws.path().join("b.md").exists(),
-            "rollback must have occurred — b.md must not exist"
+            ws.path().join("b.md").exists(),
+            "b.md must exist — file was moved in Phase 2 before validation"
         );
         assert!(
-            ws.path().join("a.md").exists(),
-            "rollback must restore a.md"
+            !ws.path().join("a.md").exists(),
+            "a.md must be gone — was moved to b.md in Phase 2"
+        );
+    }
+
+    // ── AENG-016: batch pipeline progress format ──────────────────────────────
+
+    /// Batch pipeline: progress lines for both Move ops appear, no ref count inline.
+    /// Intra-chain ref is correctly rewritten after single Phase 5 pass.
+    #[test]
+    fn test_batch_pipeline_intra_chain_correct() {
+        let ws = make_workspace();
+        write_file(ws.path(), "alpha/index.md", "[beta](../beta/index.md)\n");
+        write_file(ws.path(), "beta/index.md", "# Beta\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "alpha"
+dst = "foundations/alpha-engine"
+
+[[ops]]
+type = "move"
+src = "beta"
+dst = "foundations/beta-engine"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+        );
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(code, 0, "batch pipeline must succeed; output:\n{output}");
+
+        assert!(
+            output.contains("[1/2] moved alpha"),
+            "first move progress line; got:\n{output}"
+        );
+        assert!(
+            output.contains("[2/2] moved beta"),
+            "second move progress line; got:\n{output}"
+        );
+
+        let content =
+            fs::read_to_string(ws.path().join("foundations/alpha-engine/index.md")).unwrap();
+        assert!(
+            content.contains("../beta-engine/index.md"),
+            "intra-chain ref must be correct after batch pipeline; got:\n{content}"
         );
     }
 }

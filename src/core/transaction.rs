@@ -23,6 +23,7 @@ use crate::model::{
     rewrite::{ProseSkip, RewriteEntry, RewritePlan},
     CanonicalPath,
 };
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Error returned by transaction operations.
@@ -595,6 +596,312 @@ pub fn plan(
         entries,
         prose_skips,
     })
+}
+
+/// Find the pre-move canonical path for `new_path` by prefix-matching against reverse_map.
+/// reverse_map keys are top-level op destinations (e.g. "foundations/alpha-engine").
+/// Returns None if `new_path` was not moved by any op in this batch.
+fn find_old_path(
+    new_path: &CanonicalPath,
+    reverse_map: &HashMap<CanonicalPath, CanonicalPath>,
+) -> Option<CanonicalPath> {
+    for (new_prefix, old_prefix) in reverse_map {
+        if inside_src(new_path, new_prefix) {
+            return Some(remap_path(new_path, new_prefix, old_prefix));
+        }
+    }
+    None
+}
+
+/// Find the forward_map entry whose old_prefix contains `target` (prefix match).
+/// Returns (old_prefix, new_prefix) cloned from the matching entry, or None.
+fn find_forward_entry(
+    target: &CanonicalPath,
+    forward_map: &HashMap<CanonicalPath, CanonicalPath>,
+) -> Option<(CanonicalPath, CanonicalPath)> {
+    for (old_prefix, new_prefix) in forward_map {
+        if inside_src(target, old_prefix) {
+            return Some((old_prefix.clone(), new_prefix.clone()));
+        }
+    }
+    None
+}
+
+/// Try `rewrite_partial_backtick` for each forward_map entry; return first match.
+/// Returns `(new_text, old_prefix)` so callers can apply the context-scope filter.
+fn batch_partial_backtick<'a>(
+    target_raw: &str,
+    forward_map: &'a HashMap<CanonicalPath, CanonicalPath>,
+) -> Option<(String, &'a CanonicalPath)> {
+    for (old_prefix, new_prefix) in forward_map {
+        if let Some(new) = rewrite_partial_backtick(target_raw, old_prefix, new_prefix) {
+            return Some((new, old_prefix));
+        }
+    }
+    None
+}
+
+/// BATCH-PLAN: compute all ref rewrites across all ops in a single post-move pass.
+///
+/// Called after all Move ops have completed (Phase 2 of batch pipeline). Files are at
+/// their new disk locations but content still holds pre-move ref text. Uses virtual
+/// workspace maps to resolve refs relative to each file's pre-move location — the
+/// correctness property that prevents intra-plan chain breakage (AENG-016).
+///
+/// forward_map: old_canonical_prefix → new_canonical_prefix (one entry per Move op)
+/// reverse_map: new_canonical_prefix → old_canonical_prefix (inverse of forward_map)
+///
+/// Map lookups use inside_src prefix matching because Move ops act on directory prefixes,
+/// not enumerated individual files.
+pub fn batch_plan(
+    workspace_root: &Path,
+    workspace_files: &[CanonicalPath],
+    forward_map: &HashMap<CanonicalPath, CanonicalPath>,
+    reverse_map: &HashMap<CanonicalPath, CanonicalPath>,
+    allow_prose_rewrites: bool,
+) -> Result<Vec<RewriteEntry>, TransactionError> {
+    let mut entries: Vec<RewriteEntry> = Vec::new();
+    let scope_resolver = ScopeResolver::new(workspace_root);
+
+    for file_new in workspace_files {
+        // Determine this file's pre-move path (for ref resolution context).
+        // Files not moved by any op retain their canonical path as the "old" path.
+        let file_old = find_old_path(file_new, reverse_map).unwrap_or_else(|| file_new.clone());
+        let file_moved = file_old != *file_new;
+
+        let file_path = workspace_root.join(file_new.as_str());
+        let content = match std::fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(TransactionError::Io(e)),
+        };
+
+        // Parse refs as if the file is at its OLD location so relative paths in the
+        // still-unrewritten content resolve from the pre-move context.
+        let refs = parser::parse_references(&file_old, &content);
+
+        for reference in refs {
+            match reference.form {
+                RefForm::Backtick => {
+                    let anchor_root_prefix = "$(anchor root)/";
+                    let has_anchor_prefix = reference.target_raw.starts_with(anchor_root_prefix);
+                    let target_normalized: CanonicalPath = if has_anchor_prefix {
+                        reference.target_raw[anchor_root_prefix.len()..].to_string()
+                    } else {
+                        reference.target_raw.clone()
+                    };
+
+                    let was_relative =
+                        target_normalized.starts_with("./") || target_normalized.starts_with("../");
+                    let target_to_match: CanonicalPath = if was_relative {
+                        resolver::resolve_form1(&file_old, &target_normalized)
+                    } else {
+                        target_normalized.clone()
+                    };
+
+                    let new_normalized = if let Some((old_prefix, new_prefix)) =
+                        find_forward_entry(&target_to_match, forward_map)
+                    {
+                        // Case C: file and target inside same op → relative ref stable (skip).
+                        if !has_anchor_prefix
+                            && find_forward_entry(&file_old, forward_map).map(|(op, _)| op)
+                                == Some(old_prefix.clone())
+                        {
+                            continue;
+                        }
+
+                        // Context-scope filter
+                        let scope = scope_for_move(&scope_resolver, &old_prefix);
+                        if !is_in_scope(&file_old, &scope)
+                            && !is_inward_ref(&target_to_match, &old_prefix)
+                        {
+                            continue;
+                        }
+
+                        remap_path(&target_to_match, &old_prefix, &new_prefix)
+                    } else if let Some((new, old_prefix)) =
+                        batch_partial_backtick(&target_to_match, forward_map)
+                    {
+                        let scope = scope_for_move(&scope_resolver, old_prefix);
+                        if !is_in_scope(&file_old, &scope)
+                            && !is_inward_ref(&target_to_match, old_prefix)
+                        {
+                            continue;
+                        }
+                        new
+                    } else {
+                        continue;
+                    };
+
+                    // Prose heuristic (AENG-010)
+                    if !allow_prose_rewrites {
+                        let line_start =
+                            content[..reference.span.0].rfind('\n').map_or(0, |p| p + 1);
+                        let line_end = content[reference.span.0..]
+                            .find('\n')
+                            .map_or(content.len(), |p| reference.span.0 + p);
+                        if is_prose_line(&content[line_start..line_end]) {
+                            continue;
+                        }
+                    }
+
+                    let old_text = content[reference.span.0..reference.span.1].to_string();
+                    let inner = &old_text[1..old_text.len() - 1];
+                    let had_slash = inner.ends_with('/');
+                    let new_text = if has_anchor_prefix {
+                        if had_slash {
+                            format!("`$(anchor root)/{new_normalized}/`")
+                        } else {
+                            format!("`$(anchor root)/{new_normalized}`")
+                        }
+                    } else if was_relative {
+                        let new_rel = compute_relative_path(file_new, &new_normalized);
+                        if had_slash {
+                            format!("`{new_rel}/`")
+                        } else {
+                            format!("`{new_rel}`")
+                        }
+                    } else if had_slash {
+                        format!("`{new_normalized}/`")
+                    } else {
+                        format!("`{new_normalized}`")
+                    };
+                    if old_text != new_text {
+                        entries.push(RewriteEntry {
+                            file: file_new.clone(),
+                            span: reference.span,
+                            old_text,
+                            new_text,
+                        });
+                    }
+                }
+
+                RefForm::Wiki => {
+                    let resolve_result =
+                        resolver::resolve_form2(&reference.target_raw, workspace_files);
+                    let target_canonical = match resolve_result {
+                        resolver::ResolveResult::Resolved(c) => c,
+                        _ => continue,
+                    };
+                    let Some((old_prefix, new_prefix)) =
+                        find_forward_entry(&target_canonical, forward_map)
+                    else {
+                        continue;
+                    };
+                    // Case C: file in same op as target → relative path stable
+                    if find_forward_entry(&file_old, forward_map).map(|(op, _)| op)
+                        == Some(old_prefix.clone())
+                    {
+                        continue;
+                    }
+                    let new_target = remap_path(&target_canonical, &old_prefix, &new_prefix);
+                    let old_stem = stem_of(&target_canonical);
+                    let new_stem_str = rewriter::compute_form2_new_text(&new_target);
+                    if old_stem == new_stem_str.as_str() {
+                        continue;
+                    }
+                    let old_text = content[reference.span.0..reference.span.1].to_string();
+                    let prefix_str = format!("[[{old_stem}");
+                    let new_prefix_str = format!("[[{new_stem_str}");
+                    let new_text = old_text.replacen(&prefix_str, &new_prefix_str, 1);
+                    entries.push(RewriteEntry {
+                        file: file_new.clone(),
+                        span: reference.span,
+                        old_text,
+                        new_text,
+                    });
+                }
+
+                RefForm::HtmlHref => {
+                    let target_canonical =
+                        resolver::resolve_form1(&file_old, &reference.target_raw);
+                    let target_entry = find_forward_entry(&target_canonical, forward_map);
+
+                    match (file_moved, target_entry) {
+                        (false, None) => continue,
+                        (_, entry) => {
+                            let (new_rel, old_text) = if let Some((old_p, new_p)) = entry {
+                                let new_target = remap_path(&target_canonical, &old_p, &new_p);
+                                let rel = compute_relative_path(file_new, &new_target);
+                                (rel, content[reference.span.0..reference.span.1].to_string())
+                            } else {
+                                // Case B: file moved, target didn't
+                                let rel = compute_relative_path(file_new, &target_canonical);
+                                (rel, content[reference.span.0..reference.span.1].to_string())
+                            };
+                            if new_rel != reference.target_raw {
+                                let quote =
+                                    old_text.as_bytes().get(5).copied().unwrap_or(b'"') as char;
+                                let new_text = format!("href={quote}{new_rel}{quote}");
+                                entries.push(RewriteEntry {
+                                    file: file_new.clone(),
+                                    span: reference.span,
+                                    old_text,
+                                    new_text,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Standard, Yaml, Toml — resolve as relative/workspace path
+                _ => {
+                    let resolved_old = resolver::resolve_form1(&file_old, &reference.target_raw);
+
+                    if let Some((old_prefix, new_prefix)) =
+                        find_forward_entry(&resolved_old, forward_map)
+                    {
+                        // Target is being moved by this batch.
+                        let scope = scope_for_move(&scope_resolver, &old_prefix);
+                        if !is_in_scope(&file_old, &scope)
+                            && !is_inward_ref(&resolved_old, &old_prefix)
+                        {
+                            continue;
+                        }
+
+                        let new_target = remap_path(&resolved_old, &old_prefix, &new_prefix);
+                        let new_rel = compute_relative_path(file_new, &new_target);
+                        let old_text = content[reference.span.0..reference.span.1].to_string();
+                        let new_text = rebuild_form1_ref(
+                            &old_text,
+                            &new_rel,
+                            &reference.anchor,
+                            reference.target_raw.as_str(),
+                        );
+                        if old_text != new_text {
+                            entries.push(RewriteEntry {
+                                file: file_new.clone(),
+                                span: reference.span,
+                                old_text,
+                                new_text,
+                            });
+                        }
+                    } else if file_moved {
+                        // Case B: file moved, target didn't — recompute relative from new location.
+                        let new_rel = compute_relative_path(file_new, &resolved_old);
+                        let old_text = content[reference.span.0..reference.span.1].to_string();
+                        if new_rel != reference.target_raw {
+                            let new_text = rebuild_form1_ref(
+                                &old_text,
+                                &new_rel,
+                                &reference.anchor,
+                                reference.target_raw.as_str(),
+                            );
+                            entries.push(RewriteEntry {
+                                file: file_new.clone(),
+                                span: reference.span,
+                                old_text,
+                                new_text,
+                            });
+                        }
+                    }
+                    // else: neither file nor target moved — no rewrite needed
+                }
+            }
+        }
+    }
+
+    Ok(entries)
 }
 
 /// APPLY phase: copy src to temp, write rewritten files to temp/rewrites/, update manifest.
@@ -2049,6 +2356,197 @@ mod tests {
                 .old_text
                 .contains("old-engine/schema.json"),
             "prose_skip old_text must contain the old path"
+        );
+    }
+
+    // ── batch_plan tests (AENG-016) ───────────────────────────────────────────
+
+    fn make_forward(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn make_reverse(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (v.to_string(), k.to_string()))
+            .collect()
+    }
+
+    /// Intra-plan chain: alpha moved first, beta moved second.
+    /// alpha/index.md has a ref to ../beta/index.md.
+    /// After both moves, foundations/alpha-engine/index.md must have ref updated to ../beta-engine/index.md.
+    #[test]
+    fn batch_plan_intra_chain_correct() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        // alpha/index.md references beta via relative path (pre-move content)
+        write_file(root, "alpha/index.md", "[beta](../beta/index.md)\n");
+        write_file(root, "beta/index.md", "# Beta\n");
+
+        // Simulate Phase 2: moves already applied — files at new locations but content unchanged
+        std::fs::create_dir_all(root.join("foundations/alpha-engine")).unwrap();
+        std::fs::create_dir_all(root.join("foundations/beta-engine")).unwrap();
+        std::fs::rename(
+            root.join("alpha/index.md"),
+            root.join("foundations/alpha-engine/index.md"),
+        )
+        .unwrap();
+        std::fs::rename(
+            root.join("beta/index.md"),
+            root.join("foundations/beta-engine/index.md"),
+        )
+        .unwrap();
+
+        let workspace_files = vec![
+            "foundations/alpha-engine/index.md".to_string(),
+            "foundations/beta-engine/index.md".to_string(),
+        ];
+
+        let forward = make_forward(&[
+            ("alpha", "foundations/alpha-engine"),
+            ("beta", "foundations/beta-engine"),
+        ]);
+        let reverse = make_reverse(&[
+            ("alpha", "foundations/alpha-engine"),
+            ("beta", "foundations/beta-engine"),
+        ]);
+
+        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+
+        // The ref in foundations/alpha-engine/index.md must be updated
+        let alpha_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file == "foundations/alpha-engine/index.md")
+            .collect();
+        assert_eq!(
+            alpha_entries.len(),
+            1,
+            "exactly one rewrite entry for alpha-engine/index.md"
+        );
+        assert!(
+            alpha_entries[0]
+                .new_text
+                .contains("../beta-engine/index.md"),
+            "ref must point to beta-engine after intra-chain batch plan; got: {}",
+            alpha_entries[0].new_text
+        );
+    }
+
+    /// Case A in batch: external file (not moved) references a file inside a moved directory.
+    #[test]
+    fn batch_plan_case_a_external_file_updated() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        write_file(
+            root,
+            "docs/README.md",
+            "See [bar](../projects/foo/bar.md).\n",
+        );
+        // foo/bar.md already moved to archive/foo/bar.md
+        write_file(root, "archive/foo/bar.md", "# Bar\n");
+
+        let workspace_files = vec![
+            "docs/README.md".to_string(),
+            "archive/foo/bar.md".to_string(),
+        ];
+
+        let forward = make_forward(&[("projects/foo", "archive/foo")]);
+        let reverse = make_reverse(&[("projects/foo", "archive/foo")]);
+
+        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+
+        let readme_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file == "docs/README.md")
+            .collect();
+        assert_eq!(
+            readme_entries.len(),
+            1,
+            "external file must get one rewrite entry"
+        );
+        assert!(
+            readme_entries[0].new_text.contains("archive/foo/bar.md"),
+            "new_text must reference archive/foo/bar.md; got: {}",
+            readme_entries[0].new_text
+        );
+    }
+
+    /// Case B in batch: moved file references an unmoved external file.
+    #[test]
+    fn batch_plan_case_b_moved_file_external_ref_updated() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        write_file(root, "docs/guide.md", "# Guide\n");
+        // notes.md was at alpha/notes.md (1 level deep, ref "../docs/guide.md" → docs/guide.md)
+        // now at foundations/alpha-engine/notes.md (2 levels deep) — content holds old ref text
+        write_file(
+            root,
+            "foundations/alpha-engine/notes.md",
+            "See [guide](../docs/guide.md).\n",
+        );
+
+        let workspace_files = vec![
+            "docs/guide.md".to_string(),
+            "foundations/alpha-engine/notes.md".to_string(),
+        ];
+
+        let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
+        let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
+
+        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+
+        let notes_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file == "foundations/alpha-engine/notes.md")
+            .collect();
+        assert_eq!(
+            notes_entries.len(),
+            1,
+            "moved file with external ref must get rewrite entry"
+        );
+        // From foundations/alpha-engine/notes.md (2 levels) to docs/guide.md: ../../docs/guide.md
+        assert!(
+            notes_entries[0].new_text.contains("../../docs/guide.md"),
+            "ref must be recomputed from new 2-level-deep location; got: {}",
+            notes_entries[0].new_text
+        );
+    }
+
+    /// Case C in batch: file and its ref target both move in the same op — ref is stable, no entry.
+    #[test]
+    fn batch_plan_case_c_same_op_no_entry() {
+        let tmp = make_workspace();
+        let root = tmp.path();
+
+        // Both a.md and b.md were in alpha/, moved to foundations/alpha-engine/
+        // Content: alpha/b.md referenced alpha/a.md via "a.md" (same dir)
+        write_file(root, "foundations/alpha-engine/a.md", "# A\n");
+        write_file(root, "foundations/alpha-engine/b.md", "See [a](a.md).\n");
+
+        let workspace_files = vec![
+            "foundations/alpha-engine/a.md".to_string(),
+            "foundations/alpha-engine/b.md".to_string(),
+        ];
+
+        let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
+        let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
+
+        let entries = batch_plan(root, &workspace_files, &forward, &reverse, false).unwrap();
+
+        let b_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file == "foundations/alpha-engine/b.md")
+            .collect();
+        assert!(
+            b_entries.is_empty(),
+            "Case C same-op ref must not produce entry; got: {:?}",
+            b_entries
         );
     }
 }
