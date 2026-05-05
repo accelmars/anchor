@@ -2433,9 +2433,15 @@ mod tests {
             ("beta", "foundations/beta-engine"),
         ]);
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         // The ref in foundations/alpha-engine/index.md must be updated
         let alpha_entries: Vec<_> = entries
@@ -2478,9 +2484,15 @@ mod tests {
         let forward = make_forward(&[("projects/foo", "archive/foo")]);
         let reverse = make_reverse(&[("projects/foo", "archive/foo")]);
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         let readme_entries: Vec<_> = entries
             .iter()
@@ -2521,9 +2533,15 @@ mod tests {
         let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
         let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         let notes_entries: Vec<_> = entries
             .iter()
@@ -2561,9 +2579,15 @@ mod tests {
         let forward = make_forward(&[("alpha", "foundations/alpha-engine")]);
         let reverse = make_reverse(&[("alpha", "foundations/alpha-engine")]);
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &HashSet::new())
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         let b_entries: Vec<_> = entries
             .iter()
@@ -2637,7 +2661,9 @@ mod tests {
             .collect();
         assert_eq!(doc_entries.len(), 1, "one rewrite entry expected");
         assert!(
-            doc_entries[0].new_text.contains("company/91-intake/README.md"),
+            doc_entries[0]
+                .new_text
+                .contains("company/91-intake/README.md"),
             "new_text must reference new path; got: {}",
             doc_entries[0].new_text
         );
@@ -2678,9 +2704,15 @@ mod tests {
         // pre_move_paths does NOT include "accelmars/gateway"
         let pre_move_paths: HashSet<String> = HashSet::new();
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &pre_move_paths)
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &pre_move_paths,
+        )
+        .unwrap();
 
         assert!(
             entries.is_empty(),
@@ -2717,9 +2749,15 @@ mod tests {
         pre_move_paths.insert("accelmars/91-intake".to_string());
         pre_move_paths.insert("accelmars".to_string());
 
-        let entries =
-            batch_plan(root, &workspace_files, &forward, &reverse, false, &pre_move_paths)
-                .unwrap();
+        let entries = batch_plan(
+            root,
+            &workspace_files,
+            &forward,
+            &reverse,
+            false,
+            &pre_move_paths,
+        )
+        .unwrap();
 
         let doc_entries: Vec<_> = entries
             .iter()
@@ -2727,7 +2765,9 @@ mod tests {
             .collect();
         assert_eq!(doc_entries.len(), 1, "one rewrite entry expected");
         assert!(
-            doc_entries[0].new_text.contains("company/91-intake/README.md"),
+            doc_entries[0]
+                .new_text
+                .contains("company/91-intake/README.md"),
             "new_text must reference new path; got: {}",
             doc_entries[0].new_text
         );
