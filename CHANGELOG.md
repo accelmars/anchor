@@ -1,4 +1,33 @@
 
+## [0.9.0] - 2026-05-21
+
+> Intake-sweep release closing Intake A (orbit-active-driver close, 2026-05-20) gaps 1–5
+> and the structural portion of Intake B (ai-layer-and-known-limitations, 2026-05-11)
+> failure modes 1 and 3. The semantic-rename / AI-layer portion of Intake B and Intake
+> C (AN-020 closed-layer architecture) remain triaged for a future closed-layer cycle.
+
+### Added
+- (**Intake A Gap 1 / AENG-010 escape hatch**) `anchor apply --allow-prose-rewrites` mirrors the existing `anchor file mv --allow-prose-rewrites` flag. Plan-based moves can now opt into rewriting arrow-line backtick mentions (e.g. ``moved from `old` to `new` ``) as live references, eliminating the bash-sed fallback that bulk archive operations previously required.
+- (**Intake A Gap 2**) `anchor apply` snapshots the pre-existing broken-ref set before any modification and classifies post-apply broken refs into three states: newly broken (rollback), acked via `--allow-broken` (suppress + warn), and pre-existing (auto-ack + warn). Operators no longer hit rollback because of unrelated broken refs in files anchor happened to touch — only NEWLY broken refs trigger rollback. Classification uses a stable identity `(origin_file_pre_move, line, resolved_target)` that survives the Case-B rewriter re-anchoring of relative paths.
+
+### Changed
+- (**AENG-004 apply-side / Intake B FM3**) `anchor apply` and `anchor file mv` post-commit non-MD rewrite output now names each updated file:
+  ```
+  3 non-markdown file(s) updated:
+    config.json  `old/path` → `new/path`
+    deep/config.yaml  `old/path` → `new/path`
+  ```
+  Previously summarized as a count only. `anchor diff --verbose` was already AENG-004-compliant for the preview side.
+- The post-apply UX-001 plain-text warning no longer points at the non-existent `anchor refs --plain X` command. Updated hint suggests `anchor apply <plan> --allow-prose-rewrites` for batch backtick rewriting and `grep -rn '<segment>' .` for manual inspection.
+
+### Bug Fixes
+- (**Intake A Gap 4**) `anchor file refs` now accepts CWD-relative path inputs (mirroring `anchor file mv`'s resolver). `normalize_target` tries workspace-root-relative first, falls back to CWD-relative if the file doesn't resolve. The absent check accepts on-disk existence even when scanner output excludes the path (e.g., `.accelmars/<slug>/` content in integrated mode) — operators get "No references found." instead of bogus "Did you mean?" suggestions for files that demonstrably exist.
+
+### Notes
+- **AENG-015** (`anchor plan new -t X` skeleton output) was previously claimed LIVE in the gap registry; verified actually LIVE in v0.8.1 source (commit 0c0cd83). No action needed.
+- **Intake B Failure Mode 4** (`anchor file mv` refusing dirs with pre-existing broken refs) — unaffected, different code path. Deferred to follow-up gap for `--allow-existing-broken-refs`.
+- **Multi-tenant resolver alignment**: file operations (refs/mv/validate/apply) still use the pre-multi-tenant `find_workspace_root()` (parent of `.accelmars/`). The mode-aware `workspace::resolve()` (returns tenant_root in integrated mode) is used only by `anchor root` today. Surfaced during the Gap 4 fix; deferred follow-up.
+
 ## [Unreleased]
 
 ### Bug Fixes
