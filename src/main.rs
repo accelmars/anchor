@@ -41,6 +41,9 @@ enum Commands {
         /// Acknowledge broken refs from a file containing one FILE:LINE per line
         #[arg(long = "allow-broken-from", value_name = "PATH")]
         allow_broken_from: Option<String>,
+        /// Rewrite all backtick path refs, including prose mentions (disables AENG-010 heuristic)
+        #[arg(long = "allow-prose-rewrites")]
+        allow_prose_rewrites: bool,
     },
     /// Preview what a plan file will do — no changes made
     Diff {
@@ -243,10 +246,12 @@ fn main() {
             plan,
             allow_broken,
             allow_broken_from,
+            allow_prose_rewrites,
         } => process::exit(cli::apply::run(
             &plan,
             &allow_broken,
             allow_broken_from.as_deref(),
+            allow_prose_rewrites,
         )),
         Commands::Diff { plan, verbose } => process::exit(cli::diff::run(&plan, verbose)),
         Commands::Recover => process::exit(cli::recover::run()),

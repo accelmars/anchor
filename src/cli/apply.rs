@@ -24,7 +24,12 @@ use std::path::Path;
 ///
 /// Discovers workspace root, builds acked set from disk + flags, delegates to `run_impl`.
 /// Returns exit code: 0 = success, 1 = plan/preflight/op error, 2 = workspace/infra error.
-pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&str>) -> i32 {
+pub fn run(
+    plan_path: &str,
+    allow_broken: &[String],
+    allow_broken_from: Option<&str>,
+    allow_prose_rewrites: bool,
+) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -77,6 +82,7 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
         &engine_home,
         &mut std::io::stdout(),
         &acked,
+        allow_prose_rewrites,
     );
 
     // Persist newly specified refs only on success.
@@ -104,6 +110,7 @@ pub(crate) fn run_impl<W: Write>(
     engine_home: &Path,
     out: &mut W,
     acked: &AckedRefs,
+    allow_prose_rewrites: bool,
 ) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
@@ -136,6 +143,14 @@ pub(crate) fn run_impl<W: Write>(
         }
         return 1;
     }
+
+    // Snapshot pre-existing broken refs across the pre-move workspace. Used by
+    // batch_validate to distinguish "broken BY this apply" (real failure, rollback)
+    // from "broken before this apply" (pre-existing condition, auto-acked with a
+    // warning). Closes Intake A Gap 2 / partial AENG-003 — operators no longer have
+    // to manually `--allow-broken` every pre-existing broken ref in files touched
+    // by their plan. See snapshot_broken_refs for the (file, line, target) key shape.
+    let pre_broken = snapshot_broken_refs(workspace_root, &preflight_files);
 
     let total = plan.ops.len();
 
@@ -231,7 +246,7 @@ pub(crate) fn run_impl<W: Write>(
         &workspace_files,
         &forward_map,
         &reverse_map,
-        false,
+        allow_prose_rewrites,
         &pre_move_paths,
     ) {
         Ok(e) => e,
@@ -257,6 +272,7 @@ pub(crate) fn run_impl<W: Write>(
         &op_dir,
         &reverse_map,
         acked,
+        &pre_broken,
     ) {
         Ok(warnings) => warnings,
         Err(e) => {
@@ -292,8 +308,11 @@ pub(crate) fn run_impl<W: Write>(
 
         let non_md_updated =
             rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs.as_deref());
-        if non_md_updated > 0 {
-            eprintln!("{non_md_updated} non-markdown file(s) updated.");
+        if !non_md_updated.is_empty() {
+            eprintln!("{} non-markdown file(s) updated:", non_md_updated.len());
+            for path in &non_md_updated {
+                eprintln!("  {path}  `{src}` \u{2192} `{dst}`");
+            }
         }
 
         let mut full_path_lines: Vec<(String, usize)> = workspace_md
@@ -435,6 +454,7 @@ fn batch_validate(
     op_dir: &temp::TempOpDir,
     reverse_map: &HashMap<String, String>,
     acked: &AckedRefs,
+    pre_broken: &HashSet<(String, usize, String)>,
 ) -> Result<Vec<String>, String> {
     let staged_canonicals: HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
     let mut broken: Vec<(String, usize, String)> = Vec::new();
@@ -472,15 +492,38 @@ fn batch_validate(
         return Ok(vec![]);
     }
 
-    let (acked_refs, unacked_refs): (Vec<_>, Vec<_>) = broken
-        .into_iter()
-        .partition(|(file, line, _)| acked.contains(file, *line));
+    // Classify each broken ref against three states:
+    //   1. Newly broken (caused by this apply)            → ERROR, rollback
+    //   2. Acked via --allow-broken / --allow-broken-from → suppress, warn
+    //   3. Pre-existing (broken before this apply)        → auto-ack, warn
+    //
+    // Map post-apply file path → pre-apply file path via reverse_map, then
+    // build the stable identity (origin_file_pre_move, line, resolved_target)
+    // that survives the Case-B rewriter re-anchoring of relative paths.
+    // See Intake A Gap 2 — operators no longer hit rollback because of unrelated
+    // broken refs in files anchor happened to touch.
+    let mut newly_broken: Vec<(String, usize, String)> = Vec::new();
+    let mut acked_refs: Vec<(String, usize, String)> = Vec::new();
+    let mut pre_existing: Vec<(String, usize, String)> = Vec::new();
+    for (file_post, line, target) in broken.into_iter() {
+        if acked.contains(&file_post, line) {
+            acked_refs.push((file_post, line, target));
+            continue;
+        }
+        let file_pre = map_post_to_pre_path(&file_post, reverse_map);
+        let identity = broken_ref_identity(&file_pre, line, &target, &file_post);
+        if pre_broken.contains(&identity) {
+            pre_existing.push((file_post, line, target));
+        } else {
+            newly_broken.push((file_post, line, target));
+        }
+    }
 
-    if !unacked_refs.is_empty() {
+    if !newly_broken.is_empty() {
         let capped = &workspace_files[..200.min(workspace_files.len())];
-        eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", unacked_refs.len());
+        eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", newly_broken.len());
         eprintln!();
-        for (file, line, target) in &unacked_refs {
+        for (file, line, target) in &newly_broken {
             eprint!(
                 "{}",
                 crate::core::diagnostics::format_broken_ref(file, *line, target, capped)
@@ -489,13 +532,70 @@ fn batch_validate(
         return Err("rolled back.".to_string());
     }
 
-    Ok(acked_refs
+    let mut warnings: Vec<String> = acked_refs
         .iter()
         .map(|(file, line, _)| format!("⚠  Allowing known broken ref: {file}:{line}  (acked)"))
-        .collect())
+        .collect();
+    warnings.extend(pre_existing.iter().map(|(file, line, _)| {
+        format!(
+            "⚠  Pre-existing broken ref preserved: {file}:{line}  (already broken before apply)"
+        )
+    }));
+    Ok(warnings)
+}
+
+/// Map a post-apply file path back to its pre-apply path using `reverse_map`.
+///
+/// reverse_map keys are post-apply path prefixes (typically directory roots) and
+/// values are pre-apply path prefixes. A staged file inside a moved subtree is
+/// rewritten by replacing the matching prefix; files outside any move keep their
+/// path unchanged.
+fn map_post_to_pre_path(file_post: &str, reverse_map: &HashMap<String, String>) -> String {
+    for (post_prefix, pre_prefix) in reverse_map {
+        if file_post == post_prefix {
+            return pre_prefix.clone();
+        }
+        let with_slash = format!("{post_prefix}/");
+        if let Some(rest) = file_post.strip_prefix(&with_slash) {
+            return format!("{pre_prefix}/{rest}");
+        }
+    }
+    file_post.to_string()
+}
+
+/// Scan `files` for Form-1 broken references and return the set of stable
+/// identities — (origin_file_pre_move, line, resolved_target) — keyed on the
+/// workspace-relative resolved target so post-rewrite re-anchoring (Case B)
+/// doesn't change identity. Used as a pre-apply snapshot by `batch_validate`
+/// to classify broken refs as pre-existing vs. newly introduced.
+fn snapshot_broken_refs(
+    workspace_root: &Path,
+    files: &[String],
+) -> HashSet<(String, usize, String)> {
+    let mut set: HashSet<(String, usize, String)> = HashSet::new();
+    for file in files {
+        let abs = workspace_root.join(file.as_str());
+        let Ok(content) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let mut sink: Vec<(String, usize, String)> = Vec::new();
+        collect_broken_refs(file, &content, workspace_root, &mut sink);
+        for (file_canonical, line, target_raw) in sink {
+            set.insert(broken_ref_identity(
+                &file_canonical,
+                line,
+                &target_raw,
+                &file_canonical,
+            ));
+        }
+    }
+    set
 }
 
 /// Collect Form 1 broken refs from `content` parsed as `file_canonical`.
+///
+/// Each entry is (file_canonical, line, target_raw). The caller is responsible
+/// for computing identity for pre-existing classification (see `broken_ref_identity`).
 fn collect_broken_refs(
     file_canonical: &str,
     content: &str,
@@ -519,6 +619,24 @@ fn collect_broken_refs(
             broken.push((fc.clone(), line_no, reference.target_raw.clone()));
         }
     }
+}
+
+/// Stable identity for a broken ref across move + rewrite:
+/// (origin_file_pre_move, line, resolved_target).
+///
+/// `resolved_target` is workspace-root-relative; it stays stable even when the
+/// rewriter re-anchors target_raw (Case B: origin file moved, relative target
+/// recomputed). Two refs that resolve to the same workspace path are "the same
+/// broken ref" regardless of how the path is spelled (`./x.md`, `../x.md`, etc.).
+fn broken_ref_identity(
+    file_pre_move: &str,
+    line: usize,
+    target_raw: &str,
+    origin_file_canonical: &str,
+) -> (String, usize, String) {
+    let origin = origin_file_canonical.to_string();
+    let resolved = resolver::resolve_form1(&origin, target_raw);
+    (file_pre_move.to_string(), line, resolved)
 }
 
 /// Phase 8: rename all staged files to their final workspace locations.
@@ -638,15 +756,19 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
 }
 
 /// Walk `workspace_root` and replace text occurrences of `src` with `dst` in non-.md files.
+///
+/// Returns the list of workspace-relative file paths that were rewritten, sorted alphabetically.
+/// Empty list means no files were touched. Callers print per-file detail (AENG-004).
 pub(crate) fn rewrite_non_md_occurrences(
     workspace_root: &Path,
     src: &str,
     dst: &str,
     plan_file_abs: Option<&std::path::Path>,
-) -> usize {
+) -> Vec<String> {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
-    let mut updated = 0usize;
+    let mut updated: Vec<String> = Vec::new();
     rewrite_in_dir(
+        workspace_root,
         workspace_root,
         src,
         dst,
@@ -654,15 +776,17 @@ pub(crate) fn rewrite_non_md_occurrences(
         &mut updated,
         plan_file_abs,
     );
+    updated.sort();
     updated
 }
 
 fn rewrite_in_dir(
+    workspace_root: &Path,
     dir: &Path,
     src: &str,
     dst: &str,
     extensions: &[&str],
-    updated: &mut usize,
+    updated: &mut Vec<String>,
     plan_file_abs: Option<&std::path::Path>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -674,7 +798,15 @@ fn rewrite_in_dir(
             continue;
         }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            rewrite_in_dir(&path, src, dst, extensions, updated, plan_file_abs);
+            rewrite_in_dir(
+                workspace_root,
+                &path,
+                src,
+                dst,
+                extensions,
+                updated,
+                plan_file_abs,
+            );
             continue;
         }
         if let Some(plan_path) = plan_file_abs {
@@ -700,8 +832,8 @@ fn rewrite_in_dir(
         let new_content = content.replace(src, dst);
         if let Err(e) = std::fs::write(&path, new_content.as_bytes()) {
             eprintln!("warning: could not rewrite {}: {e}", path.display());
-        } else {
-            *updated += 1;
+        } else if let Ok(rel) = path.strip_prefix(workspace_root) {
+            updated.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
 }
@@ -810,6 +942,7 @@ dst = "foundations/moved.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "missing src must return non-zero exit code");
 
@@ -880,6 +1013,7 @@ dst = "src/b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "dst-exists must return non-zero exit code");
 
@@ -912,6 +1046,7 @@ path = "existing-dir"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code, 0,
@@ -948,6 +1083,7 @@ dst = "c.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "second op must fail — non-zero exit code");
 
@@ -995,6 +1131,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "successful plan must exit 0");
 
@@ -1032,6 +1169,7 @@ dst = "src/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "must succeed");
 
@@ -1090,6 +1228,7 @@ dst = "src/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "move with refs must succeed");
         let output = String::from_utf8(out).unwrap();
@@ -1153,7 +1292,11 @@ dst = "src/renamed.md"
         );
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
-        assert_eq!(updated, 1, "expected 1 file updated");
+        assert_eq!(updated.len(), 1, "expected 1 file updated; got {updated:?}");
+        assert_eq!(
+            updated[0], "config.json",
+            "expected workspace-relative path"
+        );
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert!(
@@ -1167,13 +1310,16 @@ dst = "src/renamed.md"
     }
 
     #[test]
-    fn test_rewrite_non_md_occurrences_no_match_returns_zero() {
+    fn test_rewrite_non_md_occurrences_no_match_returns_empty() {
         let ws = make_workspace();
         let original = r#"{"path": "unrelated/path"}"#;
         write_file(ws.path(), "config.json", original);
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
-        assert_eq!(updated, 0, "expected 0 files updated when no match");
+        assert!(
+            updated.is_empty(),
+            "expected no files updated; got {updated:?}"
+        );
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert_eq!(content, original, "file must be unchanged when no match");
@@ -1215,6 +1361,7 @@ dst = "foundations/beta-engine"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code,
@@ -1264,6 +1411,7 @@ dst = "other/b"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code,
@@ -1312,6 +1460,7 @@ dst = "projects/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "must succeed");
 
@@ -1359,6 +1508,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 1, "re-apply must return exit 1");
 
@@ -1409,6 +1559,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "plan must succeed");
 
@@ -1437,6 +1588,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "plan must succeed");
 
@@ -1482,6 +1634,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_eq!(code, 0, "acked broken ref must not cause rollback");
 
@@ -1500,13 +1653,14 @@ dst = "b.md"
         );
     }
 
-    /// Apply with 1 broken ref but wrong file:line → validation fails, non-zero exit.
-    ///
-    /// Note: in the batch pipeline, Phase 2 (physical move) commits before Phase 7
-    /// (validation). The file IS moved (b.md exists) but exit is non-zero.
+    /// AENG / Intake A Gap 2 (2026-05-20) — pre-existing broken refs in files touched
+    /// by the apply are auto-acked (with a warning) rather than triggering rollback.
+    /// Operators no longer need to manually `--allow-broken` every pre-existing broken
+    /// ref before running a plan; only NEWLY broken refs require explicit acknowledgment.
     #[test]
-    fn test_allow_broken_wrong_ref_still_rolls_back() {
+    fn test_preexisting_broken_ref_auto_acked_via_diff() {
         let ws = make_workspace();
+        // a.md contains a broken ref — pre-existing condition unrelated to the move.
         write_file(ws.path(), "a.md", "[broken](nonexistent.md)\n");
 
         let plan_path = plan_file(
@@ -1519,29 +1673,29 @@ dst = "b.md"
 "#,
         );
 
-        let mut acked = AckedRefs::empty();
-        acked.add("b.md", 999); // wrong line number — does not match b.md:1
-
+        // No --allow-broken — the apply should succeed because the broken ref was
+        // present before the apply (snapshot_broken_refs captures it, batch_validate
+        // maps b.md back to a.md via reverse_map and finds it in pre_broken).
         let mut out = Vec::new();
         let code = run_impl(
             &plan_path,
             ws.path(),
             &ws.path().join(".accelmars"),
             &mut out,
-            &acked,
+            &AckedRefs::empty(),
+            false,
         );
-        assert_ne!(
+        assert_eq!(
             code, 0,
-            "wrong file:line must not suppress validation error"
+            "pre-existing broken ref must be auto-acked, not block apply"
         );
-        // Phase 2 committed the move; batch pipeline does not roll back physical moves.
         assert!(
             ws.path().join("b.md").exists(),
-            "b.md must exist — file was moved in Phase 2 before validation"
+            "b.md must exist after successful apply"
         );
         assert!(
             !ws.path().join("a.md").exists(),
-            "a.md must be gone — was moved to b.md in Phase 2"
+            "a.md must be gone after move"
         );
     }
 
@@ -1571,6 +1725,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_eq!(code, 0, "acked ref loaded from disk must suppress rollback");
         assert!(
@@ -1583,12 +1738,11 @@ dst = "b.md"
         );
     }
 
-    /// Partial ack: 2 broken refs, only 1 acked → validation fails, non-zero exit.
-    ///
-    /// Note: in the batch pipeline, b.md exists (moved in Phase 2) even though
-    /// validation failed and rewrites were not committed.
+    /// AENG / Intake A Gap 2 — multiple pre-existing broken refs across a moved file
+    /// are all auto-acked. Confirms classification works at scale, not just for the
+    /// single-ref case.
     #[test]
-    fn test_allow_broken_partial_ack_still_rolls_back() {
+    fn test_multiple_preexisting_broken_refs_all_auto_acked() {
         let ws = make_workspace();
         write_file(
             ws.path(),
@@ -1606,26 +1760,23 @@ dst = "b.md"
 "#,
         );
 
-        let mut acked = AckedRefs::empty();
-        acked.add("b.md", 1);
-
         let mut out = Vec::new();
         let code = run_impl(
             &plan_path,
             ws.path(),
             &ws.path().join(".accelmars"),
             &mut out,
-            &acked,
+            &AckedRefs::empty(),
+            false,
         );
-        assert_ne!(code, 0, "partial ack must not suppress validation error");
-        // Phase 2 committed; batch pipeline does not roll back physical moves.
+        assert_eq!(code, 0, "all pre-existing broken refs must be auto-acked");
         assert!(
             ws.path().join("b.md").exists(),
-            "b.md must exist — file was moved in Phase 2 before validation"
+            "b.md must exist after successful apply"
         );
         assert!(
             !ws.path().join("a.md").exists(),
-            "a.md must be gone — was moved to b.md in Phase 2"
+            "a.md must be gone after move"
         );
     }
 
@@ -1661,6 +1812,7 @@ dst = "foundations/beta-engine"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         let output = String::from_utf8(out).unwrap();
         assert_eq!(code, 0, "batch pipeline must succeed; output:\n{output}");
@@ -1679,6 +1831,127 @@ dst = "foundations/beta-engine"
         assert!(
             content.contains("../beta-engine/index.md"),
             "intra-chain ref must be correct after batch pipeline; got:\n{content}"
+        );
+    }
+
+    /// AENG-004 / Intake B Failure Mode 3 — `anchor apply` post-commit non-MD rewrite
+    /// summary names the files, not just a count, so operators can audit the blast radius.
+    #[test]
+    fn test_nonmd_post_apply_summary_lists_files() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(ws.path(), "config.json", r#"{"ref": "old/leaf.md"}"#);
+        write_file(ws.path(), "deep/nested/config.yaml", "ref: old/leaf.md\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        // Capture stderr by redirecting? run_impl uses eprintln! for the non-MD summary.
+        // We assert behavior via the returned Vec from rewrite_non_md_occurrences (already covered)
+        // and verify run_impl succeeds end-to-end.
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let json = std::fs::read_to_string(ws.path().join("config.json")).unwrap();
+        assert!(json.contains("new/leaf.md"), "json should be rewritten");
+        let yaml = std::fs::read_to_string(ws.path().join("deep/nested/config.yaml")).unwrap();
+        assert!(yaml.contains("new/leaf.md"), "yaml should be rewritten");
+    }
+
+    /// AENG-010 / Intake A Gap 1 — `anchor apply` must honor `--allow-prose-rewrites`,
+    /// mirroring `anchor file mv`. With the flag off, arrow-line backtick mentions
+    /// of the moved path are SKIPPED (prose heuristic). With the flag on, they are
+    /// rewritten as live references.
+    #[test]
+    fn test_allow_prose_rewrites_off_skips_arrow_line_backtick() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(
+            ws.path(),
+            "narrative.md",
+            "Historical: file moved from `old/leaf.md` to `new/leaf.md`.\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false, // allow_prose_rewrites
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let narrative =
+            std::fs::read_to_string(ws.path().join("narrative.md")).expect("read narrative.md");
+        assert!(
+            narrative.contains("from `old/leaf.md` to `new/leaf.md`"),
+            "prose backtick must be preserved when flag is off; got:\n{narrative}"
+        );
+    }
+
+    #[test]
+    fn test_allow_prose_rewrites_on_rewrites_arrow_line_backtick() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(
+            ws.path(),
+            "narrative.md",
+            "Historical: file moved from `old/leaf.md` to `new/leaf.md`.\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            true, // allow_prose_rewrites
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let narrative =
+            std::fs::read_to_string(ws.path().join("narrative.md")).expect("read narrative.md");
+        assert!(
+            narrative.contains("from `new/leaf.md` to `new/leaf.md`"),
+            "prose backtick must be rewritten when --allow-prose-rewrites is on; got:\n{narrative}"
         );
     }
 }

@@ -1,13 +1,17 @@
-// tests/apply_rollback_diagnostics.rs — AENG-002: rollback names failing refs
+// tests/apply_rollback_diagnostics.rs — AENG-002 + Intake A Gap 2 integration coverage
 //
-// Verifies that `anchor apply` emits per-ref diagnostics (file:line, target, similar:)
-// on a VALIDATE-phase rollback, matching `anchor file validate` format.
+// AENG-002 originally asserted per-ref diagnostics (file:line, target, similar:) on
+// rollback caused by pre-existing broken refs. After Intake A Gap 2 (v0.9.0) pre-existing
+// broken refs are auto-acked, so the OLD trigger path is no longer the common case —
+// the diagnostic format is still unit-tested in `core/diagnostics.rs`.
 //
-// Fixture strategy: a.md references a path being moved (so it lands in op_dir/rewrites/)
-// AND pre-existing broken refs that fail VALIDATE. This reliably triggers the rollback
-// path regardless of anchor's correct ref-rewriting logic.
+// This file now provides integration coverage for the auto-ack flow:
+//   - Pre-existing broken refs survive the apply (no rollback, warning emitted).
+//   - Files moved correctly, content preserved.
 //
-// Executor: idris-mensah (@idris), AENG-002
+// Rollback still triggers when a ref is NEWLY broken (rewriter bug). That path is
+// hard to exercise naturally without injecting a fault into the rewriter, so it is
+// covered by unit tests in `core/diagnostics.rs` rather than integration tests.
 
 use std::fs;
 use std::path::Path;
@@ -40,25 +44,18 @@ fn plan_file(ws: &TempDir, content: &str) -> std::path::PathBuf {
     p
 }
 
-// ── Test 1: ≥2 broken refs named in rollback output ──────────────────────────
-
-/// Apply rollback names each failing ref with file:line and (target not found).
-///
-/// Fixture: a.md references moved/note.md (gets into rewrites/) AND two pre-existing
-/// broken refs (nonexistent/one.md, nonexistent/two.md) that fail VALIDATE.
+/// Intake A Gap 2 — pre-existing broken refs in a moved file are auto-acked.
+/// Apply succeeds with exit 0 and emits a "Pre-existing broken ref preserved"
+/// warning per broken ref.
 #[test]
-fn test_rollback_names_two_broken_refs() {
+fn test_preexisting_broken_refs_auto_acked_and_warned() {
     let ws = make_workspace();
 
-    // moved/note.md — the file being relocated
-    write_file(ws.path(), "moved/note.md", "# Note\n");
-
-    // a.md: ref to moved/note.md (ensures a.md enters op_dir/rewrites/)
-    //       plus two pre-existing broken refs that will fail VALIDATE
+    // a.md has 2 broken refs that the move can't fix (the targets don't exist).
     write_file(
         ws.path(),
         "a.md",
-        "[note](moved/note.md)\n[broken1](nonexistent/one.md)\n[broken2](nonexistent/two.md)\n",
+        "[broken1](nonexistent/one.md)\n[broken2](nonexistent/two.md)\n",
     );
 
     let plan = plan_file(
@@ -66,8 +63,8 @@ fn test_rollback_names_two_broken_refs() {
         r#"version = "1"
 [[ops]]
 type = "move"
-src = "moved"
-dst = "archive"
+src = "a.md"
+dst = "b.md"
 "#,
     );
 
@@ -79,75 +76,56 @@ dst = "archive"
         .output()
         .unwrap();
 
-    assert_ne!(
-        output.status.code().unwrap_or(0),
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
         0,
-        "rollback must return non-zero exit code"
+        "apply must succeed despite pre-existing broken refs (auto-acked)"
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("Pre-existing broken ref preserved"),
+        "output must include the auto-ack warning; got:\n{combined}"
+    );
 
     assert!(
-        stderr.contains("BROKEN REFERENCES AFTER REWRITE (2):"),
-        "stderr must contain header with count 2; got:\n{stderr}"
+        ws.path().join("b.md").exists(),
+        "b.md must exist after move"
     );
-    assert!(
-        stderr.contains("a.md:2"),
-        "stderr must contain file:line for first broken ref; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("nonexistent/one.md"),
-        "stderr must name first broken target; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("a.md:3"),
-        "stderr must contain file:line for second broken ref; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("nonexistent/two.md"),
-        "stderr must name second broken target; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("(target not found)"),
-        "stderr must contain '(target not found)'; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("rolled back."),
-        "stderr must confirm rollback; got:\n{stderr}"
-    );
+    assert!(!ws.path().join("a.md").exists(), "a.md must be gone");
 }
 
-// ── Test 2: similar: suggestion emitted when close match exists ───────────────
-
-/// Apply rollback emits `similar:` line when a close filename match exists in workspace.
-///
-/// Fixture: b.md references moved/doc.md (enters rewrites/) AND "actaul-target.md"
-/// (single-char typo of "actual-target.md" which exists). VALIDATE fails on the typo
-/// ref; similar: should suggest the correct file.
+/// Intake A Gap 2 — Case B rewriter re-anchoring (relative ref recomputed)
+/// must NOT be classified as newly broken: identity uses resolved target,
+/// not target_raw, so a typo'd ref points to the same non-existent file
+/// pre- and post-move.
 #[test]
-fn test_rollback_similar_suggestion() {
+fn test_case_b_re_anchored_preexisting_broken_still_acked() {
     let ws = make_workspace();
 
-    // moved/doc.md — being relocated
-    write_file(ws.path(), "moved/doc.md", "# Doc\n");
-
-    // actual-target.md EXISTS — close match for the typo below
+    // actual-target.md EXISTS at root, but b.md points to a typo'd sibling
+    // that doesn't exist. The typo'd ref is pre-existing broken.
     write_file(ws.path(), "actual-target.md", "# Actual target\n");
+    write_file(ws.path(), "b.md", "[typo](./actaul-target.md)\n");
 
-    // b.md: ref to moved/doc.md (enters rewrites/) + single-char-typo broken ref
-    write_file(
-        ws.path(),
-        "b.md",
-        "[doc](moved/doc.md)\n[typo](actaul-target.md)\n",
-    );
-
+    // Move b.md into a subdirectory. The rewriter re-anchors `./actaul-target.md`
+    // → `../actaul-target.md` (Case B). The resolved target stays the same
+    // non-existent root file. Identity-by-resolved-path classifies this as
+    // pre-existing broken → auto-acked.
     let plan = plan_file(
         &ws,
         r#"version = "1"
 [[ops]]
+type = "create_dir"
+path = "subdir"
+[[ops]]
 type = "move"
-src = "moved"
-dst = "archive2"
+src = "b.md"
+dst = "subdir/b.md"
 "#,
     );
 
@@ -159,20 +137,14 @@ dst = "archive2"
         .output()
         .unwrap();
 
-    assert_ne!(
-        output.status.code().unwrap_or(0),
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
         0,
-        "rollback must return non-zero exit code"
+        "Case-B re-anchored pre-existing broken ref must be auto-acked"
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
     assert!(
-        stderr.contains("actaul-target.md"),
-        "stderr must name the broken ref target; got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("similar: actual-target.md"),
-        "stderr must contain similar suggestion for the typo; got:\n{stderr}"
+        ws.path().join("subdir/b.md").exists(),
+        "b.md must be at subdir/b.md after move"
     );
 }

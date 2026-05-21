@@ -87,7 +87,8 @@ pub fn scan_partial_plain_text(
 /// ⚠ Plain-text occurrences not rewritten (may be bare prose refs):
 ///   <file>: <N> occurrence(s) of '<segment>'
 ///   ...
-/// Run 'anchor refs --plain <segment>' to inspect before closing.
+/// To rewrite prose backtick refs in a plan: anchor apply <plan> --allow-prose-rewrites
+/// To inspect manually: grep -rn '<segment>' .
 /// ```
 pub fn format_plain_text_warning(
     full_path_lines: &[(String, usize)],
@@ -114,8 +115,12 @@ pub fn format_plain_text_warning(
         ));
     }
 
+    lines.push(
+        "To rewrite backtick prose refs as a batch: anchor apply <plan> --allow-prose-rewrites"
+            .to_string(),
+    );
     lines.push(format!(
-        "Run 'anchor refs --plain {trailing_segment}' to inspect before closing."
+        "To inspect manually: grep -rn '{trailing_segment}' ."
     ));
 
     Some(lines.join("\n"))
@@ -263,7 +268,8 @@ mod tests {
         let result = format_plain_text_warning(&full, &[], "os-council").unwrap();
         assert!(result.contains("⚠ Plain-text occurrences"));
         assert!(result.contains("STATUS.md: 3 occurrence(s) of 'os-council'"));
-        assert!(result.contains("anchor refs --plain os-council"));
+        assert!(result.contains("--allow-prose-rewrites"));
+        assert!(result.contains("grep -rn 'os-council'"));
     }
 
     /// Partial hits only → warning block.
@@ -290,6 +296,7 @@ mod tests {
         let result = format_plain_text_warning(&full, &partial, "os-council").unwrap();
         assert!(result.contains("a.md: 1 occurrence(s) of 'os-council'"));
         assert!(result.contains("b.md: 4 occurrence(s) of 'os-council'"));
-        assert!(result.contains("anchor refs --plain os-council"));
+        assert!(result.contains("--allow-prose-rewrites"));
+        assert!(result.contains("grep -rn 'os-council'"));
     }
 }
