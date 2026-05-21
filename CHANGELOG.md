@@ -1,4 +1,14 @@
 
+## [0.9.1] - 2026-05-21
+
+### Bug Fixes
+
+- (**Intake A Gap 2 follow-up, AENG-020**) Pre-existing broken-ref classifier now keys identity by `(file_pre, line)` only, not by resolved target. The v0.9.0 identity included the resolved target, which made the classifier miss pre-existing broken refs when the rewriter changed the resolved path — most commonly when a moved file has a relative-sibling ref to a non-existent target. Example failure: moving `gateway-engine/02-capabilities/` to `engines/gateway/02-capabilities/` where one of the files contained `[link](09-streaming.md)` (typo; actual is `10-streaming.md`). Pre-move resolved to `gateway-engine/02-capabilities/09-streaming.md`; post-move resolved to `engines/gateway/02-capabilities/09-streaming.md`. Different paths → v0.9.0 classified as newly-broken → rollback. v0.9.1 fixes this: position-only identity correctly identifies the ref as pre-existing. Discovered during the 14-engine `foundations/*-engine → foundations/engines/*` restructure, which required 3 manual `--allow-broken` acks under v0.9.0.
+
+Edge case where the new identity may over-ack: a file with two refs on the same line (`[a](x) [b](y)`), one pre-existing-broken and one rewriter-introduced-broken. Both at same `(file, line)` → both auto-acked. In practice Form-1 refs are one-per-line; collision is rare; cost (one missed rollback for a line that was already broken anyway) is bounded.
+
+Adds 1 regression test that exercises the exact scenario the 2026-05-21 restructure hit.
+
 ## [0.9.0] - 2026-05-21
 
 > Intake-sweep release closing Intake A (orbit-active-driver close, 2026-05-20) gaps 1–5

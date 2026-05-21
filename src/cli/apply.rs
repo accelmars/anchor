@@ -454,7 +454,7 @@ fn batch_validate(
     op_dir: &temp::TempOpDir,
     reverse_map: &HashMap<String, String>,
     acked: &AckedRefs,
-    pre_broken: &HashSet<(String, usize, String)>,
+    pre_broken: &HashSet<(String, usize)>,
 ) -> Result<Vec<String>, String> {
     let staged_canonicals: HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
     let mut broken: Vec<(String, usize, String)> = Vec::new();
@@ -511,7 +511,7 @@ fn batch_validate(
             continue;
         }
         let file_pre = map_post_to_pre_path(&file_post, reverse_map);
-        let identity = broken_ref_identity(&file_pre, line, &target, &file_post);
+        let identity = broken_ref_identity(&file_pre, line);
         if pre_broken.contains(&identity) {
             pre_existing.push((file_post, line, target));
         } else {
@@ -564,15 +564,13 @@ fn map_post_to_pre_path(file_post: &str, reverse_map: &HashMap<String, String>) 
 }
 
 /// Scan `files` for Form-1 broken references and return the set of stable
-/// identities — (origin_file_pre_move, line, resolved_target) — keyed on the
-/// workspace-relative resolved target so post-rewrite re-anchoring (Case B)
-/// doesn't change identity. Used as a pre-apply snapshot by `batch_validate`
+/// identities — `(origin_file_pre_move, line)` — keyed by position so that
+/// move-induced re-resolution (relative refs whose resolved target shifts
+/// because the source file's path changed) doesn't make the classifier miss
+/// a pre-existing broken ref. Used as a pre-apply snapshot by `batch_validate`
 /// to classify broken refs as pre-existing vs. newly introduced.
-fn snapshot_broken_refs(
-    workspace_root: &Path,
-    files: &[String],
-) -> HashSet<(String, usize, String)> {
-    let mut set: HashSet<(String, usize, String)> = HashSet::new();
+fn snapshot_broken_refs(workspace_root: &Path, files: &[String]) -> HashSet<(String, usize)> {
+    let mut set: HashSet<(String, usize)> = HashSet::new();
     for file in files {
         let abs = workspace_root.join(file.as_str());
         let Ok(content) = std::fs::read_to_string(&abs) else {
@@ -580,13 +578,8 @@ fn snapshot_broken_refs(
         };
         let mut sink: Vec<(String, usize, String)> = Vec::new();
         collect_broken_refs(file, &content, workspace_root, &mut sink);
-        for (file_canonical, line, target_raw) in sink {
-            set.insert(broken_ref_identity(
-                &file_canonical,
-                line,
-                &target_raw,
-                &file_canonical,
-            ));
+        for (file_canonical, line, _target_raw) in sink {
+            set.insert(broken_ref_identity(&file_canonical, line));
         }
     }
     set
@@ -621,22 +614,30 @@ fn collect_broken_refs(
     }
 }
 
-/// Stable identity for a broken ref across move + rewrite:
-/// (origin_file_pre_move, line, resolved_target).
+/// Stable identity for a broken ref across move + rewrite: `(origin_file_pre_move, line)`.
 ///
-/// `resolved_target` is workspace-root-relative; it stays stable even when the
-/// rewriter re-anchors target_raw (Case B: origin file moved, relative target
-/// recomputed). Two refs that resolve to the same workspace path are "the same
-/// broken ref" regardless of how the path is spelled (`./x.md`, `../x.md`, etc.).
-fn broken_ref_identity(
-    file_pre_move: &str,
-    line: usize,
-    target_raw: &str,
-    origin_file_canonical: &str,
-) -> (String, usize, String) {
-    let origin = origin_file_canonical.to_string();
-    let resolved = resolver::resolve_form1(&origin, target_raw);
-    (file_pre_move.to_string(), line, resolved)
+/// Why position-only:
+///
+/// Earlier v0.9.0 attempted a richer identity that also keyed on the resolved
+/// target. That predicate broke for the most common case the auto-ack feature
+/// exists to serve — moves whose source files contain pre-existing broken
+/// relative-sibling refs. When a file moves from `old/foo.md` to `new/foo.md`,
+/// its ref `[link](missing.md)` resolves to `old/missing.md` BEFORE and
+/// `new/missing.md` AFTER. The resolved target changes purely because the
+/// source file's position changed — even though `target_raw` is unchanged and
+/// the operator's broken-ref situation is unchanged.
+///
+/// Position-only identity is correct in spirit: a ref at this `(file, line)`
+/// was broken before the apply began; whatever the rewriter morphed it into,
+/// the move did not introduce the brokenness.
+///
+/// Edge case where this could over-ack: a file has two refs on the same line
+/// (e.g. `[a](x) [b](y)`), one pre-existing-broken and one that the rewriter
+/// turns into a newly-broken ref. Position-only would auto-ack both. In
+/// practice Form-1 refs are one-per-line; this collision is rare and the cost
+/// (one missed rollback for a line that was already broken anyway) is bounded.
+fn broken_ref_identity(file_pre_move: &str, line: usize) -> (String, usize) {
+    (file_pre_move.to_string(), line)
 }
 
 /// Phase 8: rename all staged files to their final workspace locations.
@@ -1735,6 +1736,68 @@ dst = "b.md"
         assert!(
             !ws.path().join("a.md").exists(),
             "a.md must be gone after apply"
+        );
+    }
+
+    /// AENG-020 regression — pre-existing broken RELATIVE-SIBLING refs in a moved
+    /// directory tree must be auto-acked. The v0.9.0 classifier missed these
+    /// because it keyed on resolved_target, which shifts when the source file's
+    /// position changes (e.g. `09-streaming.md` from `gateway-engine/02-cap/foo.md`
+    /// resolves differently than from `engines/gateway/02-cap/foo.md`). v0.9.1
+    /// keys identity by `(file_pre, line)` only.
+    #[test]
+    fn test_preexisting_broken_relative_sibling_in_moved_tree_auto_acked() {
+        let ws = make_workspace();
+        // gateway/02-capabilities/01-http-server.md contains a broken sibling ref
+        // (the actual file is 10-streaming.md; ref typos 09).
+        write_file(
+            ws.path(),
+            "gateway/02-capabilities/01-http-server.md",
+            "# HTTP Server\n\nSee [streaming](09-streaming.md) for details.\n",
+        );
+        write_file(
+            ws.path(),
+            "gateway/02-capabilities/10-streaming.md",
+            "# Streaming\n",
+        );
+
+        // Plan: relocate the gateway directory under engines/.
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "create_dir"
+path = "engines"
+
+[[ops]]
+type = "move"
+src = "gateway"
+dst = "engines/gateway"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(
+            code, 0,
+            "pre-existing broken sibling ref in moved tree must be auto-acked, not block apply"
+        );
+        assert!(
+            ws.path()
+                .join("engines/gateway/02-capabilities/01-http-server.md")
+                .exists(),
+            "moved file must exist at new path"
+        );
+        assert!(
+            !ws.path().join("gateway").exists(),
+            "old gateway directory must be gone"
         );
     }
 
