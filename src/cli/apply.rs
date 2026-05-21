@@ -24,7 +24,12 @@ use std::path::Path;
 ///
 /// Discovers workspace root, builds acked set from disk + flags, delegates to `run_impl`.
 /// Returns exit code: 0 = success, 1 = plan/preflight/op error, 2 = workspace/infra error.
-pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&str>) -> i32 {
+pub fn run(
+    plan_path: &str,
+    allow_broken: &[String],
+    allow_broken_from: Option<&str>,
+    allow_prose_rewrites: bool,
+) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -77,6 +82,7 @@ pub fn run(plan_path: &str, allow_broken: &[String], allow_broken_from: Option<&
         &engine_home,
         &mut std::io::stdout(),
         &acked,
+        allow_prose_rewrites,
     );
 
     // Persist newly specified refs only on success.
@@ -104,6 +110,7 @@ pub(crate) fn run_impl<W: Write>(
     engine_home: &Path,
     out: &mut W,
     acked: &AckedRefs,
+    allow_prose_rewrites: bool,
 ) -> i32 {
     // Parse plan file
     let path = Path::new(plan_path);
@@ -231,7 +238,7 @@ pub(crate) fn run_impl<W: Write>(
         &workspace_files,
         &forward_map,
         &reverse_map,
-        false,
+        allow_prose_rewrites,
         &pre_move_paths,
     ) {
         Ok(e) => e,
@@ -810,6 +817,7 @@ dst = "foundations/moved.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "missing src must return non-zero exit code");
 
@@ -880,6 +888,7 @@ dst = "src/b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "dst-exists must return non-zero exit code");
 
@@ -912,6 +921,7 @@ path = "existing-dir"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code, 0,
@@ -948,6 +958,7 @@ dst = "c.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_ne!(code, 0, "second op must fail — non-zero exit code");
 
@@ -995,6 +1006,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "successful plan must exit 0");
 
@@ -1032,6 +1044,7 @@ dst = "src/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "must succeed");
 
@@ -1090,6 +1103,7 @@ dst = "src/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "move with refs must succeed");
         let output = String::from_utf8(out).unwrap();
@@ -1215,6 +1229,7 @@ dst = "foundations/beta-engine"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code,
@@ -1264,6 +1279,7 @@ dst = "other/b"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(
             code,
@@ -1312,6 +1328,7 @@ dst = "projects/renamed.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "must succeed");
 
@@ -1359,6 +1376,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 1, "re-apply must return exit 1");
 
@@ -1409,6 +1427,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "plan must succeed");
 
@@ -1437,6 +1456,7 @@ dst = "docs/destination.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         assert_eq!(code, 0, "plan must succeed");
 
@@ -1482,6 +1502,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_eq!(code, 0, "acked broken ref must not cause rollback");
 
@@ -1529,6 +1550,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_ne!(
             code, 0,
@@ -1571,6 +1593,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_eq!(code, 0, "acked ref loaded from disk must suppress rollback");
         assert!(
@@ -1616,6 +1639,7 @@ dst = "b.md"
             &ws.path().join(".accelmars"),
             &mut out,
             &acked,
+            false,
         );
         assert_ne!(code, 0, "partial ack must not suppress validation error");
         // Phase 2 committed; batch pipeline does not roll back physical moves.
@@ -1661,6 +1685,7 @@ dst = "foundations/beta-engine"
             &ws.path().join(".accelmars"),
             &mut out,
             &AckedRefs::empty(),
+            false,
         );
         let output = String::from_utf8(out).unwrap();
         assert_eq!(code, 0, "batch pipeline must succeed; output:\n{output}");
@@ -1679,6 +1704,88 @@ dst = "foundations/beta-engine"
         assert!(
             content.contains("../beta-engine/index.md"),
             "intra-chain ref must be correct after batch pipeline; got:\n{content}"
+        );
+    }
+
+    /// AENG-010 / Intake A Gap 1 — `anchor apply` must honor `--allow-prose-rewrites`,
+    /// mirroring `anchor file mv`. With the flag off, arrow-line backtick mentions
+    /// of the moved path are SKIPPED (prose heuristic). With the flag on, they are
+    /// rewritten as live references.
+    #[test]
+    fn test_allow_prose_rewrites_off_skips_arrow_line_backtick() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(
+            ws.path(),
+            "narrative.md",
+            "Historical: file moved from `old/leaf.md` to `new/leaf.md`.\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false, // allow_prose_rewrites
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let narrative =
+            std::fs::read_to_string(ws.path().join("narrative.md")).expect("read narrative.md");
+        assert!(
+            narrative.contains("from `old/leaf.md` to `new/leaf.md`"),
+            "prose backtick must be preserved when flag is off; got:\n{narrative}"
+        );
+    }
+
+    #[test]
+    fn test_allow_prose_rewrites_on_rewrites_arrow_line_backtick() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(
+            ws.path(),
+            "narrative.md",
+            "Historical: file moved from `old/leaf.md` to `new/leaf.md`.\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            true, // allow_prose_rewrites
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let narrative =
+            std::fs::read_to_string(ws.path().join("narrative.md")).expect("read narrative.md");
+        assert!(
+            narrative.contains("from `new/leaf.md` to `new/leaf.md`"),
+            "prose backtick must be rewritten when --allow-prose-rewrites is on; got:\n{narrative}"
         );
     }
 }
