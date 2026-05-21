@@ -84,8 +84,8 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
     // excluded from the scanner output (e.g., paths inside `.accelmars/<slug>/` in
     // integrated mode) — operators can still ask "who references this?" and get a
     // useful answer scoped to the scanned workspace. See Intake A Gap 4 (2026-05-20).
-    let absent = !files.contains(&target_canonical)
-        && !workspace_root.join(&target_canonical).exists();
+    let absent =
+        !files.contains(&target_canonical) && !workspace_root.join(&target_canonical).exists();
 
     let mut hits: Vec<(String, usize)> = Vec::new(); // (source_file, line)
 

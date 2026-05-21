@@ -92,7 +92,10 @@ dst = "b.md"
         "output must include the auto-ack warning; got:\n{combined}"
     );
 
-    assert!(ws.path().join("b.md").exists(), "b.md must exist after move");
+    assert!(
+        ws.path().join("b.md").exists(),
+        "b.md must exist after move"
+    );
     assert!(!ws.path().join("a.md").exists(), "a.md must be gone");
 }
 
@@ -107,11 +110,7 @@ fn test_case_b_re_anchored_preexisting_broken_still_acked() {
     // actual-target.md EXISTS at root, but b.md points to a typo'd sibling
     // that doesn't exist. The typo'd ref is pre-existing broken.
     write_file(ws.path(), "actual-target.md", "# Actual target\n");
-    write_file(
-        ws.path(),
-        "b.md",
-        "[typo](./actaul-target.md)\n",
-    );
+    write_file(ws.path(), "b.md", "[typo](./actaul-target.md)\n");
 
     // Move b.md into a subdirectory. The rewriter re-anchors `./actaul-target.md`
     // → `../actaul-target.md` (Case B). The resolved target stays the same

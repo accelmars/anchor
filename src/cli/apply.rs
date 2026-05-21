@@ -309,10 +309,7 @@ pub(crate) fn run_impl<W: Write>(
         let non_md_updated =
             rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs.as_deref());
         if !non_md_updated.is_empty() {
-            eprintln!(
-                "{} non-markdown file(s) updated:",
-                non_md_updated.len()
-            );
+            eprintln!("{} non-markdown file(s) updated:", non_md_updated.len());
             for path in &non_md_updated {
                 eprintln!("  {path}  `{src}` \u{2192} `{dst}`");
             }
@@ -540,7 +537,9 @@ fn batch_validate(
         .map(|(file, line, _)| format!("⚠  Allowing known broken ref: {file}:{line}  (acked)"))
         .collect();
     warnings.extend(pre_existing.iter().map(|(file, line, _)| {
-        format!("⚠  Pre-existing broken ref preserved: {file}:{line}  (already broken before apply)")
+        format!(
+            "⚠  Pre-existing broken ref preserved: {file}:{line}  (already broken before apply)"
+        )
     }));
     Ok(warnings)
 }
@@ -799,7 +798,15 @@ fn rewrite_in_dir(
             continue;
         }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            rewrite_in_dir(workspace_root, &path, src, dst, extensions, updated, plan_file_abs);
+            rewrite_in_dir(
+                workspace_root,
+                &path,
+                src,
+                dst,
+                extensions,
+                updated,
+                plan_file_abs,
+            );
             continue;
         }
         if let Some(plan_path) = plan_file_abs {
@@ -1286,7 +1293,10 @@ dst = "src/renamed.md"
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
         assert_eq!(updated.len(), 1, "expected 1 file updated; got {updated:?}");
-        assert_eq!(updated[0], "config.json", "expected workspace-relative path");
+        assert_eq!(
+            updated[0], "config.json",
+            "expected workspace-relative path"
+        );
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert!(
@@ -1306,7 +1316,10 @@ dst = "src/renamed.md"
         write_file(ws.path(), "config.json", original);
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
-        assert!(updated.is_empty(), "expected no files updated; got {updated:?}");
+        assert!(
+            updated.is_empty(),
+            "expected no files updated; got {updated:?}"
+        );
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert_eq!(content, original, "file must be unchanged when no match");
@@ -1756,10 +1769,7 @@ dst = "b.md"
             &AckedRefs::empty(),
             false,
         );
-        assert_eq!(
-            code, 0,
-            "all pre-existing broken refs must be auto-acked"
-        );
+        assert_eq!(code, 0, "all pre-existing broken refs must be auto-acked");
         assert!(
             ws.path().join("b.md").exists(),
             "b.md must exist after successful apply"
@@ -1830,16 +1840,8 @@ dst = "foundations/beta-engine"
     fn test_nonmd_post_apply_summary_lists_files() {
         let ws = make_workspace();
         write_file(ws.path(), "old/leaf.md", "# Leaf\n");
-        write_file(
-            ws.path(),
-            "config.json",
-            r#"{"ref": "old/leaf.md"}"#,
-        );
-        write_file(
-            ws.path(),
-            "deep/nested/config.yaml",
-            "ref: old/leaf.md\n",
-        );
+        write_file(ws.path(), "config.json", r#"{"ref": "old/leaf.md"}"#);
+        write_file(ws.path(), "deep/nested/config.yaml", "ref: old/leaf.md\n");
 
         let plan_path = plan_file(
             &ws,
