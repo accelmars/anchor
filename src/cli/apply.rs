@@ -144,6 +144,14 @@ pub(crate) fn run_impl<W: Write>(
         return 1;
     }
 
+    // Snapshot pre-existing broken refs across the pre-move workspace. Used by
+    // batch_validate to distinguish "broken BY this apply" (real failure, rollback)
+    // from "broken before this apply" (pre-existing condition, auto-acked with a
+    // warning). Closes Intake A Gap 2 / partial AENG-003 — operators no longer have
+    // to manually `--allow-broken` every pre-existing broken ref in files touched
+    // by their plan. See snapshot_broken_refs for the (file, line, target) key shape.
+    let pre_broken = snapshot_broken_refs(workspace_root, &preflight_files);
+
     let total = plan.ops.len();
 
     // Verify workspace is initialized before acquiring lock or creating staging dir.
@@ -264,6 +272,7 @@ pub(crate) fn run_impl<W: Write>(
         &op_dir,
         &reverse_map,
         acked,
+        &pre_broken,
     ) {
         Ok(warnings) => warnings,
         Err(e) => {
@@ -448,6 +457,7 @@ fn batch_validate(
     op_dir: &temp::TempOpDir,
     reverse_map: &HashMap<String, String>,
     acked: &AckedRefs,
+    pre_broken: &HashSet<(String, usize, String)>,
 ) -> Result<Vec<String>, String> {
     let staged_canonicals: HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
     let mut broken: Vec<(String, usize, String)> = Vec::new();
@@ -485,15 +495,38 @@ fn batch_validate(
         return Ok(vec![]);
     }
 
-    let (acked_refs, unacked_refs): (Vec<_>, Vec<_>) = broken
-        .into_iter()
-        .partition(|(file, line, _)| acked.contains(file, *line));
+    // Classify each broken ref against three states:
+    //   1. Newly broken (caused by this apply)            → ERROR, rollback
+    //   2. Acked via --allow-broken / --allow-broken-from → suppress, warn
+    //   3. Pre-existing (broken before this apply)        → auto-ack, warn
+    //
+    // Map post-apply file path → pre-apply file path via reverse_map, then
+    // build the stable identity (origin_file_pre_move, line, resolved_target)
+    // that survives the Case-B rewriter re-anchoring of relative paths.
+    // See Intake A Gap 2 — operators no longer hit rollback because of unrelated
+    // broken refs in files anchor happened to touch.
+    let mut newly_broken: Vec<(String, usize, String)> = Vec::new();
+    let mut acked_refs: Vec<(String, usize, String)> = Vec::new();
+    let mut pre_existing: Vec<(String, usize, String)> = Vec::new();
+    for (file_post, line, target) in broken.into_iter() {
+        if acked.contains(&file_post, line) {
+            acked_refs.push((file_post, line, target));
+            continue;
+        }
+        let file_pre = map_post_to_pre_path(&file_post, reverse_map);
+        let identity = broken_ref_identity(&file_pre, line, &target, &file_post);
+        if pre_broken.contains(&identity) {
+            pre_existing.push((file_post, line, target));
+        } else {
+            newly_broken.push((file_post, line, target));
+        }
+    }
 
-    if !unacked_refs.is_empty() {
+    if !newly_broken.is_empty() {
         let capped = &workspace_files[..200.min(workspace_files.len())];
-        eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", unacked_refs.len());
+        eprintln!("BROKEN REFERENCES AFTER REWRITE ({}):", newly_broken.len());
         eprintln!();
-        for (file, line, target) in &unacked_refs {
+        for (file, line, target) in &newly_broken {
             eprint!(
                 "{}",
                 crate::core::diagnostics::format_broken_ref(file, *line, target, capped)
@@ -502,13 +535,68 @@ fn batch_validate(
         return Err("rolled back.".to_string());
     }
 
-    Ok(acked_refs
+    let mut warnings: Vec<String> = acked_refs
         .iter()
         .map(|(file, line, _)| format!("⚠  Allowing known broken ref: {file}:{line}  (acked)"))
-        .collect())
+        .collect();
+    warnings.extend(pre_existing.iter().map(|(file, line, _)| {
+        format!("⚠  Pre-existing broken ref preserved: {file}:{line}  (already broken before apply)")
+    }));
+    Ok(warnings)
+}
+
+/// Map a post-apply file path back to its pre-apply path using `reverse_map`.
+///
+/// reverse_map keys are post-apply path prefixes (typically directory roots) and
+/// values are pre-apply path prefixes. A staged file inside a moved subtree is
+/// rewritten by replacing the matching prefix; files outside any move keep their
+/// path unchanged.
+fn map_post_to_pre_path(file_post: &str, reverse_map: &HashMap<String, String>) -> String {
+    for (post_prefix, pre_prefix) in reverse_map {
+        if file_post == post_prefix {
+            return pre_prefix.clone();
+        }
+        let with_slash = format!("{post_prefix}/");
+        if let Some(rest) = file_post.strip_prefix(&with_slash) {
+            return format!("{pre_prefix}/{rest}");
+        }
+    }
+    file_post.to_string()
+}
+
+/// Scan `files` for Form-1 broken references and return the set of stable
+/// identities — (origin_file_pre_move, line, resolved_target) — keyed on the
+/// workspace-relative resolved target so post-rewrite re-anchoring (Case B)
+/// doesn't change identity. Used as a pre-apply snapshot by `batch_validate`
+/// to classify broken refs as pre-existing vs. newly introduced.
+fn snapshot_broken_refs(
+    workspace_root: &Path,
+    files: &[String],
+) -> HashSet<(String, usize, String)> {
+    let mut set: HashSet<(String, usize, String)> = HashSet::new();
+    for file in files {
+        let abs = workspace_root.join(file.as_str());
+        let Ok(content) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let mut sink: Vec<(String, usize, String)> = Vec::new();
+        collect_broken_refs(file, &content, workspace_root, &mut sink);
+        for (file_canonical, line, target_raw) in sink {
+            set.insert(broken_ref_identity(
+                &file_canonical,
+                line,
+                &target_raw,
+                &file_canonical,
+            ));
+        }
+    }
+    set
 }
 
 /// Collect Form 1 broken refs from `content` parsed as `file_canonical`.
+///
+/// Each entry is (file_canonical, line, target_raw). The caller is responsible
+/// for computing identity for pre-existing classification (see `broken_ref_identity`).
 fn collect_broken_refs(
     file_canonical: &str,
     content: &str,
@@ -532,6 +620,24 @@ fn collect_broken_refs(
             broken.push((fc.clone(), line_no, reference.target_raw.clone()));
         }
     }
+}
+
+/// Stable identity for a broken ref across move + rewrite:
+/// (origin_file_pre_move, line, resolved_target).
+///
+/// `resolved_target` is workspace-root-relative; it stays stable even when the
+/// rewriter re-anchors target_raw (Case B: origin file moved, relative target
+/// recomputed). Two refs that resolve to the same workspace path are "the same
+/// broken ref" regardless of how the path is spelled (`./x.md`, `../x.md`, etc.).
+fn broken_ref_identity(
+    file_pre_move: &str,
+    line: usize,
+    target_raw: &str,
+    origin_file_canonical: &str,
+) -> (String, usize, String) {
+    let origin = origin_file_canonical.to_string();
+    let resolved = resolver::resolve_form1(&origin, target_raw);
+    (file_pre_move.to_string(), line, resolved)
 }
 
 /// Phase 8: rename all staged files to their final workspace locations.
@@ -1534,13 +1640,14 @@ dst = "b.md"
         );
     }
 
-    /// Apply with 1 broken ref but wrong file:line → validation fails, non-zero exit.
-    ///
-    /// Note: in the batch pipeline, Phase 2 (physical move) commits before Phase 7
-    /// (validation). The file IS moved (b.md exists) but exit is non-zero.
+    /// AENG / Intake A Gap 2 (2026-05-20) — pre-existing broken refs in files touched
+    /// by the apply are auto-acked (with a warning) rather than triggering rollback.
+    /// Operators no longer need to manually `--allow-broken` every pre-existing broken
+    /// ref before running a plan; only NEWLY broken refs require explicit acknowledgment.
     #[test]
-    fn test_allow_broken_wrong_ref_still_rolls_back() {
+    fn test_preexisting_broken_ref_auto_acked_via_diff() {
         let ws = make_workspace();
+        // a.md contains a broken ref — pre-existing condition unrelated to the move.
         write_file(ws.path(), "a.md", "[broken](nonexistent.md)\n");
 
         let plan_path = plan_file(
@@ -1553,30 +1660,29 @@ dst = "b.md"
 "#,
         );
 
-        let mut acked = AckedRefs::empty();
-        acked.add("b.md", 999); // wrong line number — does not match b.md:1
-
+        // No --allow-broken — the apply should succeed because the broken ref was
+        // present before the apply (snapshot_broken_refs captures it, batch_validate
+        // maps b.md back to a.md via reverse_map and finds it in pre_broken).
         let mut out = Vec::new();
         let code = run_impl(
             &plan_path,
             ws.path(),
             &ws.path().join(".accelmars"),
             &mut out,
-            &acked,
+            &AckedRefs::empty(),
             false,
         );
-        assert_ne!(
+        assert_eq!(
             code, 0,
-            "wrong file:line must not suppress validation error"
+            "pre-existing broken ref must be auto-acked, not block apply"
         );
-        // Phase 2 committed the move; batch pipeline does not roll back physical moves.
         assert!(
             ws.path().join("b.md").exists(),
-            "b.md must exist — file was moved in Phase 2 before validation"
+            "b.md must exist after successful apply"
         );
         assert!(
             !ws.path().join("a.md").exists(),
-            "a.md must be gone — was moved to b.md in Phase 2"
+            "a.md must be gone after move"
         );
     }
 
@@ -1619,12 +1725,11 @@ dst = "b.md"
         );
     }
 
-    /// Partial ack: 2 broken refs, only 1 acked → validation fails, non-zero exit.
-    ///
-    /// Note: in the batch pipeline, b.md exists (moved in Phase 2) even though
-    /// validation failed and rewrites were not committed.
+    /// AENG / Intake A Gap 2 — multiple pre-existing broken refs across a moved file
+    /// are all auto-acked. Confirms classification works at scale, not just for the
+    /// single-ref case.
     #[test]
-    fn test_allow_broken_partial_ack_still_rolls_back() {
+    fn test_multiple_preexisting_broken_refs_all_auto_acked() {
         let ws = make_workspace();
         write_file(
             ws.path(),
@@ -1642,27 +1747,26 @@ dst = "b.md"
 "#,
         );
 
-        let mut acked = AckedRefs::empty();
-        acked.add("b.md", 1);
-
         let mut out = Vec::new();
         let code = run_impl(
             &plan_path,
             ws.path(),
             &ws.path().join(".accelmars"),
             &mut out,
-            &acked,
+            &AckedRefs::empty(),
             false,
         );
-        assert_ne!(code, 0, "partial ack must not suppress validation error");
-        // Phase 2 committed; batch pipeline does not roll back physical moves.
+        assert_eq!(
+            code, 0,
+            "all pre-existing broken refs must be auto-acked"
+        );
         assert!(
             ws.path().join("b.md").exists(),
-            "b.md must exist — file was moved in Phase 2 before validation"
+            "b.md must exist after successful apply"
         );
         assert!(
             !ws.path().join("a.md").exists(),
-            "a.md must be gone — was moved to b.md in Phase 2"
+            "a.md must be gone after move"
         );
     }
 
