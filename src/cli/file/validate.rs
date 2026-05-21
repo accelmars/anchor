@@ -658,9 +658,7 @@ mod tests {
         write_file(
             &ws_root,
             "docs/pointer.md",
-            &format!(
-                "Foundation lives at `~/{ws_basename}/foundations/apps/atlas/`.\n"
-            ),
+            &format!("Foundation lives at `~/{ws_basename}/foundations/apps/atlas/`.\n"),
         );
 
         let result = do_validate(&ws_root, &ws_root.join(".accelmars")).unwrap();

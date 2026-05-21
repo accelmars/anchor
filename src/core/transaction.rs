@@ -402,7 +402,11 @@ pub fn plan(
                 // For non-prefixed refs: relative path is stable — skip.
                 // For $(anchor root)/-prefixed, tilde, or absolute refs: the embedded
                 // workspace-absolute path must still be rewritten — do not skip.
-                if !has_anchor_prefix && !was_tilde && !was_absolute && inside_src(file_canonical, src) {
+                if !has_anchor_prefix
+                    && !was_tilde
+                    && !was_absolute
+                    && inside_src(file_canonical, src)
+                {
                     continue;
                 }
 
