@@ -295,8 +295,11 @@ pub(crate) fn run_impl(
         &dst_canonical,
         None, // no plan file context for `anchor file mv`
     );
-    if non_md_updated > 0 {
-        eprintln!("{non_md_updated} non-markdown file(s) updated.");
+    if !non_md_updated.is_empty() {
+        eprintln!("{} non-markdown file(s) updated:", non_md_updated.len());
+        for path in &non_md_updated {
+            eprintln!("  {path}  `{src_canonical}` \u{2192} `{dst_canonical}`");
+        }
     }
     if ref_count == 0 {
         let plaintext_count =
@@ -747,7 +750,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(updated, 1, "expected 1 file updated");
+        assert_eq!(updated.len(), 1, "expected 1 file updated; got {updated:?}");
+        assert_eq!(updated[0], "config.json");
         let content = std::fs::read_to_string(root.path().join("config.json")).unwrap();
         assert!(
             content.contains("new-engine"),

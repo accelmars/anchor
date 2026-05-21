@@ -299,8 +299,14 @@ pub(crate) fn run_impl<W: Write>(
 
         let non_md_updated =
             rewrite_non_md_occurrences(workspace_root, src, dst, plan_file_abs.as_deref());
-        if non_md_updated > 0 {
-            eprintln!("{non_md_updated} non-markdown file(s) updated.");
+        if !non_md_updated.is_empty() {
+            eprintln!(
+                "{} non-markdown file(s) updated:",
+                non_md_updated.len()
+            );
+            for path in &non_md_updated {
+                eprintln!("  {path}  `{src}` \u{2192} `{dst}`");
+            }
         }
 
         let mut full_path_lines: Vec<(String, usize)> = workspace_md
@@ -645,15 +651,19 @@ fn count_in_dir(dir: &Path, needle: &str, extensions: &[&str], total: &mut usize
 }
 
 /// Walk `workspace_root` and replace text occurrences of `src` with `dst` in non-.md files.
+///
+/// Returns the list of workspace-relative file paths that were rewritten, sorted alphabetically.
+/// Empty list means no files were touched. Callers print per-file detail (AENG-004).
 pub(crate) fn rewrite_non_md_occurrences(
     workspace_root: &Path,
     src: &str,
     dst: &str,
     plan_file_abs: Option<&std::path::Path>,
-) -> usize {
+) -> Vec<String> {
     let extensions = ["json", "yaml", "yml", "toml", "ts", "js", "py"];
-    let mut updated = 0usize;
+    let mut updated: Vec<String> = Vec::new();
     rewrite_in_dir(
+        workspace_root,
         workspace_root,
         src,
         dst,
@@ -661,15 +671,17 @@ pub(crate) fn rewrite_non_md_occurrences(
         &mut updated,
         plan_file_abs,
     );
+    updated.sort();
     updated
 }
 
 fn rewrite_in_dir(
+    workspace_root: &Path,
     dir: &Path,
     src: &str,
     dst: &str,
     extensions: &[&str],
-    updated: &mut usize,
+    updated: &mut Vec<String>,
     plan_file_abs: Option<&std::path::Path>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -681,7 +693,7 @@ fn rewrite_in_dir(
             continue;
         }
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            rewrite_in_dir(&path, src, dst, extensions, updated, plan_file_abs);
+            rewrite_in_dir(workspace_root, &path, src, dst, extensions, updated, plan_file_abs);
             continue;
         }
         if let Some(plan_path) = plan_file_abs {
@@ -707,8 +719,8 @@ fn rewrite_in_dir(
         let new_content = content.replace(src, dst);
         if let Err(e) = std::fs::write(&path, new_content.as_bytes()) {
             eprintln!("warning: could not rewrite {}: {e}", path.display());
-        } else {
-            *updated += 1;
+        } else if let Ok(rel) = path.strip_prefix(workspace_root) {
+            updated.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
 }
@@ -1167,7 +1179,8 @@ dst = "src/renamed.md"
         );
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
-        assert_eq!(updated, 1, "expected 1 file updated");
+        assert_eq!(updated.len(), 1, "expected 1 file updated; got {updated:?}");
+        assert_eq!(updated[0], "config.json", "expected workspace-relative path");
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert!(
@@ -1181,13 +1194,13 @@ dst = "src/renamed.md"
     }
 
     #[test]
-    fn test_rewrite_non_md_occurrences_no_match_returns_zero() {
+    fn test_rewrite_non_md_occurrences_no_match_returns_empty() {
         let ws = make_workspace();
         let original = r#"{"path": "unrelated/path"}"#;
         write_file(ws.path(), "config.json", original);
 
         let updated = rewrite_non_md_occurrences(ws.path(), "old-engine", "new-engine", None);
-        assert_eq!(updated, 0, "expected 0 files updated when no match");
+        assert!(updated.is_empty(), "expected no files updated; got {updated:?}");
 
         let content = fs::read_to_string(ws.path().join("config.json")).unwrap();
         assert_eq!(content, original, "file must be unchanged when no match");
@@ -1705,6 +1718,53 @@ dst = "foundations/beta-engine"
             content.contains("../beta-engine/index.md"),
             "intra-chain ref must be correct after batch pipeline; got:\n{content}"
         );
+    }
+
+    /// AENG-004 / Intake B Failure Mode 3 — `anchor apply` post-commit non-MD rewrite
+    /// summary names the files, not just a count, so operators can audit the blast radius.
+    #[test]
+    fn test_nonmd_post_apply_summary_lists_files() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/leaf.md", "# Leaf\n");
+        write_file(
+            ws.path(),
+            "config.json",
+            r#"{"ref": "old/leaf.md"}"#,
+        );
+        write_file(
+            ws.path(),
+            "deep/nested/config.yaml",
+            "ref: old/leaf.md\n",
+        );
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old/leaf.md"
+dst = "new/leaf.md"
+"#,
+        );
+
+        // Capture stderr by redirecting? run_impl uses eprintln! for the non-MD summary.
+        // We assert behavior via the returned Vec from rewrite_non_md_occurrences (already covered)
+        // and verify run_impl succeeds end-to-end.
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 0, "apply must succeed");
+
+        let json = std::fs::read_to_string(ws.path().join("config.json")).unwrap();
+        assert!(json.contains("new/leaf.md"), "json should be rewritten");
+        let yaml = std::fs::read_to_string(ws.path().join("deep/nested/config.yaml")).unwrap();
+        assert!(yaml.contains("new/leaf.md"), "yaml should be rewritten");
     }
 
     /// AENG-010 / Intake A Gap 1 — `anchor apply` must honor `--allow-prose-rewrites`,
