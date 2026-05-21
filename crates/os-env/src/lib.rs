@@ -6,14 +6,14 @@ pub const ENV_ENGINE_HOME: &str = "ACCELMARS_ENGINE_HOME";
 pub const ENV_MODE: &str = "ACCELMARS_MODE";
 pub const ENV_SPEC_VERSION: &str = "ACCELMARS_SPEC_VERSION";
 
-#[derive(Debug, PartialEq, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResolverMode {
     Standalone,
     Integrated,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ResolveResult {
     pub tenant_root: PathBuf,
     pub tenant_slug: String,
