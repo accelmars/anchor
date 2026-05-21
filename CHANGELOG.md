@@ -1,75 +1,73 @@
 
+## [0.10.0] - 2026-05-21
+
+### Features
+- (**os-env**) Inject default/ slug + derive Clone/Eq (OS-ARC22, unblocks pact) (#114) ([#114](https://github.com/accelmars/anchor/pull/114))
+
 ## [0.9.1] - 2026-05-21
 
 ### Bug Fixes
-
-- (**Intake A Gap 2 follow-up, AENG-020**) Pre-existing broken-ref classifier now keys identity by `(file_pre, line)` only, not by resolved target. The v0.9.0 identity included the resolved target, which made the classifier miss pre-existing broken refs when the rewriter changed the resolved path — most commonly when a moved file has a relative-sibling ref to a non-existent target. Example failure: moving `gateway-engine/02-capabilities/` to `engines/gateway/02-capabilities/` where one of the files contained `[link](09-streaming.md)` (typo; actual is `10-streaming.md`). Pre-move resolved to `gateway-engine/02-capabilities/09-streaming.md`; post-move resolved to `engines/gateway/02-capabilities/09-streaming.md`. Different paths → v0.9.0 classified as newly-broken → rollback. v0.9.1 fixes this: position-only identity correctly identifies the ref as pre-existing. Discovered during the 14-engine `foundations/*-engine → foundations/engines/*` restructure, which required 3 manual `--allow-broken` acks under v0.9.0.
-
-Edge case where the new identity may over-ack: a file with two refs on the same line (`[a](x) [b](y)`), one pre-existing-broken and one rewriter-introduced-broken. Both at same `(file, line)` → both auto-acked. In practice Form-1 refs are one-per-line; collision is rare; cost (one missed rollback for a line that was already broken anyway) is bounded.
-
-Adds 1 regression test that exercises the exact scenario the 2026-05-21 restructure hit.
+- (**apply**) Pre-broken classifier — position-only identity (AENG-020) (#113) ([#113](https://github.com/accelmars/anchor/pull/113))
 
 ## [0.9.0] - 2026-05-21
 
-> Intake-sweep release closing Intake A (orbit-active-driver close, 2026-05-20) gaps 1–5
-> and the structural portion of Intake B (ai-layer-and-known-limitations, 2026-05-11)
-> failure modes 1 and 3. The semantic-rename / AI-layer portion of Intake B and Intake
-> C (AN-020 closed-layer architecture) remain triaged for a future closed-layer cycle.
+### Bug Fixes
+- Existence guard for backtick refs — skip rewrite when target path was never a real workspace path, eliminating 100% false-positive rewrites on org-name/package-prefix collisions (#110) ([#110](https://github.com/accelmars/anchor/pull/110))
+- Disable release-plz for both packages (release = false) (#109) ([#109](https://github.com/accelmars/anchor/pull/109))
+- Let release-plz track accelmars-os-env — remove release=false to enable PR#2629 fallback for local-dep cargo package failures (#107) ([#2629, #107](https://github.com/accelmars/anchor/pull/2629))
+- Add publish_no_verify = true — skip cargo package verify step for accelmars-os-env path dep not on crates.io (#106) ([#106](https://github.com/accelmars/anchor/pull/106))
 
-### Added
-- (**Intake A Gap 1 / AENG-010 escape hatch**) `anchor apply --allow-prose-rewrites` mirrors the existing `anchor file mv --allow-prose-rewrites` flag. Plan-based moves can now opt into rewriting arrow-line backtick mentions (e.g. ``moved from `old` to `new` ``) as live references, eliminating the bash-sed fallback that bulk archive operations previously required.
-- (**Intake A Gap 2**) `anchor apply` snapshots the pre-existing broken-ref set before any modification and classifies post-apply broken refs into three states: newly broken (rollback), acked via `--allow-broken` (suppress + warn), and pre-existing (auto-ack + warn). Operators no longer hit rollback because of unrelated broken refs in files anchor happened to touch — only NEWLY broken refs trigger rollback. Classification uses a stable identity `(origin_file_pre_move, line, resolved_target)` that survives the Case-B rewriter re-anchoring of relative paths.
 
-### Changed
-- (**AENG-004 apply-side / Intake B FM3**) `anchor apply` and `anchor file mv` post-commit non-MD rewrite output now names each updated file:
-  ```
-  3 non-markdown file(s) updated:
-    config.json  `old/path` → `new/path`
-    deep/config.yaml  `old/path` → `new/path`
-  ```
-  Previously summarized as a count only. `anchor diff --verbose` was already AENG-004-compliant for the preview side.
-- The post-apply UX-001 plain-text warning no longer points at the non-existent `anchor refs --plain X` command. Updated hint suggests `anchor apply <plan> --allow-prose-rewrites` for batch backtick rewriting and `grep -rn '<segment>' .` for manual inspection.
+### Documentation
+- Update release-plz.toml comments — document workspace member exclusion rationale and v0.8.1 baseline (#105) ([#105](https://github.com/accelmars/anchor/pull/105))
+
+## [0.8.1] - 2026-05-05
+
+### Features
+- Anchor apply batch pipeline — single workspace scan, forward/reverse virtual maps, intra-chain ref rewrites correct across N ops (#96) ([#96](https://github.com/accelmars/anchor/pull/96))
+- Slug-scoped engine state — anchor reads/writes from `.accelmars/<slug>/anchor/` in integrated mode; all callers updated to pass engine_home (#94) ([#94](https://github.com/accelmars/anchor/pull/94))
+
 
 ### Bug Fixes
-- (**Intake A Gap 4**) `anchor file refs` now accepts CWD-relative path inputs (mirroring `anchor file mv`'s resolver). `normalize_target` tries workspace-root-relative first, falls back to CWD-relative if the file doesn't resolve. The absent check accepts on-disk existence even when scanner output excludes the path (e.g., `.accelmars/<slug>/` content in integrated mode) — operators get "No references found." instead of bogus "Did you mean?" suggestions for files that demonstrably exist.
+- Add version = \"0.1.0\" to resolver-env dep declaration — cargo package manifest validation requires version field on path deps (#102) ([#102](https://github.com/accelmars/anchor/pull/102))
+- Exclude accelmars-resolver-env from release-plz — private workspace member causes cargo package failure on initial release detection (#101) ([#101](https://github.com/accelmars/anchor/pull/101))
+- Inline accelmars-resolver-env — remove private git dep so release-plz cargo package succeeds (#99) ([#99](https://github.com/accelmars/anchor/pull/99))
+- Release-plz CI — set publish = false in Cargo.toml so cargo package skips git dep version check (#98) ([#98](https://github.com/accelmars/anchor/pull/98))
+- Release-plz CI — add version = "0.1.1" to accelmars-resolver-env git dep so cargo package resolves correctly (#97) ([#97](https://github.com/accelmars/anchor/pull/97))
+- Anchor plan new -t writes an executable plan skeleton — valid [[ops]] TOML with multi-op examples instead of wizard DSL (#95) ([#95](https://github.com/accelmars/anchor/pull/95))
 
-### Notes
-- **AENG-015** (`anchor plan new -t X` skeleton output) was previously claimed LIVE in the gap registry; verified actually LIVE in v0.8.1 source (commit 0c0cd83). No action needed.
-- **Intake B Failure Mode 4** (`anchor file mv` refusing dirs with pre-existing broken refs) — unaffected, different code path. Deferred to follow-up gap for `--allow-existing-broken-refs`.
-- **Multi-tenant resolver alignment**: file operations (refs/mv/validate/apply) still use the pre-multi-tenant `find_workspace_root()` (parent of `.accelmars/`). The mode-aware `workspace::resolve()` (returns tenant_root in integrated mode) is used only by `anchor root` today. Surfaced during the Gap 4 fix; deferred follow-up.
 
-## [Unreleased]
+### Refactor
+- Rename accelmars-resolver-env to accelmars-os-env — crate renamed to reflect OS-layer identity (#103) ([#103](https://github.com/accelmars/anchor/pull/103))
+- Move resolver-env into workspace — proper crate at crates/resolver-env, publish = false (#100) ([#100, #99, #2629](https://github.com/accelmars/anchor/pull/100))
 
-### Bug Fixes
-- (**AENG-017**) `anchor file mv` and `anchor apply` no longer rewrite backtick refs whose target does not exist in the workspace. Previously, any directory name that matched a GitHub org, package prefix, or other external namespace (e.g. `accelmars/gateway` when moving `accelmars/` → `company/`) triggered 100% false-positive rewrites across every file containing that shorthand. Fix: existence guard in `transaction::plan()` (pre-move filesystem check) and `transaction::batch_plan()` (pre-move path set built from Phase A scan). Internal refs — a file inside the moved source pointing to another path inside the same source — are always updated regardless of whether the target subdirectory exists on disk.
+## [0.8.0] - 2026-05-04
 
-### Configuration
-- `scope_boundaries` in `.accelmars/anchor/config.json` activates cross-foundation scoping. Example: `{ "schema_version": "1", "scope_boundaries": ["foundations/*"] }`. Without this setting, all files under `accelmars-workspace/` are treated as in scope for any intra-workspace move. The existence guard (AENG-017) is required independently — `scope_boundaries` alone does not prevent external-namespace false positives.
+### Features
+- Multi-tenant workspace resolver — integrated mode with slug selection ladder, `anchor root` semantic update, and `anchor mode/tenants/tenant` discovery verbs (#93) ([#93](https://github.com/accelmars/anchor/pull/93))
 
-## [0.7.2] - 2026-05-03
+## [0.7.3] - 2026-05-03
 
-### Bug Fixes
-- (**windows**) Gate `nix`-crate imports behind `#[cfg(unix)]` in `recover.rs` and `lock.rs` — anchor now compiles on Windows; cargo-dist can build all 5 platform binaries.
+### Documentation
+- Backfill CHANGELOG for v0.7.1 and v0.7.2 (#91) ([#91, #89](https://github.com/accelmars/anchor/pull/91))
 
 ## [0.7.1] - 2026-05-03
 
-No functional changes — release-plz version bump only.
+### Bug Fixes
+- (**windows**) Gate nix-crate imports behind #[cfg(unix)] — anchor now compiles on Windows; cargo-dist can build all 5 platform binaries (#89) ([#89](https://github.com/accelmars/anchor/pull/89))
 
-## [0.7.0] - 2026-05-03
+## [0.7.0] - 2026-05-02
 
-### Added
-- (**AENG-010**) `anchor file mv` now detects backtick path refs in prose context (arrow lines `→`/`->`, `state_log` entries, moved/renamed/previously keywords) and skips them; skipped candidates shown as `[prose?]` entries in `anchor diff --verbose` and counted `(+N prose? skipped)` in non-verbose output; `--allow-prose-rewrites` flag reverts to previous behavior (rewrite all backtick refs).
-- (**AENG-012**) `anchor frontmatter add-required --batch` reads `inference-rules.toml` from the active template and auto-fills engine-class fields by folder position (`provider: <stem>` in `15-providers/`, `type: eval` + `pass_status: NOT_RUN` from constants in `31-evals/`). Fill-if-absent only — existing values are never overwritten. Template absent or unparseable: inference silently skipped.
-- (**AENG-003**) `anchor apply --allow-broken=<file>:<line>` (repeatable) and `--allow-broken-from=<path>` suppress acknowledged false-positive rollbacks; acked refs persist to `.accelmars/anchor/acked` on success.
-- (**AENG-004**) `anchor diff --verbose` now lists non-MD file rewrites with file path and detail (`path/to/config.toml  \`old\` → \`new\``), grouped under a `## Non-markdown rewrites (N file(s))` section after MD entries. Non-verbose output unchanged.
-- (**AENG-006-scaffold**) `anchor frontmatter migrate --to 1` now scaffolds files with no frontmatter; title inferred from first `# Heading` or filename stem.
-- (**AENG-006-plan**) `anchor frontmatter migrate <plan.toml>` now accepts a TOML plan file as its path argument (no `--to` needed); supports `add_field` and `set_field` ops across multiple files in a single atomic pass; dry-run by default, `--apply` to write. `--to` remains fully supported and takes precedence over plan-file detection.
+### Features
+- Scope_boundaries config replaces .anchorscope marker files — declare "scope_boundaries": ["foundations/*"] in config.json instead of placing empty marker files; prefix/* glob auto-includes new foundations (#83) ([#83](https://github.com/accelmars/anchor/pull/83))
+- Prose-mention detection for backtick refs — arrow lines, state_log entries, moved/renamed keywords skip rewrite; [prose?] in diff --verbose; --allow-prose-rewrites reverts to prior behavior (#82) ([#82](https://github.com/accelmars/anchor/pull/82))
+- Path-based field inference in add-required — inference-rules.toml auto-fills engine-class fields by folder position (provider: from stem in 15-providers/, type+pass_status from constants in 31-evals/) (#81) ([#81](https://github.com/accelmars/anchor/pull/81))
+- Frontmatter migrate plan-file mode — `anchor frontmatter migrate <plan.toml>` applies add_field and set_field ops across multiple files atomically; --to remains fully supported (#80) ([#80](https://github.com/accelmars/anchor/pull/80))
+- Non-markdown rewrite visibility and allow-broken override — diff --verbose lists non-MD rewrites under a dedicated header; apply --allow-broken suppresses acknowledged false-positive rollbacks with persistence to .accelmars/anchor/acked (#79) ([#79](https://github.com/accelmars/anchor/pull/79))
+- Foundation-scoped rewrites and migrate frontmatter scaffold — .anchorscope gates cross-foundation prose rewrites; migrate --to 1 scaffolds unfrontmattered files with inferred title (#78) ([#78](https://github.com/accelmars/anchor/pull/78))
 
-### Changed
-- (**AENG-001** refinement) `scope_boundaries` config replaces `.anchorscope` filesystem walk; add `"scope_boundaries": ["foundations/*"]` to `.accelmars/anchor/config.json` instead of placing marker files. `ScopeResolver` now reads boundaries from config — supports `prefix/*` glob (direct children) and literal paths. Workspaces without `scope_boundaries` key fall back to v0.6.0 Repo scope unchanged.
 
 ### Bug Fixes
-- (**refs**) AENG-001 (complete) — foundation-scoped rewrites via `.anchorscope`. `ScopeResolver` now discovers `.anchorscope` marker files recursively under the workspace root and `scope_for_move()` returns `RewriteDomain::Defined(<deepest .anchorscope ancestor>)` when one contains the move source. This eliminates the cross-foundation prose corruption observed in the gateway-engine Pass 1 run (2026-05-01, v0.6.0): sibling foundations are now out of scope unless they hold a workspace-relative inward ref. Workspaces without `.anchorscope` markers fall back to v0.6.0 `Repo` scope — fully backward compatible.
 - Anchor frontmatter no longer hardcodes accelmars-workspace/ defaults — schema resolution uses .accelmars/anchor/frontmatter-schema.json fallback with explicit error; test fixtures genericized; CI boundary guard added (#72) ([#72](https://github.com/accelmars/anchor/pull/72))
 
 
