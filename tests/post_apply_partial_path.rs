@@ -221,10 +221,16 @@ fn test_format_warning_structure() {
         "councils/os/STATUS.md line missing; got:\n{warning}"
     );
 
-    // Must include closing hint referencing anchor refs --plain.
+    // Must include closing hints — apply --allow-prose-rewrites for bulk rewrite,
+    // grep for manual inspection. (Replaced the v0.8.x `anchor refs --plain` hint
+    // which pointed at a non-existent command — see v0.9.0 commit b2ea675.)
     assert!(
-        warning.contains("anchor refs --plain os-council"),
-        "closing hint missing; got:\n{warning}"
+        warning.contains("--allow-prose-rewrites"),
+        "bulk rewrite hint missing; got:\n{warning}"
+    );
+    assert!(
+        warning.contains("grep -rn 'os-council'"),
+        "manual inspect hint missing; got:\n{warning}"
     );
 
     // Must NOT produce an empty header when content is present.
