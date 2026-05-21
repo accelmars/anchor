@@ -104,43 +104,58 @@ fn do_validate(workspace_root: &Path, engine_home: &Path) -> Result<ValidateResu
         };
 
         for reference in &refs {
-            let canonical = match reference.form {
-                RefForm::Standard => resolver::resolve_form1(file_path, &reference.target_raw),
-                RefForm::Wiki => match resolver::resolve_form2(&reference.target_raw, &files) {
-                    resolver::ResolveResult::Resolved(path) => path,
-                    resolver::ResolveResult::BrokenRef => {
-                        let line = byte_offset_to_line(&content, reference.span.0);
-                        broken.push((
-                            file_path.clone(),
-                            line,
-                            format!("[[{}]]", reference.target_raw),
-                        ));
-                        continue;
+            // Preprocessing: a raw target that is tilde-prefixed (`~/...`) or absolute
+            // (`/...`) and falls inside the workspace becomes the canonical form here.
+            // This makes the existence check below work for tilde paths the same way it
+            // works for workspace-relative paths. Wiki refs (stems) are skipped because
+            // they never start with `~/` or `/`.
+            let external_canonical = if reference.form == RefForm::Wiki {
+                None
+            } else {
+                resolver::normalize_external_path(&reference.target_raw, workspace_root)
+            };
+
+            let canonical = if let Some(c) = external_canonical {
+                c
+            } else {
+                match reference.form {
+                    RefForm::Standard => resolver::resolve_form1(file_path, &reference.target_raw),
+                    RefForm::Wiki => match resolver::resolve_form2(&reference.target_raw, &files) {
+                        resolver::ResolveResult::Resolved(path) => path,
+                        resolver::ResolveResult::BrokenRef => {
+                            let line = byte_offset_to_line(&content, reference.span.0);
+                            broken.push((
+                                file_path.clone(),
+                                line,
+                                format!("[[{}]]", reference.target_raw),
+                            ));
+                            continue;
+                        }
+                        resolver::ResolveResult::Ambiguous(_) => {
+                            continue;
+                        }
+                    },
+                    RefForm::Yaml | RefForm::Toml => reference
+                        .target_raw
+                        .strip_prefix("$(anchor root)/")
+                        .unwrap_or(&reference.target_raw)
+                        .to_string(),
+                    // Backtick path: resolve relative paths (starts with ./ or ../) before existence
+                    // check — consistent with Form 1 and Yaml/Toml handling. Also strip
+                    // $(anchor root)/ prefix (Gap 4).
+                    RefForm::Backtick => {
+                        let raw = &reference.target_raw;
+                        if raw.starts_with("./") || raw.starts_with("../") {
+                            resolver::resolve_form1(file_path, raw)
+                        } else if let Some(stripped) = raw.strip_prefix("$(anchor root)/") {
+                            stripped.to_string()
+                        } else {
+                            raw.clone()
+                        }
                     }
-                    resolver::ResolveResult::Ambiguous(_) => {
-                        continue;
-                    }
-                },
-                RefForm::Yaml | RefForm::Toml => reference
-                    .target_raw
-                    .strip_prefix("$(anchor root)/")
-                    .unwrap_or(&reference.target_raw)
-                    .to_string(),
-                // Backtick path: resolve relative paths (starts with ./ or ../) before existence
-                // check — consistent with Form 1 and Yaml/Toml handling. Also strip
-                // $(anchor root)/ prefix (Gap 4).
-                RefForm::Backtick => {
-                    let raw = &reference.target_raw;
-                    if raw.starts_with("./") || raw.starts_with("../") {
-                        resolver::resolve_form1(file_path, raw)
-                    } else if let Some(stripped) = raw.strip_prefix("$(anchor root)/") {
-                        stripped.to_string()
-                    } else {
-                        raw.clone()
-                    }
+                    // HtmlHref: resolve relative to source file (same semantics as Form 1)
+                    RefForm::HtmlHref => resolver::resolve_form1(file_path, &reference.target_raw),
                 }
-                // HtmlHref: resolve relative to source file (same semantics as Form 1)
-                RefForm::HtmlHref => resolver::resolve_form1(file_path, &reference.target_raw),
             };
 
             let target_abs = workspace_root.join(&canonical);
@@ -623,6 +638,59 @@ mod tests {
             result.broken.is_empty(),
             "$(anchor root)/ backtick resolving to existing file must not be reported as broken; got: {:?}",
             result.broken
+        );
+    }
+
+    /// Tilde-prefixed backtick ref to a file that EXISTS inside the workspace
+    /// → not reported as broken. Reproduces the apps-restructure case where
+    /// `~/accelmars/.../foundations/apps/atlas/` was flagged broken before the
+    /// resolver learned to expand `~/`.
+    #[test]
+    fn test_tilde_backtick_valid_target_not_reported_broken() {
+        let tmp = TempDir::new().unwrap();
+        let ws_root = tmp.path().canonicalize().unwrap();
+        // Set HOME to the parent of ws_root so `~/<ws_basename>/...` lands inside.
+        let home = ws_root.parent().unwrap().to_owned();
+        let ws_basename = ws_root.file_name().unwrap().to_string_lossy().into_owned();
+        unsafe { std::env::set_var("HOME", &home) };
+
+        write_file(&ws_root, "foundations/apps/atlas/README.md", "# Atlas\n");
+        write_file(
+            &ws_root,
+            "docs/pointer.md",
+            &format!(
+                "Foundation lives at `~/{ws_basename}/foundations/apps/atlas/`.\n"
+            ),
+        );
+
+        let result = do_validate(&ws_root, &ws_root.join(".accelmars")).unwrap();
+        assert!(
+            result.broken.is_empty(),
+            "tilde-prefixed backtick to existing file must not be reported as broken; got: {:?}",
+            result.broken
+        );
+    }
+
+    /// Tilde-prefixed backtick ref to a file that does NOT exist → reported as broken.
+    #[test]
+    fn test_tilde_backtick_missing_target_reported_broken() {
+        let tmp = TempDir::new().unwrap();
+        let ws_root = tmp.path().canonicalize().unwrap();
+        let home = ws_root.parent().unwrap().to_owned();
+        let ws_basename = ws_root.file_name().unwrap().to_string_lossy().into_owned();
+        unsafe { std::env::set_var("HOME", &home) };
+
+        write_file(
+            &ws_root,
+            "docs/pointer.md",
+            &format!("Old path: `~/{ws_basename}/foundations/apps/missing/`\n"),
+        );
+
+        let result = do_validate(&ws_root, &ws_root.join(".accelmars")).unwrap();
+        assert_eq!(
+            result.broken.len(),
+            1,
+            "tilde-prefixed backtick to missing file must be reported as broken"
         );
     }
 
