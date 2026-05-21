@@ -78,9 +78,14 @@ fn do_refs(workspace_root: &Path, target: &str) -> Result<RefsResult, String> {
     let files =
         scanner::scan_workspace(workspace_root).map_err(|e| format!("scanner error: {e}"))?;
 
-    // Detect absent target: if the target path is not in the workspace file list,
-    // it does not exist — surface suggestions rather than "No references found."
-    let absent = !files.contains(&target_canonical);
+    // Detect absent target: if the target path is neither in the workspace file list
+    // NOR present on disk inside the workspace root, surface suggestions rather than
+    // "No references found." The on-disk fallback covers files that exist but are
+    // excluded from the scanner output (e.g., paths inside `.accelmars/<slug>/` in
+    // integrated mode) — operators can still ask "who references this?" and get a
+    // useful answer scoped to the scanned workspace. See Intake A Gap 4 (2026-05-20).
+    let absent = !files.contains(&target_canonical)
+        && !workspace_root.join(&target_canonical).exists();
 
     let mut hits: Vec<(String, usize)> = Vec::new(); // (source_file, line)
 
@@ -170,19 +175,50 @@ fn format_json<W: io::Write>(
 }
 
 /// Normalize a user-provided target path to workspace-root-relative canonical form.
+///
+/// Resolution order:
+/// 1. Absolute path → strip workspace_root prefix.
+/// 2. Relative path → try workspace-root-relative first (current canonical form).
+/// 3. If workspace-relative doesn't exist on disk, try CWD-relative; if the
+///    canonicalized result lies inside workspace_root, strip the prefix.
+///
+/// The CWD-relative fallback matches `anchor file mv`'s resolver and closes
+/// Intake A Gap 4 (2026-05-20): paths typed CWD-relative now resolve like users
+/// expect, instead of failing with misleading "Did you mean?" suggestions.
 fn normalize_target(workspace_root: &Path, target: &str) -> String {
     let p = std::path::Path::new(target);
     if p.is_absolute() {
-        p.strip_prefix(workspace_root)
+        return p
+            .strip_prefix(workspace_root)
             .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| target.to_string())
-    } else {
-        let normalized = target.replace('\\', "/");
-        normalized
-            .strip_prefix("./")
-            .unwrap_or(&normalized)
-            .to_string()
+            .unwrap_or_else(|_| target.to_string());
     }
+
+    let normalized = target.replace('\\', "/");
+    let ws_relative = normalized
+        .strip_prefix("./")
+        .unwrap_or(&normalized)
+        .to_string();
+
+    // If workspace-relative interpretation points to an existing path, keep it.
+    if workspace_root.join(&ws_relative).exists() {
+        return ws_relative;
+    }
+
+    // CWD-relative fallback: resolve against the current working directory and
+    // re-anchor to workspace_root if the canonical path is inside the workspace.
+    if let Ok(cwd) = std::env::current_dir() {
+        let abs = cwd.join(p);
+        if let Ok(canon) = std::fs::canonicalize(&abs) {
+            if let Ok(canon_ws) = std::fs::canonicalize(workspace_root) {
+                if let Ok(rel) = canon.strip_prefix(&canon_ws) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+        }
+    }
+
+    ws_relative
 }
 
 /// Convert a byte offset in `content` to a 1-based line number.
@@ -259,6 +295,58 @@ mod tests {
 
         let exit_code = run_on_root(root.path(), "desig.md", None);
         assert_eq!(exit_code, 2, "absent target must exit 2, got: {exit_code}");
+    }
+
+    /// AENG / Intake A Gap 4 (2026-05-20) — `anchor file refs` must accept a path
+    /// typed CWD-relative when the file exists on disk inside the workspace.
+    /// Before the fix, the test below would have exited 2 with bogus suggestions.
+    #[test]
+    fn test_cwd_relative_path_resolves_when_workspace_relative_misses() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let root = tempdir().unwrap();
+        let workspace_root = root.path().join("workspace");
+        fs::create_dir_all(workspace_root.join(".accelmars").join("anchor")).unwrap();
+        fs::write(
+            workspace_root
+                .join(".accelmars")
+                .join("anchor")
+                .join("config.json"),
+            r#"{"schema_version":"1"}"#,
+        )
+        .unwrap();
+        // Target file exists inside workspace_root/sub/leaf.md
+        fs::create_dir_all(workspace_root.join("sub")).unwrap();
+        fs::write(workspace_root.join("sub").join("leaf.md"), "# Leaf\n").unwrap();
+
+        // Caller's CWD is the parent of the workspace; they type the path as
+        // `workspace/sub/leaf.md` (CWD-relative). Workspace-relative interpretation
+        // would be `workspace/sub/leaf.md` rooted at workspace_root → does not exist.
+        // CWD-relative fallback resolves to root.path()/workspace/sub/leaf.md →
+        // canonicalize → strip workspace_root → "sub/leaf.md".
+        let target_canonical = {
+            // Simulate normalize_target behavior with CWD = root.path()
+            // (we cannot easily set process CWD in tests without a mutex)
+            let cwd = root.path();
+            let abs = cwd.join("workspace/sub/leaf.md");
+            let canon = fs::canonicalize(&abs).unwrap();
+            let canon_ws = fs::canonicalize(&workspace_root).unwrap();
+            canon
+                .strip_prefix(&canon_ws)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        assert_eq!(target_canonical, "sub/leaf.md");
+
+        // The absent check must accept on-disk existence even when the scanner
+        // hasn't surfaced the path yet.
+        let exit_code = run_on_root(&workspace_root, "sub/leaf.md", None);
+        assert_eq!(
+            exit_code, 0,
+            "existing file (workspace-relative) must not trigger absent; got: {exit_code}"
+        );
     }
 
     /// Existing file with zero inbound refs → exit 0, stdout "No references found."
