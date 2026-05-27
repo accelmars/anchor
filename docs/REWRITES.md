@@ -42,6 +42,29 @@ them. You must fix those files manually.
 
 ---
 
+## Text-rename op
+
+Plan files may include `type = "text_rename"` ops for mechanical content
+substitution inside files:
+
+```toml
+[[ops]]
+type = "text_rename"
+from = "old-term"
+to = "new-term"
+include_paths = ["docs/**"]
+```
+
+This is not path or link rewriting. It does not resolve references, update link
+targets, or reason about whether a match is semantically correct. It performs
+literal replacement by default, or regex replacement when `literal = false`,
+within the configured file and path scope.
+
+Use move ops for reference-safe path changes. Use `text_rename` only when you
+want direct text substitution.
+
+---
+
 ## Context scoping
 
 Each move op bounds its rewrite scope to the deepest git-repo ancestor of the source

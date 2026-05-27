@@ -3,6 +3,7 @@
 // Core invariant: running `anchor diff` leaves the workspace byte-for-byte identical.
 // No lock acquisition, no apply/validate/commit — PLAN phase only per Move op.
 
+use crate::apply::text_rename;
 use crate::core::{scanner, transaction};
 use crate::infra::workspace;
 use crate::model::plan::{self, Op};
@@ -166,6 +167,59 @@ pub(crate) fn run_impl<W: Write>(
                         for path in &non_md_paths {
                             writeln!(out, "    {path}  `{src}` \u{2192} `{dst}`").ok();
                         }
+                    }
+                }
+            }
+            Op::TextRename(text_op) => {
+                match text_rename::preview_text_rename(workspace_root, text_op) {
+                    Ok(result) => {
+                        total_files += result.files_changed.len();
+                        writeln!(
+                            out,
+                            "  text_rename `{}` \u{2192} `{}`  ({} substitutions in {} files)",
+                            text_op.from,
+                            text_op.to,
+                            result.total_substitutions,
+                            result.files_changed.len()
+                        )
+                        .ok();
+
+                        let sample = result.files_changed.iter().take(5).collect::<Vec<_>>();
+                        if !sample.is_empty() {
+                            let suffix = if result.files_changed.len() > sample.len() {
+                                format!(" of {}", result.files_changed.len())
+                            } else {
+                                String::new()
+                            };
+                            writeln!(out, "    files: first {}{}", sample.len(), suffix).ok();
+                            for path in sample {
+                                writeln!(out, "    {}", path.display()).ok();
+                            }
+                        }
+
+                        let to_already = result
+                            .warnings
+                            .iter()
+                            .filter(|warning| warning.starts_with("to already present in "))
+                            .count();
+                        if to_already > 0 {
+                            writeln!(out, "    warning: to already in {to_already} files").ok();
+                        }
+                        for warning in result
+                            .warnings
+                            .iter()
+                            .filter(|warning| !warning.starts_with("to already present in "))
+                        {
+                            writeln!(out, "    warning: {warning}").ok();
+                        }
+                    }
+                    Err(e) => {
+                        writeln!(
+                            out,
+                            "  text_rename `{}` \u{2192} `{}`  [ERROR: {e}]",
+                            text_op.from, text_op.to
+                        )
+                        .ok();
                     }
                 }
             }

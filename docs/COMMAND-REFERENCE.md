@@ -277,3 +277,44 @@ See [PLAN-WORKFLOW.md](PLAN-WORKFLOW.md) for the full workflow.
 | `anchor diff <plan.toml>` | Preview what apply will do (read-only) |
 | `anchor diff --verbose <plan.toml>` | Preview with per-file, per-ref detail |
 | `anchor apply <plan.toml>` | Execute the plan and rewrite refs |
+
+### Plan op schema
+
+`create_dir`:
+
+```toml
+[[ops]]
+type = "create_dir"
+path = "new-parent"
+```
+
+`move`:
+
+```toml
+[[ops]]
+type = "move"
+src = "old-location"
+dst = "new-location"
+```
+
+`text_rename`:
+
+```toml
+[[ops]]
+type = "text_rename"
+from = "old term"
+to = "new term"
+include_paths = ["docs/**"]
+exclude_paths = ["docs/archive/**"]
+file_types = ["md"]
+literal = true
+match_in_code_blocks = false
+match_in_frontmatter = true
+```
+
+Defaults: `include_paths = []` means all matching file types,
+`exclude_paths = []`, `file_types = ["md"]`, `literal = true`,
+`match_in_code_blocks = false`, and `match_in_frontmatter = true`.
+
+When `literal = false`, `from` is treated as a regex. `text_rename` is content
+substitution only; it is separate from move/link rewriting.

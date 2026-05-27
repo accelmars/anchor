@@ -5,7 +5,10 @@
 // Phase 2 commits all physical moves; Phases 6-8 stage, validate, commit ref rewrites.
 // Already-committed moves are NOT rolled back on rewrite validation failure.
 
-use crate::apply::post_apply_scan::{format_plain_text_warning, scan_partial_plain_text};
+use crate::apply::{
+    post_apply_scan::{format_plain_text_warning, scan_partial_plain_text},
+    text_rename,
+};
 use crate::core::{
     acked::{parse_ref_line, AckedRefs},
     parser, resolver, rewriter, scanner, transaction,
@@ -220,6 +223,7 @@ pub(crate) fn run_impl<W: Write>(
                 completed += 1;
                 writeln!(out, "[{completed}/{total}] moved {src} \u{2192} {dst}").ok();
             }
+            Op::TextRename(_) => {}
         }
     }
 
@@ -288,6 +292,33 @@ pub(crate) fn run_impl<W: Write>(
         return 1;
     }
 
+    // Phase B: execute mechanical text-rename ops after committed ref rewrites.
+    for op in &plan.ops {
+        let Op::TextRename(text_op) = op else {
+            continue;
+        };
+        let result = match text_rename::execute_text_rename(workspace_root, text_op) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("error: text_rename: {e}");
+                return 1;
+            }
+        };
+        completed += 1;
+        writeln!(
+            out,
+            "[{completed}/{total}] text_rename `{}` \u{2192} `{}` ({} substitutions in {} files)",
+            text_op.from,
+            text_op.to,
+            result.total_substitutions,
+            result.files_changed.len()
+        )
+        .ok();
+        for warning in &result.warnings {
+            eprintln!("warning: text_rename: {warning}");
+        }
+    }
+
     drop(lock_guard);
 
     // Emit acked warnings and summary.
@@ -340,30 +371,47 @@ pub(crate) fn run_impl<W: Write>(
     0
 }
 
-/// Pre-flight: validate all Move ops before any op executes.
+/// Pre-flight: validate all ops before any op executes.
 fn preflight(
     plan: &plan::Plan,
     workspace_root: &Path,
     workspace_files: &[String],
 ) -> Result<(), String> {
     for op in &plan.ops {
-        let Op::Move { src, dst } = op else {
-            continue;
-        };
+        match op {
+            Op::Move { src, dst } => {
+                let src_abs = workspace_root.join(src);
+                if !src_abs.exists() {
+                    let suggestions = suggest_similar(src, workspace_files);
+                    let mut msg = format!("preflight failed: src not found: {src}");
+                    if let Some(top) = suggestions.first() {
+                        msg.push_str(&format!("\n  similar: {top}"));
+                    }
+                    return Err(msg);
+                }
 
-        let src_abs = workspace_root.join(src);
-        if !src_abs.exists() {
-            let suggestions = suggest_similar(src, workspace_files);
-            let mut msg = format!("preflight failed: src not found: {src}");
-            if let Some(top) = suggestions.first() {
-                msg.push_str(&format!("\n  similar: {top}"));
+                let dst_abs = workspace_root.join(dst);
+                if dst_abs.exists() {
+                    return Err(format!("preflight failed: dst already exists: {dst}"));
+                }
             }
-            return Err(msg);
-        }
-
-        let dst_abs = workspace_root.join(dst);
-        if dst_abs.exists() {
-            return Err(format!("preflight failed: dst already exists: {dst}"));
+            Op::TextRename(text_op) => {
+                if text_op.from.is_empty() {
+                    return Err("preflight failed: text_rename from must be non-empty".to_string());
+                }
+                if text_op.to.is_empty() {
+                    return Err("preflight failed: text_rename to must be non-empty".to_string());
+                }
+                if !text_op.literal {
+                    regex::Regex::new(&text_op.from)
+                        .map_err(|e| format!("preflight failed: invalid text_rename regex: {e}"))?;
+                }
+                text_rename::validate_globs(workspace_root, &text_op.include_paths)
+                    .map_err(|e| format!("preflight failed: include_paths: {e}"))?;
+                text_rename::validate_globs(workspace_root, &text_op.exclude_paths)
+                    .map_err(|e| format!("preflight failed: exclude_paths: {e}"))?;
+            }
+            Op::CreateDir { .. } => {}
         }
     }
     Ok(())
@@ -1140,6 +1188,143 @@ dst = "docs/destination.md"
         assert!(
             output.contains("Done. 1/1 operations completed."),
             "success message must be printed; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_text_rename_only_plan_executes() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/source.md", "old name\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "text_rename"
+from = "old"
+to = "new"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(
+            fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
+            "new name\n"
+        );
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("text_rename"),
+            "text rename progress must be printed; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_move_then_text_rename_sees_post_move_state() {
+        let ws = make_workspace();
+        write_file(ws.path(), "old/doc.md", "old term\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "move"
+src = "old"
+dst = "new"
+
+[[ops]]
+type = "text_rename"
+from = "old term"
+to = "new term"
+include_paths = ["new/**"]
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 0);
+        assert!(!ws.path().join("old/doc.md").exists());
+        assert_eq!(
+            fs::read_to_string(ws.path().join("new/doc.md")).unwrap(),
+            "new term\n"
+        );
+    }
+
+    #[test]
+    fn test_preflight_rejects_empty_text_rename_from() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/source.md", "old\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "text_rename"
+from = ""
+to = "new"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(
+            fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn test_preflight_rejects_invalid_text_rename_regex() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/source.md", "old\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "text_rename"
+from = "["
+to = "new"
+literal = false
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(
+            fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
+            "old\n"
         );
     }
 

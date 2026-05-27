@@ -1,5 +1,6 @@
 // src/cli/plan/validate.rs — anchor plan validate command (AP-001)
 
+use crate::apply::text_rename;
 use crate::infra::workspace;
 use crate::model::plan::{self, Op};
 use std::path::Path;
@@ -53,6 +54,27 @@ pub(crate) fn run_impl(plan_path: &str, workspace_root: &Path) -> i32 {
                 }
             }
             Op::CreateDir { .. } => {}
+            Op::TextRename(text_op) => {
+                if text_op.from.is_empty() {
+                    errors.push(format!("operation {n}: text_rename from must be non-empty"));
+                }
+                if text_op.to.is_empty() {
+                    errors.push(format!("operation {n}: text_rename to must be non-empty"));
+                }
+                if !text_op.literal {
+                    if let Err(e) = regex::Regex::new(&text_op.from) {
+                        errors.push(format!("operation {n}: invalid text_rename regex: {e}"));
+                    }
+                }
+                if let Err(e) = text_rename::validate_globs(workspace_root, &text_op.include_paths)
+                {
+                    errors.push(format!("operation {n}: include_paths: {e}"));
+                }
+                if let Err(e) = text_rename::validate_globs(workspace_root, &text_op.exclude_paths)
+                {
+                    errors.push(format!("operation {n}: exclude_paths: {e}"));
+                }
+            }
         }
     }
 

@@ -35,6 +35,14 @@ Paths in `config.json`, `settings.yaml`, `.ts`, `.py`, and other non-markdown fi
 are not rewritten. Anchor warns on stderr with a count after each move — treat it
 as a manual cleanup checklist.
 
+**Text rename is mechanical**
+
+`text_rename` performs literal or regex substitution only. It does not detect
+semantic context. For example, replacing `apps-monorepo` also matches the prefix
+inside `apps-monorepo-deploy.yml`; anchor warns about compound matches but does
+not decide whether the replacement is correct. Use anchor-engine for semantic
+rename decisions.
+
 ---
 
 ## Hard constraints
