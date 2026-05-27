@@ -9,6 +9,7 @@ dependencies = [
  "accelmars-os-env",
  "axum",
  "clap",
+ "globset",
  "http-body-util",
  "ignore",
  "nix",

@@ -10,3 +10,4 @@ pub mod root;
 pub mod serve;
 pub mod tenant;
 pub mod tenants;
+pub mod text;

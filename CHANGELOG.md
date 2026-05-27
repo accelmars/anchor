@@ -3,6 +3,7 @@
 
 ### Features
 - Add `text_rename` plan op for mechanical literal/regex content substitution across scoped Markdown files.
+- Add `anchor text find` subcommand for read-only enumeration of literal or regex occurrences across the workspace, with surrounding context lines, code-block / frontmatter awareness, and a stable JSON output schema for downstream tools.
 
 ## [0.10.0] - 2026-05-21
 
