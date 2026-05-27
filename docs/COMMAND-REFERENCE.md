@@ -212,6 +212,93 @@ Zero results:
 
 ---
 
+## `anchor text find <pattern>`
+
+Read-only enumeration of literal-or-regex occurrences across markdown files,
+with surrounding context lines per match. Companion to the `text_rename` plan
+op: use `text find` to inspect candidate sites before authoring a rename.
+
+```bash
+anchor text find "apps-monorepo"
+
+# forge/projects/atlas-v01/_PROJECT.md:42
+#   > 40: Atlas is the customer-facing app
+#   > 41: built as part of the
+#   > 42: apps-monorepo
+#   > 43: alongside the ops admin
+#   > 44: app.
+#
+# Found 1 occurrence(s) in 1 file(s).
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--regex` | off | Treat pattern as regex instead of literal |
+| `--include <GLOB>` | (any) | Restrict search to files matching this glob (repeatable) |
+| `--exclude <GLOB>` | none | Skip files matching this glob (repeatable) |
+| `--file-type <EXT>` | `md` | File extensions to search (repeatable) |
+| `--context <N>` | `2` | Lines of context before and after each match |
+| `--format text\|json` | `text` | Output format |
+| `--include-code-blocks` | off | Include matches inside fenced code blocks |
+| `--exclude-frontmatter` | off | Skip matches inside YAML frontmatter |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | One or more occurrences found |
+| `1` | No occurrences found |
+| `2` | Error (workspace not initialized, invalid regex, ...) |
+
+### `--format json`
+
+Stable schema for machine consumers (anchor-engine `--review`, AI agents):
+
+```json
+{
+  "pattern": "apps-monorepo",
+  "regex": false,
+  "results": [
+    {
+      "file": "forge/projects/atlas-v01/_PROJECT.md",
+      "line": 42,
+      "column": 5,
+      "match_text": "apps-monorepo",
+      "context_before": ["...line 40", "...line 41"],
+      "context_after": ["...line 43", "...line 44"],
+      "in_code_block": false,
+      "in_frontmatter": false,
+      "compound_match": false
+    }
+  ],
+  "total_occurrences": 1,
+  "total_files": 1
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pattern` | string | Original search pattern |
+| `regex` | bool | Whether `--regex` was used |
+| `results[].file` | string | Workspace-relative path |
+| `results[].line` | number | 1-based line number |
+| `results[].column` | number | 1-based column of match start |
+| `results[].match_text` | string | The matched substring |
+| `results[].context_before` | array<string> | Up to `--context` lines preceding the match |
+| `results[].context_after` | array<string> | Up to `--context` lines following the match |
+| `results[].in_code_block` | bool | Match lies inside a fenced code block |
+| `results[].in_frontmatter` | bool | Match lies inside YAML frontmatter |
+| `results[].compound_match` | bool | Literal match is adjacent to identifier characters (likely part of a larger name); always false for regex |
+
+> **Note for AI agents:** `compound_match: true` flags sites where a literal
+> substitution might catch more than intended (e.g., `apps-monorepo` matching
+> inside `apps-monorepo-deploy`). Inspect those sites before applying a
+> `text_rename` plan that would rewrite them.
+
+---
+
 ## `anchor frontmatter` subcommands
 
 Frontmatter management for `.md` files against a JSON Schema authority.

@@ -5,6 +5,7 @@ use accelmars_anchor::cli::frontmatter::{
     run_add_required, run_audit, run_check_schema, run_migrate, run_migrate_plan, run_normalize,
     FmOutputFormat,
 };
+use accelmars_anchor::cli::text::find::{FindArgs, FindFormat};
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -110,6 +111,44 @@ enum Commands {
     Frontmatter {
         #[command(subcommand)]
         subcommand: FrontmatterCommands,
+    },
+    /// Text inspection primitives (find, ...)
+    Text {
+        #[command(subcommand)]
+        subcommand: TextCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum TextCommands {
+    /// Enumerate occurrences of a string or regex across markdown files
+    Find {
+        /// Pattern to search for (literal by default)
+        pattern: String,
+        /// Treat pattern as a regex instead of a literal string
+        #[arg(long)]
+        regex: bool,
+        /// Glob pattern of files to include (repeatable)
+        #[arg(long = "include", value_name = "GLOB")]
+        include: Vec<String>,
+        /// Glob pattern of files to exclude (repeatable)
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
+        /// File extensions to search (default: md)
+        #[arg(long = "file-type", value_name = "EXT")]
+        file_type: Vec<String>,
+        /// Lines of context to capture around each match
+        #[arg(long, default_value_t = 2)]
+        context: usize,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = FindFormat::Text)]
+        format: FindFormat,
+        /// Include matches inside fenced code blocks (default: skip)
+        #[arg(long = "include-code-blocks")]
+        include_code_blocks: bool,
+        /// Skip matches inside YAML frontmatter (default: include)
+        #[arg(long = "exclude-frontmatter")]
+        exclude_frontmatter: bool,
     },
 }
 
@@ -351,6 +390,36 @@ fn main() {
             },
             FileCommands::Validate { format } => cli::file::validate::run(format),
             FileCommands::Refs { file, format } => cli::file::refs::run(&file, format),
+        },
+        Commands::Text { subcommand } => match subcommand {
+            TextCommands::Find {
+                pattern,
+                regex,
+                include,
+                exclude,
+                file_type,
+                context,
+                format,
+                include_code_blocks,
+                exclude_frontmatter,
+            } => {
+                let file_types = if file_type.is_empty() {
+                    vec!["md".to_string()]
+                } else {
+                    file_type
+                };
+                cli::text::find::run(FindArgs {
+                    pattern,
+                    regex,
+                    include,
+                    exclude,
+                    file_types,
+                    context,
+                    format,
+                    include_code_blocks,
+                    include_frontmatter: !exclude_frontmatter,
+                })
+            }
         },
     };
 

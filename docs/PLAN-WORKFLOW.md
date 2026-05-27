@@ -109,6 +109,12 @@ progress as it runs.
 `text_rename` ops run after move/link rewrites and see the post-move workspace
 state.
 
+> **Inspect candidate sites before authoring a `text_rename` op:**
+> `anchor text find <pattern> --format json` enumerates every occurrence with
+> context, code-block/frontmatter awareness, and a `compound_match` flag for
+> matches embedded in larger identifiers (e.g., `apps-monorepo` inside
+> `apps-monorepo-deploy`). See [COMMAND-REFERENCE.md](COMMAND-REFERENCE.md#anchor-text-find-pattern).
+
 If post-rewrite validation fails, the entire plan rolls back — workspace unchanged.
 
 ---
