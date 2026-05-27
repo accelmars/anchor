@@ -1,5 +1,5 @@
 
-## [0.11.0] - Unreleased
+## [0.11.0] - 2026-05-27
 
 ### Features
 - Add `text_rename` plan op for mechanical literal/regex content substitution across scoped Markdown files.
