@@ -18,11 +18,41 @@ pub struct Plan {
 /// Deserialized from TOML using internally-tagged enum format:
 ///   `type = "create_dir"` → `Op::CreateDir`
 ///   `type = "move"`       → `Op::Move`
+///   `type = "text_rename"` → `Op::TextRename`
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
     CreateDir { path: String },
     Move { src: String, dst: String },
+    TextRename(TextRenameOp),
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct TextRenameOp {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub include_paths: Vec<String>,
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    #[serde(default = "default_file_types")]
+    pub file_types: Vec<String>,
+    #[serde(default = "default_true")]
+    pub literal: bool,
+    #[serde(default)]
+    pub match_in_code_blocks: bool,
+    #[serde(default = "default_true")]
+    pub match_in_frontmatter: bool,
+}
+
+pub fn default_file_types() -> Vec<String> {
+    vec!["md".to_string()]
+}
+
+pub fn default_true() -> bool {
+    true
 }
 
 /// Error returned by plan read/parse operations.
@@ -92,6 +122,38 @@ pub fn render_plan_toml(plan: &Plan) -> String {
                 out.push_str(&format!("src = {}\n", toml_string(src)));
                 out.push_str(&format!("dst = {}\n", toml_string(dst)));
             }
+            Op::TextRename(text) => {
+                out.push_str("type = \"text_rename\"\n");
+                out.push_str(&format!("from = {}\n", toml_string(&text.from)));
+                out.push_str(&format!("to = {}\n", toml_string(&text.to)));
+                if !text.include_paths.is_empty() {
+                    out.push_str(&format!(
+                        "include_paths = {}\n",
+                        toml_string_array(&text.include_paths)
+                    ));
+                }
+                if !text.exclude_paths.is_empty() {
+                    out.push_str(&format!(
+                        "exclude_paths = {}\n",
+                        toml_string_array(&text.exclude_paths)
+                    ));
+                }
+                if text.file_types != default_file_types() {
+                    out.push_str(&format!(
+                        "file_types = {}\n",
+                        toml_string_array(&text.file_types)
+                    ));
+                }
+                if !text.literal {
+                    out.push_str("literal = false\n");
+                }
+                if text.match_in_code_blocks {
+                    out.push_str("match_in_code_blocks = true\n");
+                }
+                if !text.match_in_frontmatter {
+                    out.push_str("match_in_frontmatter = false\n");
+                }
+            }
         }
     }
     out
@@ -107,6 +169,15 @@ pub fn write_plan(path: &Path, plan: &Plan) -> Result<(), io::Error> {
 fn toml_string(s: &str) -> String {
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{}\"", escaped)
+}
+
+fn toml_string_array(values: &[String]) -> String {
+    let rendered = values
+        .iter()
+        .map(|value| toml_string(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{rendered}]")
 }
 
 #[cfg(test)]
@@ -180,6 +251,65 @@ dst = "foundations/anchor-engine"
         assert!(matches!(plan.ops[1], Op::Move { .. }));
     }
 
+    #[test]
+    fn test_parse_text_rename_defaults() {
+        let toml = r#"
+version = "1"
+
+[[ops]]
+type = "text_rename"
+from = "old"
+to = "new"
+"#;
+        let plan: Plan = toml::from_str(toml).unwrap();
+        assert_eq!(plan.ops.len(), 1);
+        assert_eq!(
+            plan.ops[0],
+            Op::TextRename(TextRenameOp {
+                from: "old".to_string(),
+                to: "new".to_string(),
+                include_paths: vec![],
+                exclude_paths: vec![],
+                file_types: vec!["md".to_string()],
+                literal: true,
+                match_in_code_blocks: false,
+                match_in_frontmatter: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_text_rename_all_fields() {
+        let toml = r#"
+version = "1"
+
+[[ops]]
+type = "text_rename"
+from = "old-(\\d+)"
+to = "new-$1"
+include_paths = ["docs/**", "notes/*.md"]
+exclude_paths = ["docs/archive/**"]
+file_types = ["md", "markdown"]
+literal = false
+match_in_code_blocks = true
+match_in_frontmatter = false
+"#;
+        let plan: Plan = toml::from_str(toml).unwrap();
+        assert_eq!(
+            plan.ops[0],
+            Op::TextRename(TextRenameOp {
+                from: "old-(\\d+)".to_string(),
+                to: "new-$1".to_string(),
+                include_paths: vec!["docs/**".to_string(), "notes/*.md".to_string()],
+                exclude_paths: vec!["docs/archive/**".to_string()],
+                file_types: vec!["md".to_string(), "markdown".to_string()],
+                literal: false,
+                match_in_code_blocks: true,
+                match_in_frontmatter: false,
+            })
+        );
+    }
+
     /// load_plan returns PlanError::UnsupportedVersion when version != "1".
     #[test]
     fn test_unsupported_version() {
@@ -226,5 +356,28 @@ path = "x"
         assert_eq!(parsed.ops.len(), plan.ops.len());
         assert_eq!(parsed.ops[0], plan.ops[0]);
         assert_eq!(parsed.ops[1], plan.ops[1]);
+    }
+
+    #[test]
+    fn test_text_rename_roundtrip() {
+        let plan = Plan {
+            version: "1".to_string(),
+            description: Some("rename terms".to_string()),
+            ops: vec![Op::TextRename(TextRenameOp {
+                from: "apps-monorepo".to_string(),
+                to: "apps-platform".to_string(),
+                include_paths: vec!["docs/**".to_string()],
+                exclude_paths: vec!["docs/archive/**".to_string()],
+                file_types: vec!["md".to_string(), "markdown".to_string()],
+                literal: false,
+                match_in_code_blocks: true,
+                match_in_frontmatter: false,
+            })],
+        };
+        let rendered = render_plan_toml(&plan);
+        assert!(rendered.contains("type = \"text_rename\""));
+        assert!(!rendered.contains("[ops.text_rename]"));
+        let parsed: Plan = toml::from_str(&rendered).expect("rendered TOML must parse");
+        assert_eq!(parsed, plan);
     }
 }

@@ -50,9 +50,15 @@ path = "new-parent"
 type = "move"
 src = "old-location"
 dst = "new-parent/new-name"
+
+[[ops]]
+type = "text_rename"
+from = "old term"
+to = "new term"
+include_paths = ["docs/**"]
 ```
 
-Available op types: `move`, `create_dir`.
+Available op types: `move`, `create_dir`, `text_rename`.
 
 **Important:** If move destinations are inside a new parent directory that doesn't
 exist yet, add a `create_dir` op for it before the moves. The wizard detects this
@@ -99,6 +105,9 @@ anchor apply my-plan.toml
 
 Executes all ops in order. For each move, rewrites markdown cross-references. Prints
 progress as it runs.
+
+`text_rename` ops run after move/link rewrites and see the post-move workspace
+state.
 
 If post-rewrite validation fails, the entire plan rolls back — workspace unchanged.
 

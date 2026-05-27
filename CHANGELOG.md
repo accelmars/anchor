@@ -1,4 +1,9 @@
 
+## [0.11.0] - Unreleased
+
+### Features
+- Add `text_rename` plan op for mechanical literal/regex content substitution across scoped Markdown files.
+
 ## [0.10.0] - 2026-05-21
 
 ### Features
@@ -196,5 +201,4 @@
 ### Documentation
 - Add CONTRIBUTING.md, CHANGELOG.md, and EXIT-CODES.md (#17) ([#17](https://github.com/accelmars/anchor/pull/17))
 - Write complete public README for v0.1.0 Phase 1 release
-
 
