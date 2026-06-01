@@ -129,15 +129,13 @@ pub(crate) fn validate_plan(plan: &plan::Plan, workspace_root: &Path) -> Validat
                             .push(format!("operation {n}: invalid text_rename regex: {e}"));
                     }
                 }
-                if let Err(e) =
-                    text_rename::validate_globs(workspace_root, &text_op.include_paths)
+                if let Err(e) = text_rename::validate_globs(workspace_root, &text_op.include_paths)
                 {
                     outcome
                         .errors
                         .push(format!("operation {n}: include_paths: {e}"));
                 }
-                if let Err(e) =
-                    text_rename::validate_globs(workspace_root, &text_op.exclude_paths)
+                if let Err(e) = text_rename::validate_globs(workspace_root, &text_op.exclude_paths)
                 {
                     outcome
                         .errors
