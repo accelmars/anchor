@@ -11,7 +11,7 @@
 
 use crate::model::CanonicalPath;
 use path_clean::PathClean;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Result of resolving a raw reference path.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +105,37 @@ pub fn resolve_form2(stem: &str, all_workspace_files: &[CanonicalPath]) -> Resol
 fn stem_of(canonical: &str) -> &str {
     let filename = canonical.rsplit('/').next().unwrap_or(canonical);
     filename.strip_suffix(".md").unwrap_or(filename)
+}
+
+/// Normalize a tilde-prefixed or absolute filesystem path into a workspace-relative
+/// canonical path, when the expanded path falls inside `workspace_root`.
+///
+/// Returns `Some(canonical)` if `raw` is tilde-prefixed (`~/...`) or absolute
+/// (`/...`) AND the expanded path resolves to a location under `workspace_root`.
+/// Returns `None` for relative paths (caller handles via Form 1 resolution) or
+/// for absolute paths that fall outside the workspace.
+///
+/// Tilde expansion uses `$HOME`. If `$HOME` is unset, tilde paths return `None`.
+pub fn normalize_external_path(raw: &str, workspace_root: &Path) -> Option<CanonicalPath> {
+    let raw_no_trailing = raw.trim_end_matches('/');
+
+    let absolute: PathBuf = if let Some(rest) = raw_no_trailing.strip_prefix("~/") {
+        let home = std::env::var("HOME").ok()?;
+        Path::new(&home).join(rest)
+    } else if raw_no_trailing == "~" {
+        let home = std::env::var("HOME").ok()?;
+        PathBuf::from(home)
+    } else if raw_no_trailing.starts_with('/') {
+        PathBuf::from(raw_no_trailing)
+    } else {
+        return None;
+    };
+
+    let cleaned = absolute.clean();
+    let rel = cleaned.strip_prefix(workspace_root).ok()?;
+
+    let canonical = rel.to_string_lossy().replace('\\', "/");
+    Some(canonical)
 }
 
 #[cfg(test)]
@@ -220,5 +251,73 @@ mod tests {
             "different raw paths to same file must produce identical canonical paths"
         );
         assert_eq!(canonical_a, "a/b/target.md");
+    }
+
+    // ─── normalize_external_path tests ──────────────────────────────────────
+
+    /// Tilde-prefixed path under workspace_root → workspace-relative canonical.
+    #[test]
+    fn test_normalize_tilde_inside_workspace() {
+        // SAFETY: tests run single-threaded by default with #[test]; setting env here
+        // is fine for this isolated case. If parallel-test concerns arise, switch to
+        // a test helper that captures/restores HOME.
+        // SAFETY justification: in Rust 2024, std::env::set_var is unsafe due to
+        // multi-threaded data race risk. We use it under #[cfg(test)] with the
+        // understanding that test orchestration must avoid concurrent HOME mutation.
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        let ws_root = Path::new("/home/alice/workspace");
+        let result = normalize_external_path("~/workspace/foundations/atlas", ws_root);
+        assert_eq!(result, Some("foundations/atlas".to_string()));
+    }
+
+    /// Tilde path with trailing slash → trailing slash stripped, canonical produced.
+    #[test]
+    fn test_normalize_tilde_trailing_slash() {
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        let ws_root = Path::new("/home/alice/workspace");
+        let result = normalize_external_path("~/workspace/foundations/atlas/", ws_root);
+        assert_eq!(result, Some("foundations/atlas".to_string()));
+    }
+
+    /// Tilde-prefixed path OUTSIDE workspace → None (caller treats as unresolved).
+    #[test]
+    fn test_normalize_tilde_outside_workspace() {
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        let ws_root = Path::new("/home/alice/workspace");
+        let result = normalize_external_path("~/other-dir/file.md", ws_root);
+        assert_eq!(result, None);
+    }
+
+    /// Absolute path inside workspace_root → workspace-relative canonical.
+    #[test]
+    fn test_normalize_absolute_inside_workspace() {
+        let ws_root = Path::new("/srv/anchor-workspace");
+        let result = normalize_external_path("/srv/anchor-workspace/docs/guide.md", ws_root);
+        assert_eq!(result, Some("docs/guide.md".to_string()));
+    }
+
+    /// Absolute path OUTSIDE workspace_root → None.
+    #[test]
+    fn test_normalize_absolute_outside_workspace() {
+        let ws_root = Path::new("/srv/anchor-workspace");
+        let result = normalize_external_path("/etc/passwd", ws_root);
+        assert_eq!(result, None);
+    }
+
+    /// Relative path (no tilde, no leading /) → None — caller uses Form 1 resolver.
+    #[test]
+    fn test_normalize_relative_returns_none() {
+        let ws_root = Path::new("/srv/workspace");
+        let result = normalize_external_path("docs/foo.md", ws_root);
+        assert_eq!(result, None);
+    }
+
+    /// Workspace-root match exactly (`~/workspace`) → empty canonical path.
+    #[test]
+    fn test_normalize_tilde_equals_workspace_root() {
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        let ws_root = Path::new("/home/alice/workspace");
+        let result = normalize_external_path("~/workspace", ws_root);
+        assert_eq!(result, Some("".to_string()));
     }
 }

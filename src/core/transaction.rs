@@ -363,8 +363,19 @@ pub fn plan(
                 // the source file to the new target location (source stays put; target moves).
                 let was_relative =
                     target_normalized.starts_with("./") || target_normalized.starts_with("../");
+                // Tilde-prefixed (`~/...`) or absolute (`/...`) backtick paths: expand and
+                // normalize to workspace-relative canonical so that ref matching works the
+                // same as for canonical paths. If the expansion falls outside the workspace,
+                // skip (target is not in this workspace, not our concern).
+                let was_tilde = target_normalized.starts_with("~/") || target_normalized == "~";
+                let was_absolute = target_normalized.starts_with('/');
                 let target_to_match: CanonicalPath = if was_relative {
                     resolver::resolve_form1(&reference.source_file, &target_normalized)
+                } else if was_tilde || was_absolute {
+                    match resolver::normalize_external_path(&target_normalized, workspace_root) {
+                        Some(c) => c,
+                        None => continue,
+                    }
                 } else {
                     target_normalized.clone()
                 };
@@ -389,8 +400,13 @@ pub fn plan(
 
                 // Case C: source file also inside src.
                 // For non-prefixed refs: relative path is stable — skip.
-                // For $(anchor root)/-prefixed refs: absolute path must still be rewritten — do not skip.
-                if !has_anchor_prefix && inside_src(file_canonical, src) {
+                // For $(anchor root)/-prefixed, tilde, or absolute refs: the embedded
+                // workspace-absolute path must still be rewritten — do not skip.
+                if !has_anchor_prefix
+                    && !was_tilde
+                    && !was_absolute
+                    && inside_src(file_canonical, src)
+                {
                     continue;
                 }
 
@@ -443,6 +459,36 @@ pub fn plan(
                         format!("`{new_rel}/`")
                     } else {
                         format!("`{new_rel}`")
+                    }
+                } else if was_tilde {
+                    // Reconstruct `~/<from-home>/<new_normalized>` form. workspace_root
+                    // strip-prefix against $HOME tells us how to express the workspace
+                    // root relative to home; concatenate the new workspace-relative
+                    // path onto that.
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let from_home = Path::new(workspace_root)
+                        .strip_prefix(&home)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let from_home = from_home.trim_start_matches('/');
+                    let prefix = if from_home.is_empty() {
+                        "~".to_string()
+                    } else {
+                        format!("~/{from_home}")
+                    };
+                    if had_slash {
+                        format!("`{prefix}/{new_normalized}/`")
+                    } else {
+                        format!("`{prefix}/{new_normalized}`")
+                    }
+                } else if was_absolute {
+                    // Reconstruct absolute form by prepending workspace_root.
+                    let abs_prefix = workspace_root.to_string_lossy();
+                    let abs_prefix = abs_prefix.trim_end_matches('/');
+                    if had_slash {
+                        format!("`{abs_prefix}/{new_normalized}/`")
+                    } else {
+                        format!("`{abs_prefix}/{new_normalized}`")
                     }
                 } else if had_slash {
                     format!("`{new_normalized}/`")
@@ -2666,6 +2712,54 @@ mod tests {
                 .contains("company/91-intake/README.md"),
             "new_text must reference new path; got: {}",
             doc_entries[0].new_text
+        );
+    }
+
+    /// plan() must rewrite a tilde-prefixed backtick ref whose expanded target falls
+    /// inside the workspace. Reproduces the apps-restructure case (foundations/atlas-app
+    /// → foundations/apps/atlas) where a doc said `~/<repo>/foundations/atlas-app/`.
+    #[test]
+    fn plan_rewrites_tilde_backtick_path() {
+        let tmp = make_workspace();
+        let ws_root = tmp.path().canonicalize().unwrap();
+        let home = ws_root.parent().unwrap().to_owned();
+        let ws_basename = ws_root.file_name().unwrap().to_string_lossy().into_owned();
+        // SAFETY: cargo runs tests in parallel by default but $HOME is process-wide;
+        // we accept the data-race risk here for the same reason the resolver tests do.
+        unsafe { std::env::set_var("HOME", &home) };
+
+        // Source exists on disk so AENG-017's existence guard passes.
+        write_file(&ws_root, "foundations/atlas-app/CLAUDE.md", "# Atlas\n");
+        write_file(
+            &ws_root,
+            "docs/SMOKE-TOUR.md",
+            &format!("Foundation: `~/{ws_basename}/foundations/atlas-app/`\n"),
+        );
+
+        let workspace_files = vec![
+            "foundations/atlas-app/CLAUDE.md".to_string(),
+            "docs/SMOKE-TOUR.md".to_string(),
+        ];
+        let src = "foundations/atlas-app".to_string();
+        let dst = "foundations/apps/atlas".to_string();
+
+        let result = plan(&ws_root, &src, &dst, &workspace_files, false).unwrap();
+
+        let doc_entries: Vec<_> = result
+            .entries
+            .iter()
+            .filter(|e| e.file == "docs/SMOKE-TOUR.md")
+            .collect();
+        assert_eq!(
+            doc_entries.len(),
+            1,
+            "exactly one rewrite entry expected for the tilde ref; got: {:?}",
+            result.entries
+        );
+        let expected = format!("`~/{ws_basename}/foundations/apps/atlas/`");
+        assert_eq!(
+            doc_entries[0].new_text, expected,
+            "tilde-form must be preserved with the new workspace-relative path"
         );
     }
 
