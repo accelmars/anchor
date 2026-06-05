@@ -1,9 +1,16 @@
 
+## [0.12.0] - 2026-06-05
+
+### Features
+- (**text_rename**) Cascade-safe ordered rule sets + per-line skip-list (#121) ([#121](https://github.com/accelmars/anchor/pull/121))
+- (**text**) Add 'anchor text verify' term-absence completeness gate (#120) ([#120](https://github.com/accelmars/anchor/pull/120))
+- (**resolver**) Normalize_external_path() for tilde/absolute path inputs (#115) ([#115](https://github.com/accelmars/anchor/pull/115))
+
 ## [0.11.0] - 2026-05-27
 
 ### Features
-- Add `text_rename` plan op for mechanical literal/regex content substitution across scoped Markdown files.
-- Add `anchor text find` subcommand for read-only enumeration of literal or regex occurrences across the workspace, with surrounding context lines, code-block / frontmatter awareness, and a stable JSON output schema for downstream tools.
+- Add anchor text find command for occurrence enumeration (#118) ([#118](https://github.com/accelmars/anchor/pull/118))
+- Add text-rename op-type for content substitution (#117) ([#117](https://github.com/accelmars/anchor/pull/117))
 
 ## [0.10.0] - 2026-05-21
 
@@ -202,4 +209,5 @@
 ### Documentation
 - Add CONTRIBUTING.md, CHANGELOG.md, and EXIT-CODES.md (#17) ([#17](https://github.com/accelmars/anchor/pull/17))
 - Write complete public README for v0.1.0 Phase 1 release
+
 
