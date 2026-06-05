@@ -6,6 +6,7 @@ use accelmars_anchor::cli::frontmatter::{
     FmOutputFormat,
 };
 use accelmars_anchor::cli::text::find::{FindArgs, FindFormat};
+use accelmars_anchor::cli::text::verify::VerifyArgs;
 
 use clap::{Parser, Subcommand};
 use std::process;
@@ -149,6 +150,38 @@ enum TextCommands {
         /// Skip matches inside YAML frontmatter (default: include)
         #[arg(long = "exclude-frontmatter")]
         exclude_frontmatter: bool,
+    },
+    /// Verify that no unallow-listed occurrences remain in scope
+    Verify {
+        /// Pattern to search for (literal by default)
+        pattern: String,
+        /// Treat pattern as a regex instead of a literal string
+        #[arg(long)]
+        regex: bool,
+        /// Glob pattern of files to include (repeatable)
+        #[arg(long = "include", value_name = "GLOB")]
+        include: Vec<String>,
+        /// Glob pattern of files to exclude (repeatable)
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
+        /// File extensions to search (default: md)
+        #[arg(long = "file-type", value_name = "EXT")]
+        file_type: Vec<String>,
+        /// Include matches inside fenced code blocks (default: skip)
+        #[arg(long = "include-code-blocks")]
+        include_code_blocks: bool,
+        /// Skip matches inside YAML frontmatter (default: include)
+        #[arg(long = "exclude-frontmatter")]
+        exclude_frontmatter: bool,
+        /// Acknowledge an allowed occurrence: <file>:<line> (repeatable)
+        #[arg(long = "allow", value_name = "FILE:LINE")]
+        allow: Vec<String>,
+        /// Read allowed occurrences from a file containing one FILE:LINE per line
+        #[arg(long = "allow-from", value_name = "PATH")]
+        allow_from: Option<String>,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = FindFormat::Text)]
+        format: FindFormat,
     },
 }
 
@@ -418,6 +451,36 @@ fn main() {
                     format,
                     include_code_blocks,
                     include_frontmatter: !exclude_frontmatter,
+                })
+            }
+            TextCommands::Verify {
+                pattern,
+                regex,
+                include,
+                exclude,
+                file_type,
+                include_code_blocks,
+                exclude_frontmatter,
+                allow,
+                allow_from,
+                format,
+            } => {
+                let file_types = if file_type.is_empty() {
+                    vec!["md".to_string()]
+                } else {
+                    file_type
+                };
+                cli::text::verify::run(VerifyArgs {
+                    pattern,
+                    regex,
+                    include,
+                    exclude,
+                    file_types,
+                    include_code_blocks,
+                    include_frontmatter: !exclude_frontmatter,
+                    allow,
+                    allow_from,
+                    format,
                 })
             }
         },

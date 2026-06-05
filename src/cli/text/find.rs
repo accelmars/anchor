@@ -106,7 +106,7 @@ pub fn run_on_root(workspace_root: &Path, args: FindArgs) -> i32 {
     }
 }
 
-fn do_find(workspace_root: &Path, args: &FindArgs) -> Result<Vec<Occurrence>, String> {
+pub(crate) fn do_find(workspace_root: &Path, args: &FindArgs) -> Result<Vec<Occurrence>, String> {
     if args.pattern.is_empty() {
         return Err("pattern must not be empty".to_string());
     }
