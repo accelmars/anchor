@@ -1,7 +1,6 @@
-use crate::core::fence_state::FenceState;
+use crate::core::scanner;
 use crate::infra::atomic;
 use crate::model::plan::{TextRenameOp, TextRenameRule};
-use ignore::overrides::{Override, OverrideBuilder};
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::collections::HashSet;
@@ -18,8 +17,6 @@ pub fn execute_text_rename(
     workspace_root: &Path,
     op: &TextRenameOp,
 ) -> Result<TextRenameResult, String> {
-    let include = build_override(workspace_root, &op.include_paths)?;
-    let exclude = build_override(workspace_root, &op.exclude_paths)?;
     let rules = EffectiveRules::new(op)?;
     let skip = parse_skip_set(&op.skip);
 
@@ -27,7 +24,7 @@ pub fn execute_text_rename(
     let mut total_substitutions = 0usize;
     let mut warnings = Vec::new();
 
-    for path in candidate_files(workspace_root, op, &include, &exclude)? {
+    for path in candidate_files(workspace_root, op)? {
         let original =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let had_to_before = rules.to_values.iter().any(|to| original.contains(to));
@@ -63,16 +60,17 @@ pub fn execute_text_rename(
     })
 }
 
-pub(crate) fn validate_globs(workspace_root: &Path, patterns: &[String]) -> Result<(), String> {
-    build_override(workspace_root, patterns).map(|_| ())
+pub(crate) fn validate_globs(_workspace_root: &Path, patterns: &[String]) -> Result<(), String> {
+    for pat in patterns {
+        globset::Glob::new(pat).map_err(|e| format!("invalid glob pattern {pat:?}: {e}"))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn preview_text_rename(
     workspace_root: &Path,
     op: &TextRenameOp,
 ) -> Result<TextRenameResult, String> {
-    let include = build_override(workspace_root, &op.include_paths)?;
-    let exclude = build_override(workspace_root, &op.exclude_paths)?;
     let rules = EffectiveRules::new(op)?;
     let skip = parse_skip_set(&op.skip);
 
@@ -80,7 +78,7 @@ pub(crate) fn preview_text_rename(
     let mut total_substitutions = 0usize;
     let mut warnings = Vec::new();
 
-    for path in candidate_files(workspace_root, op, &include, &exclude)? {
+    for path in candidate_files(workspace_root, op)? {
         let original =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let had_to_before = rules.to_values.iter().any(|to| original.contains(to));
@@ -113,12 +111,7 @@ pub(crate) fn preview_text_rename(
     })
 }
 
-fn candidate_files(
-    workspace_root: &Path,
-    op: &TextRenameOp,
-    include: &Override,
-    exclude: &Override,
-) -> Result<Vec<PathBuf>, String> {
+fn candidate_files(workspace_root: &Path, op: &TextRenameOp) -> Result<Vec<PathBuf>, String> {
     let ignore_file_path = workspace_root
         .join(".accelmars")
         .join("anchor")
@@ -162,26 +155,19 @@ fn candidate_files(
         if !has_allowed_extension(path, &op.file_types) {
             continue;
         }
-        if !include.is_empty() && !include.matched(rel, false).is_whitelist() {
+        // Glob filtering via the shared `globset` matcher (same engine as `text find`/`verify`)
+        // so apply and verify select the identical file set — fixes GAP-AENG-023.
+        let rel_str = rel.to_string_lossy();
+        if !op.include_paths.is_empty() && !scanner::path_matches_any(&rel_str, &op.include_paths) {
             continue;
         }
-        if !exclude.is_empty() && exclude.matched(rel, false).is_whitelist() {
+        if !op.exclude_paths.is_empty() && scanner::path_matches_any(&rel_str, &op.exclude_paths) {
             continue;
         }
         files.push(path.to_path_buf());
     }
     files.sort();
     Ok(files)
-}
-
-fn build_override(workspace_root: &Path, patterns: &[String]) -> Result<Override, String> {
-    let mut builder = OverrideBuilder::new(workspace_root);
-    for pattern in patterns {
-        builder
-            .add(pattern)
-            .map_err(|e| format!("invalid glob pattern {pattern:?}: {e}"))?;
-    }
-    builder.build().map_err(|e| format!("invalid glob: {e}"))
 }
 
 fn has_allowed_extension(path: &Path, file_types: &[String]) -> bool {
@@ -203,14 +189,20 @@ fn rewrite_content(
 ) -> (String, usize) {
     let mut out = String::with_capacity(content.len());
     let mut substitutions = 0usize;
-    let mut fence = FenceState::default();
-    let mut frontmatter = FrontmatterState::Start;
+    let lines: Vec<&str> = split_lines_inclusive(content).into_iter().collect();
+    let detect_lines: Vec<&str> = lines
+        .iter()
+        .map(|l| l.trim_end_matches('\n').trim_end_matches('\r'))
+        .collect();
+    // Frontmatter + code-block classification via the shared detectors (same engine as
+    // `text find`/`verify`) so apply and verify skip the identical lines — fixes GAP-AENG-023.
+    let frontmatter_end = scanner::detect_frontmatter_end(&detect_lines);
+    let code_block_lines = scanner::detect_code_block_lines(&detect_lines);
 
-    for (idx, line) in split_lines_inclusive(content).into_iter().enumerate() {
+    for (idx, &line) in lines.iter().enumerate() {
         let line_no = idx + 1;
-        let in_frontmatter = frontmatter.observe_line(line);
-        fence.observe_line(line);
-        let in_code_block = fence.in_code_block();
+        let in_frontmatter = frontmatter_end.is_some_and(|end| line_no <= end);
+        let in_code_block = code_block_lines.contains(&line_no);
         let skip = (!op.match_in_frontmatter && in_frontmatter)
             || (!op.match_in_code_blocks && in_code_block)
             || skip.contains(&(rel_path.to_string(), line_no));
@@ -408,35 +400,6 @@ fn split_lines_inclusive(content: &str) -> Vec<&str> {
     lines
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrontmatterState {
-    Start,
-    In,
-    Done,
-}
-
-impl FrontmatterState {
-    fn observe_line(&mut self, line: &str) -> bool {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        match self {
-            FrontmatterState::Start if trimmed == "---" => {
-                *self = FrontmatterState::In;
-                true
-            }
-            FrontmatterState::Start => {
-                *self = FrontmatterState::Done;
-                false
-            }
-            FrontmatterState::In if trimmed == "---" => {
-                *self = FrontmatterState::Done;
-                true
-            }
-            FrontmatterState::In => true,
-            FrontmatterState::Done => false,
-        }
-    }
-}
-
 fn has_compound_match(content: &str, from: &str) -> bool {
     if from.is_empty() {
         return false;
@@ -496,6 +459,31 @@ mod tests {
             to: to.to_string(),
             literal: true,
         }
+    }
+
+    /// Regression for GAP-AENG-023: a deeply-nested file selected by an `include_paths`
+    /// `**` glob must be migrated. `apply` previously filtered with `ignore::overrides::Override`,
+    /// which resolved `"repo/**/*.md"` to a different file set than `verify`'s `globset` — silently
+    /// dropping nested files so the completeness gate could never reach zero. Both now use `globset`.
+    #[test]
+    fn include_glob_selects_deeply_nested_file_aeng023() {
+        let ws = TempDir::new().unwrap();
+        write_file(ws.path(), "repo/projects/sub/DEEP.md", "the persona here\n");
+        write_file(ws.path(), "other/x.md", "outside persona\n");
+        let mut o = op("persona", "guild person");
+        o.include_paths = vec!["repo/**/*.md".to_string()];
+        let result = execute_text_rename(ws.path(), &o).unwrap();
+        // The deeply-nested file under the include glob IS migrated (the fix).
+        assert_eq!(
+            fs::read_to_string(ws.path().join("repo/projects/sub/DEEP.md")).unwrap(),
+            "the guild person here\n"
+        );
+        // A file outside the include glob is left untouched (include still filters).
+        assert_eq!(
+            fs::read_to_string(ws.path().join("other/x.md")).unwrap(),
+            "outside persona\n"
+        );
+        assert_eq!(result.total_substitutions, 1);
     }
 
     #[test]
