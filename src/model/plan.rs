@@ -34,6 +34,12 @@ pub struct TextRenameOp {
     #[serde(default)]
     pub to: String,
     #[serde(default)]
+    pub rules: Vec<TextRenameRule>,
+    /// Workspace-relative `FILE:LINE` positions to preserve. Skips are line-granular,
+    /// so multiple occurrences on the same skipped line are preserved together.
+    #[serde(default)]
+    pub skip: Vec<String>,
+    #[serde(default)]
     pub include_paths: Vec<String>,
     #[serde(default)]
     pub exclude_paths: Vec<String>,
@@ -45,6 +51,14 @@ pub struct TextRenameOp {
     pub match_in_code_blocks: bool,
     #[serde(default = "default_true")]
     pub match_in_frontmatter: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct TextRenameRule {
+    pub from: String,
+    pub to: String,
+    #[serde(default = "default_true")]
+    pub literal: bool,
 }
 
 pub fn default_file_types() -> Vec<String> {
@@ -124,8 +138,10 @@ pub fn render_plan_toml(plan: &Plan) -> String {
             }
             Op::TextRename(text) => {
                 out.push_str("type = \"text_rename\"\n");
-                out.push_str(&format!("from = {}\n", toml_string(&text.from)));
-                out.push_str(&format!("to = {}\n", toml_string(&text.to)));
+                if text.rules.is_empty() {
+                    out.push_str(&format!("from = {}\n", toml_string(&text.from)));
+                    out.push_str(&format!("to = {}\n", toml_string(&text.to)));
+                }
                 if !text.include_paths.is_empty() {
                     out.push_str(&format!(
                         "include_paths = {}\n",
@@ -152,6 +168,18 @@ pub fn render_plan_toml(plan: &Plan) -> String {
                 }
                 if !text.match_in_frontmatter {
                     out.push_str("match_in_frontmatter = false\n");
+                }
+                if !text.skip.is_empty() {
+                    out.push_str(&format!("skip = {}\n", toml_string_array(&text.skip)));
+                }
+                for rule in &text.rules {
+                    out.push('\n');
+                    out.push_str("[[ops.rules]]\n");
+                    out.push_str(&format!("from = {}\n", toml_string(&rule.from)));
+                    out.push_str(&format!("to = {}\n", toml_string(&rule.to)));
+                    if !rule.literal {
+                        out.push_str("literal = false\n");
+                    }
                 }
             }
         }
@@ -268,6 +296,8 @@ to = "new"
             Op::TextRename(TextRenameOp {
                 from: "old".to_string(),
                 to: "new".to_string(),
+                rules: vec![],
+                skip: vec![],
                 include_paths: vec![],
                 exclude_paths: vec![],
                 file_types: vec!["md".to_string()],
@@ -300,6 +330,8 @@ match_in_frontmatter = false
             Op::TextRename(TextRenameOp {
                 from: "old-(\\d+)".to_string(),
                 to: "new-$1".to_string(),
+                rules: vec![],
+                skip: vec![],
                 include_paths: vec!["docs/**".to_string(), "notes/*.md".to_string()],
                 exclude_paths: vec!["docs/archive/**".to_string()],
                 file_types: vec!["md".to_string(), "markdown".to_string()],
@@ -366,6 +398,8 @@ path = "x"
             ops: vec![Op::TextRename(TextRenameOp {
                 from: "apps-monorepo".to_string(),
                 to: "apps-platform".to_string(),
+                rules: vec![],
+                skip: vec![],
                 include_paths: vec!["docs/**".to_string()],
                 exclude_paths: vec!["docs/archive/**".to_string()],
                 file_types: vec!["md".to_string(), "markdown".to_string()],
@@ -377,6 +411,43 @@ path = "x"
         let rendered = render_plan_toml(&plan);
         assert!(rendered.contains("type = \"text_rename\""));
         assert!(!rendered.contains("[ops.text_rename]"));
+        let parsed: Plan = toml::from_str(&rendered).expect("rendered TOML must parse");
+        assert_eq!(parsed, plan);
+    }
+
+    #[test]
+    fn plan_roundtrip_rules_and_skip() {
+        let plan = Plan {
+            version: "1".to_string(),
+            description: Some("rename variants".to_string()),
+            ops: vec![Op::TextRename(TextRenameOp {
+                from: String::new(),
+                to: String::new(),
+                rules: vec![
+                    TextRenameRule {
+                        from: "personas".to_string(),
+                        to: "guild people".to_string(),
+                        literal: true,
+                    },
+                    TextRenameRule {
+                        from: "persona-(\\d+)".to_string(),
+                        to: "guild-person-$1".to_string(),
+                        literal: false,
+                    },
+                ],
+                skip: vec!["docs/a.md:2".to_string(), "docs/b.md:7".to_string()],
+                include_paths: vec!["docs/**".to_string()],
+                exclude_paths: vec!["docs/archive/**".to_string()],
+                file_types: vec!["md".to_string(), "markdown".to_string()],
+                literal: true,
+                match_in_code_blocks: true,
+                match_in_frontmatter: false,
+            })],
+        };
+
+        let rendered = render_plan_toml(&plan);
+        assert!(rendered.contains("[[ops.rules]]"));
+        assert!(rendered.contains("skip = [\"docs/a.md:2\", \"docs/b.md:7\"]"));
         let parsed: Plan = toml::from_str(&rendered).expect("rendered TOML must parse");
         assert_eq!(parsed, plan);
     }

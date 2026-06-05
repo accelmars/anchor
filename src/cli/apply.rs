@@ -396,16 +396,7 @@ fn preflight(
                 }
             }
             Op::TextRename(text_op) => {
-                if text_op.from.is_empty() {
-                    return Err("preflight failed: text_rename from must be non-empty".to_string());
-                }
-                if text_op.to.is_empty() {
-                    return Err("preflight failed: text_rename to must be non-empty".to_string());
-                }
-                if !text_op.literal {
-                    regex::Regex::new(&text_op.from)
-                        .map_err(|e| format!("preflight failed: invalid text_rename regex: {e}"))?;
-                }
+                preflight_text_rename(text_op)?;
                 text_rename::validate_globs(workspace_root, &text_op.include_paths)
                     .map_err(|e| format!("preflight failed: include_paths: {e}"))?;
                 text_rename::validate_globs(workspace_root, &text_op.exclude_paths)
@@ -415,6 +406,72 @@ fn preflight(
         }
     }
     Ok(())
+}
+
+fn preflight_text_rename(text_op: &plan::TextRenameOp) -> Result<(), String> {
+    if text_op.rules.is_empty() {
+        validate_text_rename_rule(&text_op.from, &text_op.to, text_op.literal, None)?;
+        warn_self_containing_text_rename(&text_op.from, &text_op.to, None);
+    } else {
+        for (idx, rule) in text_op.rules.iter().enumerate() {
+            validate_text_rename_rule(&rule.from, &rule.to, rule.literal, Some(idx))?;
+            warn_self_containing_text_rename(&rule.from, &rule.to, Some(idx));
+        }
+    }
+
+    for entry in &text_op.skip {
+        if parse_text_rename_skip(entry).is_none() {
+            eprintln!("warning: invalid text_rename skip value: {entry} (expected file:line)");
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_text_rename_rule(
+    from: &str,
+    to: &str,
+    literal: bool,
+    idx: Option<usize>,
+) -> Result<(), String> {
+    let label = idx
+        .map(|idx| format!("text_rename rules[{idx}]"))
+        .unwrap_or_else(|| "text_rename".to_string());
+    if from.is_empty() {
+        return Err(format!("preflight failed: {label} from must be non-empty"));
+    }
+    if to.is_empty() {
+        return Err(format!("preflight failed: {label} to must be non-empty"));
+    }
+    if !literal {
+        regex::Regex::new(from)
+            .map_err(|e| format!("preflight failed: invalid {label} regex: {e}"))?;
+    }
+    Ok(())
+}
+
+fn warn_self_containing_text_rename(from: &str, to: &str, idx: Option<usize>) {
+    if !from.is_empty() && to.contains(from) {
+        if let Some(idx) = idx {
+            eprintln!(
+                "warning: text_rename rules[{idx}] to contains from; reruns rely on output protection"
+            );
+        } else {
+            eprintln!("warning: text_rename to contains from; reruns rely on output protection");
+        }
+    }
+}
+
+fn parse_text_rename_skip(entry: &str) -> Option<(&str, usize)> {
+    let (file, line) = entry.rsplit_once(':')?;
+    if file.is_empty() {
+        return None;
+    }
+    let line = line.parse::<usize>().ok()?;
+    if line == 0 {
+        return None;
+    }
+    Some((file, line))
 }
 
 /// Returns true iff all Move ops in the plan have src absent and dst present on disk.
@@ -1325,6 +1382,74 @@ literal = false
         assert_eq!(
             fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
             "old\n"
+        );
+    }
+
+    #[test]
+    fn test_preflight_rejects_invalid_text_rename_rule_regex() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/source.md", "old\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "text_rename"
+
+[[ops.rules]]
+from = "["
+to = "new"
+literal = false
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(
+            fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn test_preflight_warns_and_ignores_malformed_text_rename_skip() {
+        let ws = make_workspace();
+        write_file(ws.path(), "docs/source.md", "old\n");
+
+        let plan_path = plan_file(
+            &ws,
+            r#"version = "1"
+[[ops]]
+type = "text_rename"
+skip = ["not-a-position"]
+
+[[ops.rules]]
+from = "old"
+to = "new"
+"#,
+        );
+
+        let mut out = Vec::new();
+        let code = run_impl(
+            &plan_path,
+            ws.path(),
+            &ws.path().join(".accelmars"),
+            &mut out,
+            &AckedRefs::empty(),
+            false,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(
+            fs::read_to_string(ws.path().join("docs/source.md")).unwrap(),
+            "new\n"
         );
     }
 
