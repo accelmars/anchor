@@ -132,10 +132,13 @@ pub(crate) fn do_find(workspace_root: &Path, args: &FindArgs) -> Result<Vec<Occu
         if !extension_matches(file_path, &extensions) {
             continue;
         }
-        if !include_overrides.is_empty() && !path_matches_any(file_path, &include_overrides) {
+        if !include_overrides.is_empty()
+            && !scanner::path_matches_any(file_path, &include_overrides)
+        {
             continue;
         }
-        if !exclude_overrides.is_empty() && path_matches_any(file_path, &exclude_overrides) {
+        if !exclude_overrides.is_empty() && scanner::path_matches_any(file_path, &exclude_overrides)
+        {
             continue;
         }
 
@@ -169,8 +172,8 @@ fn find_in_file(
 ) {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
     let lines_trimmed: Vec<&str> = lines.iter().map(|l| l.trim_end_matches('\n')).collect();
-    let frontmatter_end_line = detect_frontmatter_end(&lines_trimmed);
-    let code_block_lines = detect_code_block_lines(&lines_trimmed);
+    let frontmatter_end_line = scanner::detect_frontmatter_end(&lines_trimmed);
+    let code_block_lines = scanner::detect_code_block_lines(&lines_trimmed);
 
     for (i, line) in lines_trimmed.iter().enumerate() {
         let line_no = i + 1;
@@ -259,57 +262,6 @@ fn is_compound(line: &str, start: usize, end: usize) -> bool {
     matches!(before, Some(c) if is_ident(c)) || matches!(after, Some(c) if is_ident(c))
 }
 
-fn detect_frontmatter_end(lines: &[&str]) -> Option<usize> {
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return None;
-    }
-    for (i, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            return Some(i + 1);
-        }
-    }
-    None
-}
-
-fn detect_code_block_lines(lines: &[&str]) -> BTreeSet<usize> {
-    let mut blocks = BTreeSet::new();
-    let mut in_fence = false;
-    let mut marker: Option<char> = None;
-    let mut marker_len = 0usize;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        let fence_start_chars = trimmed
-            .chars()
-            .take_while(|c| *c == '`' || *c == '~')
-            .collect::<String>();
-        let fence_char = fence_start_chars.chars().next();
-        let fence_len = fence_start_chars.len();
-        let line_no = i + 1;
-
-        if !in_fence {
-            if fence_len >= 3 && fence_char.is_some() {
-                in_fence = true;
-                marker = fence_char;
-                marker_len = fence_len;
-                blocks.insert(line_no);
-            }
-        } else {
-            blocks.insert(line_no);
-            if fence_len >= marker_len && fence_char == marker {
-                let after_fence: String = trimmed.chars().skip(fence_len).collect();
-                if after_fence.trim().is_empty() {
-                    in_fence = false;
-                    marker = None;
-                    marker_len = 0;
-                }
-            }
-        }
-    }
-
-    blocks
-}
-
 fn collect_context(lines: &[&str], idx: usize, n: usize, before: bool) -> Vec<String> {
     if n == 0 {
         return Vec::new();
@@ -338,21 +290,6 @@ fn build_overrides(workspace_root: &Path, patterns: &[String]) -> Result<Vec<Str
     ob.build()
         .map_err(|e| format!("failed to build override matcher: {e}"))?;
     Ok(patterns.to_vec())
-}
-
-fn path_matches_any(path: &str, patterns: &[String]) -> bool {
-    use globset::{Glob, GlobSetBuilder};
-    let mut builder = GlobSetBuilder::new();
-    for p in patterns {
-        if let Ok(g) = Glob::new(p) {
-            builder.add(g);
-        }
-    }
-    if let Ok(set) = builder.build() {
-        set.is_match(path)
-    } else {
-        false
-    }
 }
 
 fn extension_matches(file: &str, allowed: &BTreeSet<&str>) -> bool {

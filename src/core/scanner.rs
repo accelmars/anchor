@@ -125,6 +125,89 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<CanonicalPath>, ScannerError> {
     Ok(paths)
 }
 
+/// Match a workspace-relative path against a set of glob patterns using `globset`.
+///
+/// Shared by `text find`/`verify` (`do_find`) and `apply` (`candidate_files`) so the two
+/// agree on which files an `include_paths`/`exclude_paths` glob selects. Using a single
+/// glob engine here is the fix for GAP-AENG-023 (apply previously used `ignore::Override`,
+/// which resolved the same pattern to a different file set than verify's `globset`).
+pub(crate) fn path_matches_any(path: &str, patterns: &[String]) -> bool {
+    use globset::{Glob, GlobSetBuilder};
+    let mut builder = GlobSetBuilder::new();
+    for p in patterns {
+        if let Ok(g) = Glob::new(p) {
+            builder.add(g);
+        }
+    }
+    if let Ok(set) = builder.build() {
+        set.is_match(path)
+    } else {
+        false
+    }
+}
+
+/// Index of the last frontmatter line (1-based) if the content opens with a `---` YAML block.
+///
+/// Shared by `text find`/`verify` and `apply` so both classify frontmatter identically
+/// (part of the GAP-AENG-023 fix — apply previously used a separate `FrontmatterState`).
+/// `lines` are newline-trimmed.
+pub(crate) fn detect_frontmatter_end(lines: &[&str]) -> Option<usize> {
+    if lines.first().map(|l| l.trim()) != Some("---") {
+        return None;
+    }
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if line.trim() == "---" {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+/// Set of 1-based line numbers inside fenced code blocks (``` or ~~~), fence lines included.
+///
+/// Shared by `text find`/`verify` and `apply` so both classify code blocks identically
+/// (part of the GAP-AENG-023 fix — apply previously used a separate `FenceState`, which
+/// drifted and mis-classified some prose lines as code, silently skipping them). `lines`
+/// are newline-trimmed.
+pub(crate) fn detect_code_block_lines(lines: &[&str]) -> std::collections::BTreeSet<usize> {
+    let mut blocks = std::collections::BTreeSet::new();
+    let mut in_fence = false;
+    let mut marker: Option<char> = None;
+    let mut marker_len = 0usize;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let fence_start_chars = trimmed
+            .chars()
+            .take_while(|c| *c == '`' || *c == '~')
+            .collect::<String>();
+        let fence_char = fence_start_chars.chars().next();
+        let fence_len = fence_start_chars.len();
+        let line_no = i + 1;
+
+        if !in_fence {
+            if fence_len >= 3 && fence_char.is_some() {
+                in_fence = true;
+                marker = fence_char;
+                marker_len = fence_len;
+                blocks.insert(line_no);
+            }
+        } else {
+            blocks.insert(line_no);
+            if fence_len >= marker_len && fence_char == marker {
+                let after_fence: String = trimmed.chars().skip(fence_len).collect();
+                if after_fence.trim().is_empty() {
+                    in_fence = false;
+                    marker = None;
+                    marker_len = 0;
+                }
+            }
+        }
+    }
+
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
