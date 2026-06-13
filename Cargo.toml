@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/os-env"]
+members = []
 resolver = "2"
 
 [package]
@@ -19,7 +19,7 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
-accelmars-os-env = { path = "crates/os-env", version = "0.2.0" }
+accelmars-os-env = { git = "https://github.com/accelmars/os-env", tag = "accelmars-os-env-v0.3.0" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"
