@@ -29,10 +29,10 @@ dependencies = [
 
 [[package]]
 name = "accelmars-os-env"
-version = "0.2.0"
+version = "0.3.0"
+source = "git+https://github.com/accelmars/os-env?tag=accelmars-os-env-v0.3.0#a4a1b90deeb65f182e3cd372e5c7ed80b1acf7b1"
 dependencies = [
  "serde",
- "tempfile",
 ]
 
 [[package]]
