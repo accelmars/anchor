@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Auto-installed by cargo-husky on the first `cargo test`. Edit the SOURCE in .cargo-husky/hooks/.
+# pre-push: run the full portable gate (fmt/clippy/test + secret/retired-endpoint/no-hardcode scans)
+# so a raw `git push` that would fail the gate never leaves the machine. `booster deliver` runs the
+# same gate on the canonical path; this is the raw-push backstop.
+set -euo pipefail
+if ! command -v booster >/dev/null 2>&1; then
+  echo "pre-push: 'booster' not on PATH — install (os update booster) or push with --no-verify" >&2
+  exit 1
+fi
+exec booster gate --stage push

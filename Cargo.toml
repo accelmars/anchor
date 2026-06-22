@@ -42,6 +42,9 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 tempfile = "3"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+# cargo-husky installs hooks from .cargo-husky/hooks/ into .git/hooks/ on the
+# first `cargo test`. `user-hooks` opts out of the default Rust hookset.
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
 
 [profile.dist]
 inherits = "release"
