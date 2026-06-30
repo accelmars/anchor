@@ -2,7 +2,7 @@
 ## [0.12.1] - 2026-06-05
 
 ### Bug Fixes
-- (**text_rename**) Unify `apply` and `verify`/`find` onto one file enumerator (globset) and one fence/frontmatter detector — closes GAP-AENG-023. Previously `apply` filtered includes with `ignore::Override` and classified code blocks with `FenceState`, while `verify` used `globset` + `detect_code_block_lines`; the two drifted, so `apply` silently skipped files/lines `verify` flagged and a term migration could never reach a verified-zero state. Shared matchers now live in `core::scanner`.
+- (**text_rename**) Unify apply/verify enumeration + fence/frontmatter detection (AENG-023) (#123) ([#123](https://github.com/accelmars/anchor/pull/123))
 
 ## [0.12.0] - 2026-06-05
 
