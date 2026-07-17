@@ -8,4 +8,21 @@ if ! command -v booster >/dev/null 2>&1; then
   echo "pre-push: 'booster' not on PATH — install (os update booster) or push with --no-verify" >&2
   exit 1
 fi
+
+# ── Boundary check (migrated from the retired .github/workflows/boundary-check.yml
+# when we deleted GitHub Actions fleet-wide). Anchor is open-source: no
+# AccelMars-specific path literals may leak into src/. Doc comments (///) may keep
+# illustrative examples; code + test fixtures must not.
+echo "▶ pre-push: boundary check (no AccelMars path literals in src/)"
+if grep -rq 'accelmars-workspace' src/; then
+  echo "FAIL: 'accelmars-workspace' found in src/ — remove hardcoded path defaults" >&2
+  grep -rn 'accelmars-workspace' src/ >&2 || true
+  exit 1
+fi
+if grep -rn 'accelmars-codex' src/ | grep -qv '///'; then
+  echo "FAIL: 'accelmars-codex' found in src/ outside doc comments:" >&2
+  grep -rn 'accelmars-codex' src/ | grep -v '///' >&2 || true
+  exit 1
+fi
+
 exec booster gate --stage push
