@@ -158,6 +158,29 @@ fn do_validate(workspace_root: &Path, engine_home: &Path) -> Result<ValidateResu
                 }
             };
 
+            // A path component longer than the filesystem's limit cannot name a file, so
+            // this candidate is prose that happened to sit in backticks — not a reference.
+            // Rejecting it HERE rather than letting `try_exists` fail matters twice over:
+            //
+            // 1. It is portable. `ENAMETOOLONG` is errno 63 on macOS and 36 on Linux, so
+            //    matching on the raw OS error would be platform-specific.
+            // 2. It stops one unrunnable candidate from aborting the entire run. The `Err`
+            //    arm below returns, so before this guard a SINGLE long backtick span
+            //    anywhere in the workspace disabled ref-checking for every other file —
+            //    `anchor validate` exited 2 having reported one error and scanned nothing
+            //    further, which reads like "one broken ref" but means "no cover at all".
+            //
+            // It is skipped rather than reported broken: a 700-character prose span is not
+            // a reference someone forgot to fix, and flagging it would be a false positive
+            // on legitimate documentation.
+            const MAX_COMPONENT_BYTES: usize = 255;
+            if canonical
+                .split('/')
+                .any(|component| component.len() > MAX_COMPONENT_BYTES)
+            {
+                continue;
+            }
+
             let target_abs = workspace_root.join(&canonical);
             match target_abs.try_exists() {
                 Ok(true) => {}
@@ -689,6 +712,39 @@ mod tests {
             result.broken.len(),
             1,
             "tilde-prefixed backtick to missing file must be reported as broken"
+        );
+    }
+
+    /// An over-long backtick span is prose, not a reference: it must be skipped, and it
+    /// must NOT abort the run. Before the length guard, `try_exists` returned
+    /// `ENAMETOOLONG` and the `Err` arm returned early — so one such span anywhere
+    /// silently disabled ref-checking for the whole workspace.
+    #[test]
+    fn test_overlong_backtick_span_is_skipped_and_does_not_abort() {
+        let tmp = TempDir::new().unwrap();
+        let ws_root = tmp.path().canonicalize().unwrap();
+
+        // 700 chars — well past every filesystem's 255-byte component limit.
+        let prose = "M05 platform-client done and the rest of a very long sentence ".repeat(12);
+        write_file(
+            &ws_root,
+            "docs/notes.md",
+            &format!("Append entry: `{prose}`\n"),
+        );
+        // A genuinely broken ref in ANOTHER file. The bug's real damage was hiding this.
+        write_file(&ws_root, "docs/other.md", "See [missing](./nope.md)\n");
+
+        let result = do_validate(&ws_root, &ws_root.join(".accelmars"))
+            .expect("an over-long candidate must not abort validation");
+        assert_eq!(
+            result.broken.len(),
+            1,
+            "the over-long span must be skipped, and the real broken ref still found"
+        );
+        assert!(
+            result.broken[0].2.contains("nope.md"),
+            "the surviving finding must be the genuine broken ref, got: {:?}",
+            result.broken[0]
         );
     }
 
