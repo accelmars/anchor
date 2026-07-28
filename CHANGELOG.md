@@ -1,4 +1,9 @@
 
+## [0.12.3] - 2026-07-28
+
+### Bug Fixes
+- (**validate**) An over-long backtick span must not abort the whole run (#128) ([#128](https://github.com/accelmars/anchor/pull/128))
+
 ## [0.12.1] - 2026-06-05
 
 ### Bug Fixes
