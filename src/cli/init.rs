@@ -910,7 +910,10 @@ mod tests {
     #[test]
     fn test_stray_temp_tree_repo_is_never_a_candidate() {
         let os_tmp = std::env::temp_dir();
-        let poison = os_tmp.join(format!("a007-poison-repo-{:?}", std::thread::current().id()));
+        let poison = os_tmp.join(format!(
+            "a007-poison-repo-{:?}",
+            std::thread::current().id()
+        ));
         make_git_repo(&poison);
 
         let start = test_tempdir(); // nested under our own isolated root, itself under os_tmp
