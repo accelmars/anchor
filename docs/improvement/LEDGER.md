@@ -27,7 +27,7 @@ The in-repo register of anchor's own defects and friction. Modelled on
 | A-004 | rewrites markdown links only — prose references and package names are left dangling | P1 | OPEN | 2026-07-13 | 2026-07-31 |
 | A-005 | the closed layer was never migrated to the designed architecture | P2 | OPEN | 2026-07-13 | 2026-07-31 |
 | A-006 | AENG-021 / AENG-022 follow-ups | P2 | OPEN | 2026-07-13 | 2026-07-31 |
-| A-007 | **the test suite poisons itself** — it leaves a workspace at the TMPDIR root, which then makes parent-detection fail every later test; anchor's gate is permanently red after one run | P0 | OPEN | 2026-07-31 | 2026-07-31 |
+| A-007 | **the test suite poisons itself** — it leaves a workspace at the TMPDIR root, which then makes parent-detection fail every later test; anchor's gate is permanently red after one run | P0 | FIXED | 2026-07-31 | 2026-07-31 |
 
 ---
 
@@ -49,7 +49,34 @@ that rewrites a file only one engine would have matched and proves `verify` sees
 
 ## A-007 — the test suite poisons itself; anchor's gate is permanently red
 
-**Severity:** P0 · **Found:** 2026-07-31 · **Owner:** anchor engine
+**Severity:** P0 · **Found:** 2026-07-31 · **Fixed:** 2026-07-31 · **Owner:** anchor engine
+
+### Fix
+
+Two changes, both in `src/cli/init.rs`:
+
+1. **`detect_candidate` now stops at the OS temp root instead of walking into or past it.**
+   Anything sharing a temp tree is ephemeral, unrelated process state — another tool's scratch
+   clone, this binary's own earlier test runs — never the caller's real project ancestry. The walk
+   now canonicalizes each ancestor and returns "no candidate" the moment it would inspect
+   `std::env::temp_dir()` itself, rather than continuing to test its children for git repos. This
+   is the acceptance-criterion-2 fix: `init --yes` with no real candidate now reliably lands at the
+   path the caller passed, even with a stray workspace or repo sitting in the temp tree.
+2. **The test suite's own tempdirs are now scoped under one private, per-process root**
+   (`isolated_root()` / `test_tempdir()`, a `OnceLock<TempDir>` lazily created once and dropped —
+   and therefore actually cleaned up — at process exit), instead of each test calling
+   `tempfile::tempdir()` directly against the shared OS temp root. This is acceptance-criterion-1:
+   the suite can no longer write above its own fixtures, and whatever it does write is guaranteed
+   to be reclaimed when the test binary exits, not left behind permanently like the original
+   `$TMPDIR/.accelmars`.
+
+A new regression test, `test_stray_temp_tree_repo_is_never_a_candidate`, plants a real git repo
+directly in the OS temp directory and proves `detect_candidate` still returns "no candidate" —
+inducing the exact failure the fix exists to prevent, not just asserting the happy path.
+
+**Verified:** `cargo test cli::init` — 18/18 pass; `cargo test` (full suite) — 523/523 pass, 0
+fail; three consecutive `cargo test cli::init` runs with no cleanup in between all stay green, and
+`$TMPDIR/.accelmars` never reappears.
 
 **Nothing can be delivered to this repo.** `booster deliver` runs the test suite as a pre-push
 gate, and the suite is red on `main` — so every delivery, including a docs-only one, is refused.

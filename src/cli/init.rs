@@ -82,8 +82,21 @@ fn count_git_repos(dir: &Path) -> usize {
 /// Falls back to `start` if no such directory is found.
 /// Algorithm from 03-COMMANDS.md §Default detection.
 fn detect_candidate(start: &Path) -> PathBuf {
+    // A-007: never walk up INTO or PAST the OS temp directory. Anything sharing a
+    // temp tree is ephemeral, unrelated process state (other tools' scratch repos,
+    // this binary's own past test runs) — not the caller's real project ancestry.
+    // Without this bound, a start dir under the temp tree can wander arbitrarily
+    // far upward and land on a stray git-repo directory nobody meant as a
+    // workspace root, silently redirecting `init --yes` to the wrong place.
+    let os_tmp = std::fs::canonicalize(std::env::temp_dir()).ok();
+
     let mut current = start.to_path_buf();
     loop {
+        if let Some(ref tmp) = os_tmp {
+            if std::fs::canonicalize(&current).ok().as_ref() == Some(tmp) {
+                return start.to_path_buf();
+            }
+        }
         if !is_git_repo(&current) && count_git_repos(&current) > 0 {
             return current;
         }
@@ -589,6 +602,25 @@ fn do_reinit<W: Write>(path: &Path, writer: &mut W) -> Result<(), InitError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::OnceLock;
+
+    /// A-007: `detect_candidate` walks upward from a test's tempdir looking for an
+    /// ancestor with git-repo children. If every test's tempdir sits directly under
+    /// the shared OS temp root, a sibling test's git-repo fixture makes that shared
+    /// root itself look like a valid workspace candidate — so a run can silently
+    /// `init` into `$TMPDIR` and leave `.accelmars` there permanently (nothing ever
+    /// drops it, because `chosen` is not the `TempDir` value). Scoping every test's
+    /// tempdir under one private, per-process root confines that upward walk to a
+    /// directory that whole-process `TempDir::drop` actually cleans up.
+    fn isolated_root() -> &'static Path {
+        static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+        ROOT.get_or_init(|| tempfile::tempdir().expect("create isolated test root"))
+            .path()
+    }
+
+    fn test_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir_in(isolated_root()).expect("create scoped test tempdir")
+    }
 
     fn make_git_repo(dir: &Path) {
         fs::create_dir_all(dir.join(".git")).unwrap();
@@ -599,7 +631,7 @@ mod tests {
     /// no .tmp file left behind.
     #[test]
     fn test_happy_path() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
         make_git_repo(&root.path().join("repo-b"));
 
@@ -643,7 +675,7 @@ mod tests {
     /// Verifies: only config.json overwritten, knowledge.db and other .accelmars/anchor/ contents untouched.
     #[test]
     fn test_reinit() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
 
         // Pre-existing initialization
@@ -715,7 +747,7 @@ mod tests {
     /// Verifies: returns Aborted, workspace unchanged.
     #[test]
     fn test_decline_reinit() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
 
         // Pre-existing .accelmars/anchor/ structure
@@ -750,7 +782,7 @@ mod tests {
     /// Happy path (has repos, no reinit) → [1/2] and [2/2].
     #[test]
     fn test_step_indicator_prefix() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
         make_git_repo(&root.path().join("repo-b"));
 
@@ -776,11 +808,11 @@ mod tests {
     /// Verifies: wizard completes successfully and .accelmars/anchor/ created at second path.
     #[test]
     fn test_error_retry_succeeds() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
 
         // A second valid dir for the retry
-        let second = tempfile::tempdir().unwrap();
+        let second = test_tempdir();
         make_git_repo(&second.path().join("repo-x"));
 
         // Wizard starts at `root`, so detect_candidate(root) → root.
@@ -811,7 +843,7 @@ mod tests {
     /// Error retry fails: both paths do not exist → returns DirectoryNotFound (no infinite loop).
     #[test]
     fn test_error_retry_fails() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
 
         // Input: first nonexistent, retry also nonexistent
@@ -839,7 +871,7 @@ mod tests {
     /// Verifies: .accelmars/anchor/config.json created, no workspace prompt in output.
     #[test]
     fn test_yes_accepts_detected_root() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         make_git_repo(&root.path().join("repo-a"));
 
         let mut output = Vec::new();
@@ -869,10 +901,35 @@ mod tests {
         );
     }
 
+    /// A-007: a stray git-repo directory sitting directly in the OS temp tree (the
+    /// exact shape other tools' scratch clones leave behind) must never be picked
+    /// up as an ancestor workspace candidate — `detect_candidate` must stop at the
+    /// OS temp root rather than walking into or past it. Without the bound this
+    /// test proves, `init --yes` run from anywhere under the temp tree can land in
+    /// a directory the caller never chose.
+    #[test]
+    fn test_stray_temp_tree_repo_is_never_a_candidate() {
+        let os_tmp = std::env::temp_dir();
+        let poison = os_tmp.join(format!("a007-poison-repo-{:?}", std::thread::current().id()));
+        make_git_repo(&poison);
+
+        let start = test_tempdir(); // nested under our own isolated root, itself under os_tmp
+
+        let candidate = detect_candidate(start.path());
+
+        fs::remove_dir_all(&poison).ok();
+
+        assert_eq!(
+            candidate,
+            start.path(),
+            "a stray repo directly in the OS temp dir must not be treated as an ancestor workspace"
+        );
+    }
+
     /// --yes with no detectable candidate — WORKSPACE-001 fix: defaults to CWD, no longer errors.
     #[test]
     fn test_yes_no_candidate_errors() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         // Do NOT create any git repos under root.
 
         let mut output = Vec::new();
@@ -897,7 +954,7 @@ mod tests {
     /// WORKSPACE-001: --yes with no candidate defaults to CWD and prints informational message.
     #[test]
     fn test_yes_no_candidate_defaults_to_cwd() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_tempdir();
         // No git repo subdirs — no workspace candidate.
 
         let mut output = Vec::new();
@@ -930,7 +987,7 @@ mod tests {
     /// WORKSPACE-002: parent workspace exists; interactive mode warns and user types N → aborts.
     #[test]
     fn test_init_detects_parent_workspace_interactive() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = test_tempdir();
         // Parent directory is an existing workspace.
         fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
 
@@ -967,7 +1024,7 @@ mod tests {
     /// WORKSPACE-002: parent workspace exists; --yes → NestedWorkspace error, no nested .accelmars/.
     #[test]
     fn test_init_detects_parent_workspace_yes_aborts() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = test_tempdir();
         fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
 
         let child = parent.path().join("workspace-child");
@@ -991,7 +1048,7 @@ mod tests {
     /// WORKSPACE-002: re-init (chosen already has .accelmars/anchor/) is not blocked by parent detection.
     #[test]
     fn test_reinit_is_not_blocked_by_parent_check() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = test_tempdir();
         // Parent is also a workspace — would trigger nested check if not for re-init short-circuit.
         fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
 
@@ -1021,7 +1078,7 @@ mod tests {
     /// WORKSPACE-002: --path with parent workspace → warning emitted, init proceeds, .accelmars/ created.
     #[test]
     fn test_init_path_with_parent_workspace_warns_and_proceeds() {
-        let parent = tempfile::tempdir().unwrap();
+        let parent = test_tempdir();
         // Parent directory is an existing workspace.
         fs::create_dir_all(parent.path().join(".accelmars")).unwrap();
 
@@ -1066,11 +1123,11 @@ mod tests {
     /// Verifies: .accelmars/anchor/config.json created at explicit path, no "Detecting" output.
     #[test]
     fn test_path_skips_detection() {
-        let explicit = tempfile::tempdir().unwrap();
+        let explicit = test_tempdir();
         make_git_repo(&explicit.path().join("repo-a"));
 
         // start is a different dir (does not matter since --path overrides)
-        let start = tempfile::tempdir().unwrap();
+        let start = test_tempdir();
 
         // Input: accept place confirmation (Enter)
         let input = "\n";
@@ -1107,10 +1164,10 @@ mod tests {
     /// Verifies: .accelmars/anchor/config.json created, no step indicators or prompt text.
     #[test]
     fn test_yes_and_path_together() {
-        let explicit = tempfile::tempdir().unwrap();
+        let explicit = test_tempdir();
         make_git_repo(&explicit.path().join("repo-a"));
 
-        let start = tempfile::tempdir().unwrap();
+        let start = test_tempdir();
 
         let mut output = Vec::new();
         // No input needed — both --yes and --path skip all prompts
@@ -1154,8 +1211,8 @@ mod tests {
     fn test_path_not_found_shows_sibling_suggestions() {
         use std::fs;
 
-        let parent = tempfile::tempdir().unwrap();
-        let start = tempfile::tempdir().unwrap();
+        let parent = test_tempdir();
+        let start = test_tempdir();
 
         // Create sibling directories in parent — one is a close match for the typo.
         fs::create_dir(parent.path().join("anchor-foundation")).unwrap();
