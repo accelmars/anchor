@@ -141,6 +141,27 @@ fn resolve_slug(
 /// In standalone mode, `tenant_root` is the `.accelmars/` directory itself.
 /// In integrated mode, `tenant_root` is `.accelmars/<slug>/`.
 pub fn resolve(start: &Path, hints: ResolveHints) -> Result<ResolveResult, WorkspaceError> {
+    // THE ENGINE STARTUP CONTRACT COMES FIRST — ADR-003, "one resolver for the fleet",
+    // and `os/decisions/260504-canonical-substrate-spec.md` §7. anchor previously imported
+    // only the TYPES from `accelmars_os_env` and reimplemented resolution as a bare cwd
+    // walk-up with no env path at all, which made the shared contract advisory here.
+    //
+    // The walk-up is not merely incomplete, it is WRONG from a governed root: every
+    // `~/keel`, `~/*-engine-hq`, `~/*-app-hq` is a SIBLING of the workspace rather than
+    // inside it, so the walk sails past `~/accelmars/.accelmars/` and lands on `$HOME`.
+    // For months that silently resolved to a second state tree at `$HOME/.accelmars`;
+    // once that tree was retired (KEEL-SM-STATE-CENSUS, 2026-08-08) the same walk simply
+    // failed, and `anchor root` answered "no workspace found" from every governed root.
+    // Neither answer is right, and the contract is what makes either one unnecessary.
+    //
+    // An explicit `--tenant` still wins: it is priority 1 of the documented slug ladder,
+    // and ambient environment must never beat something the operator typed.
+    if hints.tenant_flag.is_none() {
+        if let Ok(resolved) = accelmars_os_env::read_from_env() {
+            return Ok(resolved);
+        }
+    }
+
     let dot_accelmars = find_dot_accelmars(start)?;
     let (mode, slugs) = detect_mode(&dot_accelmars);
 
@@ -274,6 +295,29 @@ mod tests {
     // std::env is process-global; without this, parallel tests race on the env var.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Clear the engine startup contract for the duration of a test.
+    ///
+    /// `resolve()` honours the contract before it walks the filesystem, which is the
+    /// point of it — but it also means that once an operator sources the workspace
+    /// `env.sh`, EVERY test here would resolve to the real tenant instead of its
+    /// tempdir. A test whose verdict depends on the developer's shell is not a test.
+    fn clear_contract() {
+        for var in [
+            "ACCELMARS_TENANT_ROOT",
+            "ACCELMARS_TENANT_SLUG",
+            "ACCELMARS_ENGINE_HOME",
+            "ACCELMARS_MODE",
+            "ACCELMARS_SPEC_VERSION",
+            // Not part of read_from_env's five, but priority 2 of the slug ladder
+            // reads it — and it IS set once an operator sources the workspace
+            // env.sh, which made these tests fail against the real tenant slug.
+            "ACCELMARS_TENANT",
+            "ACCELMARS_WORKSPACE",
+        ] {
+            std::env::remove_var(var);
+        }
+    }
+
     /// Happy path: `.accelmars/` directory exists in the start directory.
     /// Verifies: returns Ok(path) matching the temp dir, no trailing slash.
     #[test]
@@ -384,6 +428,7 @@ mod tests {
     #[test]
     fn resolve_standalone_compat() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_standalone_workspace();
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
@@ -401,6 +446,7 @@ mod tests {
     #[test]
     fn resolve_integrated_happy_path() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS"]);
         let hints = ResolveHints { tenant_flag: None };
         let result = resolve(dir.path(), hints).expect("should resolve");
@@ -415,6 +461,8 @@ mod tests {
 
     #[test]
     fn resolve_slug_via_tenant_flag() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         let hints = ResolveHints {
             tenant_flag: Some("AOS".to_string()),
@@ -426,6 +474,7 @@ mod tests {
     #[test]
     fn resolve_slug_via_env_var() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         std::env::set_var("ACCELMARS_TENANT", "acme");
         let hints = ResolveHints { tenant_flag: None };
@@ -437,6 +486,7 @@ mod tests {
     #[test]
     fn resolve_slug_via_cwd_context() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         // cwd is inside .accelmars/AOS/anchor/
         let inner = dir.path().join(".accelmars").join("AOS").join("anchor");
@@ -449,6 +499,7 @@ mod tests {
     #[test]
     fn resolve_slug_via_default_manifest() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         // Outer .accelmars/MANIFEST.toml with default_tenant
         let outer = dir.path().join(".accelmars").join("MANIFEST.toml");
@@ -461,6 +512,7 @@ mod tests {
     #[test]
     fn resolve_ambiguous_error() {
         let _lock = ENV_LOCK.lock().unwrap();
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS", "acme"]);
         let hints = ResolveHints { tenant_flag: None };
         let err = resolve(dir.path(), hints).expect_err("should fail — ambiguous");
@@ -473,8 +525,77 @@ mod tests {
         }
     }
 
+    /// The engine startup contract resolves from ANYWHERE — including a governed root
+    /// that is a sibling of the workspace, where the cwd walk-up finds nothing at all.
+    #[test]
+    fn resolve_honours_the_engine_startup_contract() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_contract();
+        std::env::set_var("ACCELMARS_TENANT_ROOT", "/srv/state/acme");
+        std::env::set_var("ACCELMARS_TENANT_SLUG", "acme");
+        std::env::set_var("ACCELMARS_ENGINE_HOME", "/srv/state/acme");
+        std::env::set_var("ACCELMARS_MODE", "integrated");
+        std::env::set_var("ACCELMARS_SPEC_VERSION", "1");
+
+        // A directory with no `.accelmars/` anywhere above it — the walk-up would fail.
+        let dir = tempfile::tempdir().unwrap();
+        let result = resolve(dir.path(), ResolveHints { tenant_flag: None })
+            .expect("the contract must resolve where the walk-up cannot");
+        clear_contract();
+
+        assert_eq!(result.tenant_slug, "acme");
+        assert_eq!(result.tenant_root, PathBuf::from("/srv/state/acme"));
+        assert_eq!(result.mode, ResolverMode::Integrated);
+    }
+
+    /// An explicit `--tenant` is priority 1 of the documented ladder. Ambient environment
+    /// must never beat something the operator typed.
+    #[test]
+    fn explicit_tenant_flag_beats_the_contract() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_contract();
+        let dir = make_integrated_workspace(&["AOS", "acme"]);
+        std::env::set_var("ACCELMARS_TENANT_ROOT", "/srv/state/elsewhere");
+        std::env::set_var("ACCELMARS_TENANT_SLUG", "elsewhere");
+        std::env::set_var("ACCELMARS_ENGINE_HOME", "/srv/state/elsewhere");
+        std::env::set_var("ACCELMARS_MODE", "integrated");
+        std::env::set_var("ACCELMARS_SPEC_VERSION", "1");
+
+        let result = resolve(
+            dir.path(),
+            ResolveHints {
+                tenant_flag: Some("AOS".to_string()),
+            },
+        )
+        .expect("the flag must resolve against the real workspace");
+        clear_contract();
+
+        assert_eq!(result.tenant_slug, "AOS");
+        assert!(result.tenant_root.ends_with(".accelmars/AOS"));
+    }
+
+    /// A PARTIAL contract is not a contract — it must fall through to discovery rather
+    /// than half-resolving. `read_from_env` requires all five vars; this proves anchor
+    /// does not treat a stray single export as authoritative.
+    #[test]
+    fn a_partial_contract_falls_through_to_discovery() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_contract();
+        let dir = make_integrated_workspace(&["AOS"]);
+        std::env::set_var("ACCELMARS_TENANT_ROOT", "/srv/state/partial");
+
+        let result = resolve(dir.path(), ResolveHints { tenant_flag: None })
+            .expect("should fall through to the workspace");
+        clear_contract();
+
+        assert_eq!(result.tenant_slug, "AOS");
+        assert!(result.tenant_root.ends_with(".accelmars/AOS"));
+    }
+
     #[test]
     fn resolve_tenant_not_found() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_contract();
         let dir = make_integrated_workspace(&["AOS"]);
         let hints = ResolveHints {
             tenant_flag: Some("missing".to_string()),

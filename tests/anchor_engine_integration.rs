@@ -42,6 +42,26 @@ use tempfile::TempDir;
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 fn anchor_bin() -> std::path::PathBuf {
+    // Every spawned `anchor` INHERITS this process's environment. Once an operator
+    // sources the workspace `env.sh`, that includes the engine startup contract —
+    // and the child would then resolve the operator's REAL tenant instead of the
+    // fixture workspace this test just built, silently testing the wrong tree.
+    // Cleared here because every spawn in this file goes through anchor_bin(), so
+    // a future test cannot forget it.
+    static CLEAN: std::sync::Once = std::sync::Once::new();
+    CLEAN.call_once(|| {
+        for var in [
+            "ACCELMARS_TENANT_ROOT",
+            "ACCELMARS_TENANT_SLUG",
+            "ACCELMARS_ENGINE_HOME",
+            "ACCELMARS_MODE",
+            "ACCELMARS_SPEC_VERSION",
+            "ACCELMARS_TENANT",
+            "ACCELMARS_WORKSPACE",
+        ] {
+            std::env::remove_var(var);
+        }
+    });
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_anchor"))
 }
 
