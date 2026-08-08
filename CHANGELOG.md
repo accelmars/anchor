@@ -1,4 +1,13 @@
 
+## [0.13.0] - 2026-08-08
+
+### Features
+- (**workspace**) Honour the engine startup env contract (`ACCELMARS_TENANT_ROOT` / `_SLUG` / `ACCELMARS_ENGINE_HOME` / `_MODE` / `_SPEC_VERSION`) before walking the filesystem. anchor imported only the TYPES from `accelmars-os-env` and reimplemented resolution as a bare cwd walk-up with no env path, which made ADR-003 ("one resolver for the fleet") advisory here. An explicit `--tenant` still wins, and a PARTIAL contract falls through to discovery rather than half-resolving
+
+### Bug Fixes
+- (**workspace**) `anchor root` no longer depends on where it is invoked from. Every governed root (`~/keel`, `~/*-engine-hq`, `~/*-app-hq`) is a SIBLING of the workspace, so the walk-up sailed past `~/accelmars/.accelmars/` and landed on `$HOME` — for months resolving to a second state tree at `$HOME/.accelmars`, and answering "no workspace found" once that tree was retired (KEEL-SM-STATE-CENSUS, 2026-08-08)
+- (**tests**) The `resolve()` tests are now hermetic against the ambient contract. They previously read process env without clearing it, so once an operator sourced the workspace `env.sh` every one of them would have resolved to the real tenant instead of its tempdir
+
 ## [0.12.3] - 2026-07-28
 
 ### Bug Fixes
