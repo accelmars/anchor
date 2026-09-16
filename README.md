@@ -112,9 +112,13 @@ anchor is purpose-built for Markdown workspaces with cross-file links. Wrong too
 anchor serve --port 3000
 ```
 
-It binds **loopback only** (`127.0.0.1`) by default. The API is unauthenticated and can modify your
-workspace, so reaching it is equivalent to write access — which is safe on loopback and is not safe
-on a shared network. To expose it anyway, opt in explicitly:
+Two endpoints: `GET /health` and `POST /file/validate` (which takes no body and returns the broken
+references it finds). Both are **read-only** — the HTTP API cannot move or rewrite anything.
+
+It binds **loopback only** (`127.0.0.1`) by default. The API is unauthenticated, so anyone who can
+reach it can read the paths of workspace files containing broken references, and can make the
+process rescan your whole workspace on demand. That is fine on loopback and is not a decision
+anchor should make for you on a shared network. To expose it anyway, opt in explicitly:
 
 ```sh
 anchor serve --host 0.0.0.0   # every interface; prints a warning

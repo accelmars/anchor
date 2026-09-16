@@ -4,9 +4,13 @@ use std::sync::Arc;
 
 /// Default bind host for `anchor serve`: **loopback only**.
 ///
-/// The server exposes file operations over the workspace, so reaching it is equivalent to write
-/// access to the workspace. It is unauthenticated, which is safe on loopback and is not safe on a
-/// shared network. Exposing it is therefore opt-in — `--host 0.0.0.0` — rather than the default.
+/// The API is unauthenticated. It is read-only today (`/health`, `/file/validate`), so exposure
+/// leaks workspace file paths rather than contents, and lets an unauthenticated caller trigger
+/// repeated whole-workspace scans. That is tolerable on loopback and is not a decision to make on
+/// a user's behalf on a shared network, so exposing it is opt-in — `--host 0.0.0.0`.
+///
+/// If a write endpoint is ever added here, this server needs authentication before it ships, not
+/// a louder warning.
 pub const DEFAULT_BIND_HOST: &str = "127.0.0.1";
 
 pub fn run(host: &str, port: u16) -> i32 {
@@ -60,8 +64,9 @@ async fn serve_async(host: &str, port: u16) -> i32 {
     println!("Anchor serving on {bound}");
     if host != DEFAULT_BIND_HOST {
         println!(
-            "warning: bound to {host}, not loopback. Anchor's API is unauthenticated and can \
-             modify this workspace — anyone who can reach this address can use it."
+            "warning: bound to {host}, not loopback. Anchor's API is unauthenticated: anyone who \
+             can reach this address can read the paths of workspace files that contain broken \
+             references, and can make this process rescan the workspace repeatedly."
         );
     }
 
