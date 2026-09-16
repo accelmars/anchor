@@ -2,6 +2,10 @@ use crate::infra::workspace;
 use crate::server::{build_router, AnchorState};
 use std::sync::Arc;
 
+/// Wildcard bind host for `anchor serve`. Stated once so the bind call and the startup banner
+/// cannot drift apart.
+const BIND_HOST: &str = "0.0.0.0";
+
 pub fn run(port: u16) -> i32 {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -35,15 +39,21 @@ async fn serve_async(port: u16) -> i32 {
     };
     let app = build_router(state);
 
-    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+    let bind_addr = format!("{BIND_HOST}:{port}");
+    let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("error: bind failed on port {port}: {e}");
+            eprintln!("error: bind failed on {bind_addr}: {e}");
             return 1;
         }
     };
 
-    println!("Anchor serving on http://0.0.0.0:{port}");
+    // Report the address actually bound, not the one requested: with `--port 0` the OS picks an
+    // ephemeral port, and the requested value is then not the one a caller can connect to.
+    match listener.local_addr() {
+        Ok(addr) => println!("Anchor serving on {addr}"),
+        Err(_) => println!("Anchor serving on {bind_addr}"),
+    }
 
     match axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
