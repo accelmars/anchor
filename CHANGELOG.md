@@ -1,4 +1,18 @@
 
+## [2.0.0] - 2026-09-16
+
+### Features
+- (**serve**) [**BREAKING**] Bind loopback by default, expose only on request (#136) ([#136](https://github.com/accelmars/anchor/pull/136))
+
+
+### Bug Fixes
+- (**serve**) Report the address actually bound, not the one requested (#135) ([#135](https://github.com/accelmars/anchor/pull/135))
+
+
+### Documentation
+- (**serve**) Correct the exposure warning — the HTTP API is read-only (#137) ([#137, #136](https://github.com/accelmars/anchor/pull/137))
+- README presentation pass, os-env v0.3.1 bump, drop the CI claim (#134) ([#134](https://github.com/accelmars/anchor/pull/134))
+
 ## [1.0.0] - 2026-08-13
 
 ### Features
