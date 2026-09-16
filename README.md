@@ -1,4 +1,10 @@
-# AccelMars Anchor
+# anchor
+
+**Move files in a Markdown workspace without breaking the links that point at them.**
+
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/accelmars/anchor?sort=semver)](https://github.com/accelmars/anchor/releases)
+
 ---
 
 ## What Anchor Is
@@ -26,6 +32,17 @@ cargo install --git https://github.com/accelmars/anchor
 ```
 
 Requires Rust 1.70+. The binary is named `anchor`.
+
+Anchor is **not on crates.io** and there is no plan to publish it there — install from source with
+the command above. It pulls one AccelMars crate,
+[`accelmars-os-env`](https://github.com/accelmars/os-env), by git tag; that repository is public
+precisely so this install works.
+
+### Support
+
+Anchor is released because it is useful on its own, not sold. There is no SLA — see
+[SUPPORT.md](https://github.com/accelmars/.github/blob/main/SUPPORT.md). Bugs and scope-fitting PRs
+are welcome.
 
 ---
 
