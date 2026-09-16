@@ -77,6 +77,7 @@ This creates `.accelmars/anchor/config.json` alongside two config files:
 | `anchor file validate` | Scan workspace for broken markdown refs |
 | `anchor file refs <file>` | Find all files that link to a given file |
 | `anchor frontmatter audit\|migrate\|normalize\|add-required\|check-schema` | Frontmatter management |
+| `anchor serve [--port N] [--host ADDR]` | Run the HTTP API. Binds loopback (`127.0.0.1`) only |
 
 ---
 
@@ -100,6 +101,27 @@ anchor is purpose-built for Markdown workspaces with cross-file links. Wrong too
 - **Global search-and-replace.** anchor rewrites references, not arbitrary strings. Use `sed`.
 - **Repos with no cross-file Markdown links.** anchor adds overhead with no benefit.
 - **Replacing `git mv` on source code.** Source code moves belong in your normal git workflow.
+
+---
+
+## The HTTP server
+
+`anchor serve` exposes the same operations over HTTP for tools that prefer an API to a subprocess.
+
+```sh
+anchor serve --port 3000
+```
+
+It binds **loopback only** (`127.0.0.1`) by default. The API is unauthenticated and can modify your
+workspace, so reaching it is equivalent to write access — which is safe on loopback and is not safe
+on a shared network. To expose it anyway, opt in explicitly:
+
+```sh
+anchor serve --host 0.0.0.0   # every interface; prints a warning
+```
+
+Prior to this change the server bound `0.0.0.0` by default. If you relied on that, pass `--host`
+explicitly.
 
 ---
 

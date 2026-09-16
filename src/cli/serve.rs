@@ -2,11 +2,14 @@ use crate::infra::workspace;
 use crate::server::{build_router, AnchorState};
 use std::sync::Arc;
 
-/// Wildcard bind host for `anchor serve`. Stated once so the bind call and the startup banner
-/// cannot drift apart.
-const BIND_HOST: &str = "0.0.0.0";
+/// Default bind host for `anchor serve`: **loopback only**.
+///
+/// The server exposes file operations over the workspace, so reaching it is equivalent to write
+/// access to the workspace. It is unauthenticated, which is safe on loopback and is not safe on a
+/// shared network. Exposing it is therefore opt-in — `--host 0.0.0.0` — rather than the default.
+pub const DEFAULT_BIND_HOST: &str = "127.0.0.1";
 
-pub fn run(port: u16) -> i32 {
+pub fn run(host: &str, port: u16) -> i32 {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -17,10 +20,10 @@ pub fn run(port: u16) -> i32 {
             return 1;
         }
     };
-    rt.block_on(serve_async(port))
+    rt.block_on(serve_async(host, port))
 }
 
-async fn serve_async(port: u16) -> i32 {
+async fn serve_async(host: &str, port: u16) -> i32 {
     let workspace_root = match workspace::find_workspace_root() {
         Ok(r) => r,
         Err(e) => {
@@ -39,7 +42,7 @@ async fn serve_async(port: u16) -> i32 {
     };
     let app = build_router(state);
 
-    let bind_addr = format!("{BIND_HOST}:{port}");
+    let bind_addr = format!("{host}:{port}");
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -50,9 +53,16 @@ async fn serve_async(port: u16) -> i32 {
 
     // Report the address actually bound, not the one requested: with `--port 0` the OS picks an
     // ephemeral port, and the requested value is then not the one a caller can connect to.
-    match listener.local_addr() {
-        Ok(addr) => println!("Anchor serving on {addr}"),
-        Err(_) => println!("Anchor serving on {bind_addr}"),
+    let bound = listener
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| bind_addr.clone());
+    println!("Anchor serving on {bound}");
+    if host != DEFAULT_BIND_HOST {
+        println!(
+            "warning: bound to {host}, not loopback. Anchor's API is unauthenticated and can \
+             modify this workspace — anyone who can reach this address can use it."
+        );
     }
 
     match axum::serve(listener, app)
