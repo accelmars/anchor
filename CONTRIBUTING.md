@@ -36,8 +36,12 @@ cargo fmt --check
    ```bash
    cargo fmt && cargo clippy -- -D warnings && cargo test && cargo build --release
    ```
-4. Open a pull request — CI must pass before merge
+4. Open a pull request
 5. Squash merge only
+
+**There is no CI on this repository.** It runs no GitHub Actions and shows no status checks — the
+quality gate in step 3 runs locally on `git push` instead. Run it before opening a PR; nothing on
+GitHub will run it for you, and no green check will appear.
 
 For install instructions, quick start, and command reference, see [README.md](README.md).
 
