@@ -107,6 +107,9 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 3000)]
         port: u16,
+        /// Address to bind. Defaults to loopback; pass 0.0.0.0 to expose on every interface.
+        #[arg(long, default_value = cli::serve::DEFAULT_BIND_HOST)]
+        host: String,
     },
     /// Frontmatter management (audit, migrate, normalize, add-required, check-schema)
     Frontmatter {
@@ -339,7 +342,7 @@ fn main() {
             PlanCommands::List => process::exit(cli::plan::run_list()),
             PlanCommands::Validate { plan } => process::exit(cli::plan::run_validate(&plan)),
         },
-        Commands::Serve { port } => cli::serve::run(port),
+        Commands::Serve { port, host } => cli::serve::run(&host, port),
         Commands::Frontmatter { subcommand } => match subcommand {
             FrontmatterCommands::Audit {
                 path,
