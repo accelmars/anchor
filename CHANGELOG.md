@@ -1,4 +1,9 @@
 
+## [2.1.0] - 2026-09-17
+
+### Features
+- (**cli**) Mv/check/refs as top-level commands, and say what a move did (#139) ([#139](https://github.com/accelmars/anchor/pull/139))
+
 ## [2.0.0] - 2026-09-16
 
 ### Features
