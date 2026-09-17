@@ -19,7 +19,7 @@ name = "anchor"
 path = "src/main.rs"
 
 [dependencies]
-accelmars-os-env = { git = "https://github.com/accelmars/os-env", tag = "accelmars-os-env-v0.3.1" }
+accelmars-os-env = { git = "https://github.com/accelmars/os-env", tag = "accelmars-os-env-v0.3.2" }
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 ignore = "0.4"
