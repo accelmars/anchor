@@ -330,10 +330,41 @@ pub(crate) fn run_impl(
             files_count,
         )
         .ok();
+    } else {
+        // Default: say what happened. A move that silently succeeds gives the user no
+        // reason to believe the links were handled, which is the whole promise.
+        write_default_output(
+            &mut io::stdout(),
+            &src_canonical,
+            &dst_canonical,
+            ref_count,
+            files_count,
+        )
+        .ok();
     }
-    // Default (no flags): silent on success
 
     Ok(())
+}
+
+/// Write the default human-readable success summary.
+///
+/// `--verbose` and `--format json` keep their own shapes; this is what a user sees when
+/// they pass no flags at all.
+fn write_default_output<W: Write>(
+    w: &mut W,
+    src: &str,
+    dst: &str,
+    refs_rewritten: usize,
+    files_touched: usize,
+) -> io::Result<()> {
+    writeln!(w, "Moved {src} \u{2192} {dst}")?;
+    match (refs_rewritten, files_touched) {
+        (0, _) => writeln!(w, "No links pointed to it."),
+        (1, 1) => writeln!(w, "Updated 1 link in 1 file."),
+        (r, 1) => writeln!(w, "Updated {r} links in 1 file."),
+        (1, f) => writeln!(w, "Updated 1 link in {f} files."),
+        (r, f) => writeln!(w, "Updated {r} links in {f} files."),
+    }
 }
 
 /// Write the human-readable verbose success summary.
@@ -370,6 +401,36 @@ fn write_json_output<W: Write>(
         "dst": dst,
     });
     writeln!(w, "{output}")
+}
+
+/// Build the "no workspace configured" message.
+///
+/// The bare error told the user to run `anchor init` but not *where* it would take
+/// effect, which matters because anchor walks upward to choose a root. Naming the
+/// directory it would use turns a guess into one paste.
+pub fn format_no_workspace_hint() -> String {
+    let cwd = std::env::current_dir().ok();
+    let candidate = cwd
+        .as_ref()
+        .and_then(|c| git_root(c))
+        .or_else(|| cwd.clone());
+    let mut out = String::from("no workspace configured here.\n\n  anchor init");
+    if let Some(p) = candidate {
+        out.push_str(&format!("      (would use: {})", p.display()));
+    }
+    out.push_str("\n\nRun it once for this project, then this command works.");
+    out
+}
+
+/// Nearest enclosing git repository root, if any.
+fn git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut cur = start;
+    loop {
+        if cur.join(".git").exists() {
+            return Some(cur.to_path_buf());
+        }
+        cur = cur.parent()?;
+    }
 }
 
 /// Build the workspace-root hint appended to SrcNotFound error messages.
@@ -525,6 +586,30 @@ mod tests {
             s.contains("Moved. Rewrote 12 references in 5 files."),
             "verbose output must contain summary, got: {s}"
         );
+    }
+
+    /// The default (no-flag) success summary names both paths and pluralises correctly.
+    /// A silent success gives the user no reason to believe the links were handled.
+    #[test]
+    fn test_mv_default_output_shapes() {
+        let render = |refs: usize, files: usize| {
+            let mut out = Vec::new();
+            write_default_output(&mut out, "notes/db.md", "archive/db.md", refs, files).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        let one = render(1, 1);
+        assert!(one.contains("Moved notes/db.md \u{2192} archive/db.md"));
+        assert!(one.contains("Updated 1 link in 1 file."));
+
+        assert!(render(2, 2).contains("Updated 2 links in 2 files."));
+        assert!(render(3, 1).contains("Updated 3 links in 1 file."));
+        assert!(render(1, 4).contains("Updated 1 link in 4 files."));
+
+        // Nothing pointed at it: say so rather than implying links were rewritten.
+        let none = render(0, 0);
+        assert!(none.contains("No links pointed to it."));
+        assert!(!none.contains("Updated"));
     }
 
     /// `--format json` output is valid JSON with all required fields and correct values.

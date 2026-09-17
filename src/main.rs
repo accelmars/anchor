@@ -86,6 +86,33 @@ enum Commands {
         #[arg(long)]
         cwd: Option<String>,
     },
+    /// Move a file or directory, rewriting all references (alias for 'anchor file mv')
+    Mv {
+        src: String,
+        dst: String,
+        /// Print a human-readable confirmation on success
+        #[arg(long)]
+        verbose: bool,
+        /// Output format for machine consumers (mutually exclusive with --verbose)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        /// Rewrite all backtick path refs, including prose mentions (disables AENG-010 heuristic)
+        #[arg(long)]
+        allow_prose_rewrites: bool,
+    },
+    /// Check the workspace for broken references (alias for 'anchor file validate')
+    Check {
+        /// Output format (default: human-readable)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
+    /// List all files referencing a given file (alias for 'anchor file refs')
+    Refs {
+        file: String,
+        /// Output format (default: human-readable)
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+    },
     /// Detect all broken references in the workspace (alias for 'anchor file validate')
     Validate {
         /// Output format (default: human-readable)
@@ -305,6 +332,59 @@ enum FileCommands {
     },
 }
 
+/// The `anchor file mv` dispatch, shared with the top-level `anchor mv` alias so the
+/// two can never diverge. Returns the process exit code.
+fn dispatch_mv(
+    src: &str,
+    dst: &str,
+    verbose: bool,
+    format: Option<OutputFormat>,
+    allow_prose_rewrites: bool,
+) -> i32 {
+    match cli::file::mv::run(src, dst, verbose, format, allow_prose_rewrites) {
+        Ok(()) => 0,
+        Err(cli::file::mv::MvError::ConflictingFlags(_)) => {
+            eprintln!("error: --verbose and --format are mutually exclusive");
+            1
+        }
+        Err(cli::file::mv::MvError::SrcNotFound) => {
+            use accelmars_anchor::core::scanner;
+            use accelmars_anchor::core::suggest::{format_suggestions, suggest_similar};
+            use accelmars_anchor::infra::workspace;
+            let root = workspace::find_workspace_root().ok();
+            let workspace_files: Vec<String> = root
+                .as_ref()
+                .and_then(|r| scanner::scan_workspace(r).ok())
+                .unwrap_or_default();
+            let suggestions = suggest_similar(src, &workspace_files);
+            let corrected_command = suggestions
+                .first()
+                .map(|s| format!("anchor mv \"{}\" {}", s, dst));
+            eprintln!(
+                "{}",
+                format_suggestions(src, &suggestions, corrected_command.as_deref())
+            );
+            if let Some(root_path) = &root {
+                eprintln!(
+                    "{}",
+                    cli::file::mv::format_src_not_found_hint(src, root_path)
+                );
+            }
+            1
+        }
+        Err(cli::file::mv::MvError::Workspace(
+            accelmars_anchor::infra::workspace::WorkspaceError::NotFound,
+        )) => {
+            eprintln!("{}", cli::file::mv::format_no_workspace_hint());
+            2
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -334,6 +414,15 @@ fn main() {
         Commands::Mode { cwd } => cli::mode::run(cwd.as_deref()),
         Commands::Tenants { cwd } => cli::tenants::run(cwd.as_deref()),
         Commands::Tenant { slug, cwd } => cli::tenant::run(&slug, cwd.as_deref()),
+        Commands::Mv {
+            src,
+            dst,
+            verbose,
+            format,
+            allow_prose_rewrites,
+        } => dispatch_mv(&src, &dst, verbose, format, allow_prose_rewrites),
+        Commands::Check { format } => cli::file::validate::run(format),
+        Commands::Refs { file, format } => cli::file::refs::run(&file, format),
         Commands::Validate { format } => cli::file::validate::run(format),
         Commands::Plan { subcommand } => match subcommand {
             PlanCommands::New { output, template } => {
@@ -388,42 +477,8 @@ fn main() {
                 verbose,
                 format,
                 allow_prose_rewrites,
-            } => match cli::file::mv::run(&src, &dst, verbose, format, allow_prose_rewrites) {
-                Ok(()) => 0,
-                Err(cli::file::mv::MvError::ConflictingFlags(_)) => {
-                    eprintln!("error: --verbose and --format are mutually exclusive");
-                    1
-                }
-                Err(cli::file::mv::MvError::SrcNotFound) => {
-                    use accelmars_anchor::core::scanner;
-                    use accelmars_anchor::core::suggest::{format_suggestions, suggest_similar};
-                    use accelmars_anchor::infra::workspace;
-                    let root = workspace::find_workspace_root().ok();
-                    let workspace_files: Vec<String> = root
-                        .as_ref()
-                        .and_then(|r| scanner::scan_workspace(r).ok())
-                        .unwrap_or_default();
-                    let suggestions = suggest_similar(&src, &workspace_files);
-                    let corrected_command = suggestions
-                        .first()
-                        .map(|s| format!("anchor file mv \"{}\" {}", s, dst));
-                    eprintln!(
-                        "{}",
-                        format_suggestions(&src, &suggestions, corrected_command.as_deref())
-                    );
-                    if let Some(root_path) = &root {
-                        eprintln!(
-                            "{}",
-                            cli::file::mv::format_src_not_found_hint(&src, root_path)
-                        );
-                    }
-                    1
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    2
-                }
-            },
+            } => dispatch_mv(&src, &dst, verbose, format, allow_prose_rewrites),
+
             FileCommands::Validate { format } => cli::file::validate::run(format),
             FileCommands::Refs { file, format } => cli::file::refs::run(&file, format),
         },
